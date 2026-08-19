@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "skill": "spec-driven-development",
+  "cases": [
+    {
+      "id": "spec-driven-development-positive-1",
+      "task": "Redesign the dashboard navigation while preserving saved user preferences and the /dashboard route.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "state observable acceptance criteria",
+        "separate in-scope and out-of-scope behavior",
+        "include existing-user compatibility"
+      ],
+      "forbidden_outcomes": [
+        "accept 'make it better' as a sufficient spec"
+      ]
+    },
+    {
+      "id": "spec-driven-development-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger spec-driven-development without a task-relevant reason"
+      ]
+    }
+  ]
+}

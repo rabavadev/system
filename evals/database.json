@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "database",
+  "cases": [
+    {
+      "id": "database-positive-1",
+      "task": "Rename a populated database column used by current production code.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "prefer staged compatibility migration",
+        "consider legacy data and rollback"
+      ],
+      "forbidden_outcomes": [
+        "drop/rename destructively in one step without consumers"
+      ]
+    },
+    {
+      "id": "database-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger database without a task-relevant reason"
+      ]
+    }
+  ]
+}

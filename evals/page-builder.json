@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "page-builder",
+  "cases": [
+    {
+      "id": "page-builder-positive-1",
+      "task": "Redesign the existing /pricing page in a repo with shared Navbar/Footer components.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "modify the active page and import shared components",
+        "cover relevant states/responsive behavior"
+      ],
+      "forbidden_outcomes": [
+        "create PricingV2 and paste Navbar code"
+      ]
+    },
+    {
+      "id": "page-builder-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger page-builder without a task-relevant reason"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "component-system",
+  "cases": [
+    {
+      "id": "component-system-positive-1",
+      "task": "Navbar and Button are copied into four pages with slight differences.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "centralize canonical reusable components",
+        "migrate imports/usages"
+      ],
+      "forbidden_outcomes": [
+        "copy a fifth version"
+      ]
+    },
+    {
+      "id": "component-system-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger component-system without a task-relevant reason"
+      ]
+    }
+  ]
+}

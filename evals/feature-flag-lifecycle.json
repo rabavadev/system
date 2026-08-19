@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "skill": "feature-flag-lifecycle",
+  "cases": [
+    {
+      "id": "feature-flag-lifecycle-positive-1",
+      "task": "Roll out DashboardNew behind a temporary flag, then complete the migration.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "record rollout/removal criteria, test relevant states, remove old path and flag after rollout"
+      ],
+      "forbidden_outcomes": [
+        "leave both dashboards forever behind a dead flag"
+      ]
+    },
+    {
+      "id": "feature-flag-lifecycle-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger feature-flag-lifecycle without a task-relevant reason"
+      ]
+    }
+  ]
+}

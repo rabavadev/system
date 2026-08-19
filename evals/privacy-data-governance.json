@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "privacy-data-governance",
+  "cases": [
+    {
+      "id": "privacy-data-governance-positive-1",
+      "task": "Add analytics that records user profile and search behavior.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "classify/minimize data, review logging/retention/access",
+        "respect project-specific deletion/export rules"
+      ],
+      "forbidden_outcomes": [
+        "collect extra PII merely because it is available"
+      ]
+    },
+    {
+      "id": "privacy-data-governance-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger privacy-data-governance without a task-relevant reason"
+      ]
+    }
+  ]
+}

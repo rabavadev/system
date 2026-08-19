@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "skill": "site-architecture",
+  "cases": [
+    {
+      "id": "site-architecture-positive-1",
+      "task": "Plan a new SaaS marketing site with unclear page structure.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "define page purpose, CTA, sections, shared navigation and build order"
+      ],
+      "forbidden_outcomes": [
+        "jump directly into page code"
+      ]
+    },
+    {
+      "id": "site-architecture-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger site-architecture without a task-relevant reason"
+      ]
+    }
+  ]
+}

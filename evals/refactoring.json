@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "refactoring",
+  "cases": [
+    {
+      "id": "refactoring-positive-1",
+      "task": "Refactor a service because duplicated ownership is causing bugs, without changing product behavior.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "define preserved behavior and controlled steps",
+        "verify contracts and one source of truth"
+      ],
+      "forbidden_outcomes": [
+        "mix unrelated feature changes"
+      ]
+    },
+    {
+      "id": "refactoring-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger refactoring without a task-relevant reason"
+      ]
+    }
+  ]
+}

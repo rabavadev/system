@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "api-integration",
+  "cases": [
+    {
+      "id": "api-integration-positive-1",
+      "task": "Integrate a third-party SDK already installed in the repository.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "inspect installed SDK version and real contract",
+        "handle provider failure where relevant"
+      ],
+      "forbidden_outcomes": [
+        "invent an SDK method"
+      ]
+    },
+    {
+      "id": "api-integration-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger api-integration without a task-relevant reason"
+      ]
+    }
+  ]
+}

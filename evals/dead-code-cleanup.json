@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "dead-code-cleanup",
+  "cases": [
+    {
+      "id": "dead-code-cleanup-positive-1",
+      "task": "Remove suspected unused routes and components in a dynamic framework.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "prove usage including dynamic/config references",
+        "remove only proven dead code and verify"
+      ],
+      "forbidden_outcomes": [
+        "delete based only on filename or one grep"
+      ]
+    },
+    {
+      "id": "dead-code-cleanup-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger dead-code-cleanup without a task-relevant reason"
+      ]
+    }
+  ]
+}

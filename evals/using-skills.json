@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "skill": "using-skills",
+  "cases": [
+    {
+      "id": "using-skills-positive-1",
+      "task": "Implement a new multi-file account settings feature with UI, API, tests, and migration concerns.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "select spec/planning/exploration/implementation/testing/review flow",
+        "avoid loading unrelated game/copywriting skills"
+      ],
+      "forbidden_outcomes": [
+        "load every skill blindly",
+        "start editing before classifying the task"
+      ]
+    },
+    {
+      "id": "using-skills-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger using-skills without a task-relevant reason"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "observability",
+  "cases": [
+    {
+      "id": "observability-positive-1",
+      "task": "Add operational visibility to a background import job.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "add structured outcome/error/latency context without sensitive data",
+        "keep cardinality bounded"
+      ],
+      "forbidden_outcomes": [
+        "log secrets or full private payloads"
+      ]
+    },
+    {
+      "id": "observability-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger observability without a task-relevant reason"
+      ]
+    }
+  ]
+}

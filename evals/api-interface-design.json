@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "api-interface-design",
+  "cases": [
+    {
+      "id": "api-interface-design-positive-1",
+      "task": "Change a shared API response consumed by web and mobile clients.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "define compatibility/error/versioning implications",
+        "coordinate producer and consumer migration"
+      ],
+      "forbidden_outcomes": [
+        "leak storage schema into public API casually"
+      ]
+    },
+    {
+      "id": "api-interface-design-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger api-interface-design without a task-relevant reason"
+      ]
+    }
+  ]
+}

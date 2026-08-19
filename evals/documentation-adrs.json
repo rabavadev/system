@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "documentation-adrs",
+  "cases": [
+    {
+      "id": "documentation-adrs-positive-1",
+      "task": "Choose one state architecture after rejecting two alternatives.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "record context, decision, alternatives and consequences",
+        "update durable project state"
+      ],
+      "forbidden_outcomes": [
+        "write comments that merely restate syntax"
+      ]
+    },
+    {
+      "id": "documentation-adrs-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger documentation-adrs without a task-relevant reason"
+      ]
+    }
+  ]
+}

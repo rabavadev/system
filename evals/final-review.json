@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "final-review",
+  "cases": [
+    {
+      "id": "final-review-positive-1",
+      "task": "Review the final diff after a dashboard migration.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "search for duplicate version files, old active routes, mocks, TODOs, dead code and unverified claims",
+        "update project state when canonical decisions changed"
+      ],
+      "forbidden_outcomes": [
+        "declare done before checking verification evidence"
+      ]
+    },
+    {
+      "id": "final-review-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger final-review without a task-relevant reason"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "security",
+  "cases": [
+    {
+      "id": "security-positive-1",
+      "task": "Add an authenticated webhook-driven file import feature.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "identify trust boundaries, auth, webhook validation, upload risks",
+        "check secrets and failure abuse paths"
+      ],
+      "forbidden_outcomes": [
+        "focus only on happy-path functionality"
+      ]
+    },
+    {
+      "id": "security-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger security without a task-relevant reason"
+      ]
+    }
+  ]
+}

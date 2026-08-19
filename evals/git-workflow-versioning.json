@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "git-workflow-versioning",
+  "cases": [
+    {
+      "id": "git-workflow-versioning-positive-1",
+      "task": "Prepare a multi-part migration for review in Git.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "keep focused diffs/commits and inspect changes",
+        "preserve unrelated user work"
+      ],
+      "forbidden_outcomes": [
+        "discard unknown changes to get a clean tree"
+      ]
+    },
+    {
+      "id": "git-workflow-versioning-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger git-workflow-versioning without a task-relevant reason"
+      ]
+    }
+  ]
+}

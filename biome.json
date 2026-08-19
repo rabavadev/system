@@ -6,7 +6,18 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!node_modules", "!dist", "!.wrangler", "!src/routeTree.gen.ts"]
+    "includes": [
+      "**",
+      "!node_modules",
+      "!dist",
+      "!.wrangler",
+      "!src/routeTree.gen.ts",
+      "!evals",
+      "!skills",
+      "!references",
+      "!adapters",
+      "!bootstrap"
+    ]
   },
   "formatter": {
     "enabled": true,

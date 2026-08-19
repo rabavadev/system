@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "canonical-implementation",
+  "cases": [
+    {
+      "id": "canonical-implementation-positive-1",
+      "task": "The repo has Dashboard.tsx, DashboardV2.tsx and two user contexts. Consolidate the real production path.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "leave one active dashboard and one current-user source",
+        "migrate consumers before cleanup"
+      ],
+      "forbidden_outcomes": [
+        "create DashboardV3"
+      ]
+    },
+    {
+      "id": "canonical-implementation-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger canonical-implementation without a task-relevant reason"
+      ]
+    }
+  ]
+}

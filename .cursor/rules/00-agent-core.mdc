@@ -1,0 +1,11 @@
+<!-- coding-agent-upgrade:managed:start -->
+---
+description: Canonical repository coding-agent controller
+globs:
+alwaysApply: true
+---
+
+Follow the repository root `AGENTS.md`, `PROJECT_RULES.md`, and `PROJECT_STATE.md`.
+Route non-trivial work through `skills/using-skills/SKILL.md`.
+Do not duplicate the master policy here.
+<!-- coding-agent-upgrade:managed:end -->

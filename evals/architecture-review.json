@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "architecture-review",
+  "cases": [
+    {
+      "id": "architecture-review-positive-1",
+      "task": "Repeated bugs come from three components owning copies of the same state.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "identify ownership problem and smallest structural correction",
+        "estimate affected consumers"
+      ],
+      "forbidden_outcomes": [
+        "recommend a full rewrite without evidence"
+      ]
+    },
+    {
+      "id": "architecture-review-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger architecture-review without a task-relevant reason"
+      ]
+    }
+  ]
+}

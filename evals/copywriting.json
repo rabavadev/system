@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "copywriting",
+  "cases": [
+    {
+      "id": "copywriting-positive-1",
+      "task": "Write hero copy for a developer tool landing page.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "use specific value-led claims and action-oriented CTA",
+        "preserve terminology"
+      ],
+      "forbidden_outcomes": [
+        "fill with generic 'powerful seamless robust' language"
+      ]
+    },
+    {
+      "id": "copywriting-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger copywriting without a task-relevant reason"
+      ]
+    }
+  ]
+}

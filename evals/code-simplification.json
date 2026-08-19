@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "code-simplification",
+  "cases": [
+    {
+      "id": "code-simplification-positive-1",
+      "task": "Simplify AI-generated code with one-use factories and duplicate state wrappers.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "remove needless indirection while preserving behavior",
+        "keep domain meaning clear"
+      ],
+      "forbidden_outcomes": [
+        "turn it into code golf"
+      ]
+    },
+    {
+      "id": "code-simplification-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger code-simplification without a task-relevant reason"
+      ]
+    }
+  ]
+}

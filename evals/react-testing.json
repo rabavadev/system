@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "react-testing",
+  "cases": [
+    {
+      "id": "react-testing-positive-1",
+      "task": "Test a React form component that fetches and submits data.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "test user-observable states with accessible queries",
+        "avoid internal state assertions"
+      ],
+      "forbidden_outcomes": [
+        "use snapshot-only proof for interaction"
+      ]
+    },
+    {
+      "id": "react-testing-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger react-testing without a task-relevant reason"
+      ]
+    }
+  ]
+}

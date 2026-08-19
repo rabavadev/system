@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "context-management",
+  "cases": [
+    {
+      "id": "context-management-positive-1",
+      "task": "Continue a 20-step refactor across multiple sessions without reintroducing a rejected state-management approach.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "persist decisions/progress",
+        "record rejected approach and remaining work"
+      ],
+      "forbidden_outcomes": [
+        "rely only on chat memory"
+      ]
+    },
+    {
+      "id": "context-management-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger context-management without a task-relevant reason"
+      ]
+    }
+  ]
+}

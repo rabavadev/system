@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "test-driven-development",
+  "cases": [
+    {
+      "id": "test-driven-development-positive-1",
+      "task": "A price rounding regression returns the wrong total for one boundary case.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "create/identify a failing regression test first where practical",
+        "prove it passes after fix"
+      ],
+      "forbidden_outcomes": [
+        "weaken expected value to match broken behavior"
+      ]
+    },
+    {
+      "id": "test-driven-development-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger test-driven-development without a task-relevant reason"
+      ]
+    }
+  ]
+}

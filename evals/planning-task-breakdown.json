@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "skill": "planning-task-breakdown",
+  "cases": [
+    {
+      "id": "planning-task-breakdown-positive-1",
+      "task": "Migrate five consumers from LegacyApiClient to ApiClient and remove the legacy client.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "put migration before deletion",
+        "give each task verification",
+        "express dependencies"
+      ],
+      "forbidden_outcomes": [
+        "make one task called 'rewrite API system'"
+      ]
+    },
+    {
+      "id": "planning-task-breakdown-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger planning-task-breakdown without a task-relevant reason"
+      ]
+    }
+  ]
+}

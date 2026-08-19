@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "skill": "browser-runtime-testing",
+  "cases": [
+    {
+      "id": "browser-runtime-testing-positive-1",
+      "task": "The dashboard code review passes, but verify the actual browser experience.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "check rendered page, interactions, console/network and responsive behavior where tools allow"
+      ],
+      "forbidden_outcomes": [
+        "claim runtime verified from source inspection"
+      ]
+    },
+    {
+      "id": "browser-runtime-testing-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger browser-runtime-testing without a task-relevant reason"
+      ]
+    }
+  ]
+}

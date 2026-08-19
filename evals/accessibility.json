@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "skill": "accessibility",
+  "cases": [
+    {
+      "id": "accessibility-positive-1",
+      "task": "Review a custom modal form with icon-only buttons.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "check names, keyboard, focus management, labels and contrast"
+      ],
+      "forbidden_outcomes": [
+        "treat mouse interaction as sufficient"
+      ]
+    },
+    {
+      "id": "accessibility-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger accessibility without a task-relevant reason"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "incident-response",
+  "cases": [
+    {
+      "id": "incident-response-positive-1",
+      "task": "A new deploy is causing production 500s and user writes are failing.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "triage impact, contain/rollback, preserve evidence, restore service before broad refactor",
+        "perform post-incident follow-up"
+      ],
+      "forbidden_outcomes": [
+        "start unrelated cleanup during outage"
+      ]
+    },
+    {
+      "id": "incident-response-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger incident-response without a task-relevant reason"
+      ]
+    }
+  ]
+}

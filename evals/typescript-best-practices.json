@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "typescript-best-practices",
+  "cases": [
+    {
+      "id": "typescript-best-practices-positive-1",
+      "task": "Fix a TypeScript domain model full of any and unsafe assertions.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "use precise canonical domain types and narrowing",
+        "respect installed TS config/version"
+      ],
+      "forbidden_outcomes": [
+        "replace everything with clever unreadable conditional types"
+      ]
+    },
+    {
+      "id": "typescript-best-practices-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger typescript-best-practices without a task-relevant reason"
+      ]
+    }
+  ]
+}

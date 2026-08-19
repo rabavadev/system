@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "reliability-resilience",
+  "cases": [
+    {
+      "id": "reliability-resilience-positive-1",
+      "task": "A payment-adjacent API call sometimes times out and the job retries.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "define bounded timeout/retry/idempotency behavior",
+        "handle duplicates/partial failure intentionally"
+      ],
+      "forbidden_outcomes": [
+        "retry forever or blindly retry non-idempotent action"
+      ]
+    },
+    {
+      "id": "reliability-resilience-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger reliability-resilience without a task-relevant reason"
+      ]
+    }
+  ]
+}

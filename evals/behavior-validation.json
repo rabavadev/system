@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "behavior-validation",
+  "cases": [
+    {
+      "id": "behavior-validation-positive-1",
+      "task": "After code review, prove a new export feature meets each acceptance criterion.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "map each criterion to observable evidence",
+        "distinguish verified vs unverified"
+      ],
+      "forbidden_outcomes": [
+        "replace runtime proof with 'code looks correct'"
+      ]
+    },
+    {
+      "id": "behavior-validation-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger behavior-validation without a task-relevant reason"
+      ]
+    }
+  ]
+}

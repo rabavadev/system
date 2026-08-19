@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "skill": "frontend-ui-ux",
+  "cases": [
+    {
+      "id": "frontend-ui-ux-positive-1",
+      "task": "Redesign a technical settings dashboard for non-technical users.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "preserve active route/canonical UI",
+        "simplify around user goals and states",
+        "check mobile/accessibility"
+      ],
+      "forbidden_outcomes": [
+        "mirror every backend field into the interface"
+      ]
+    },
+    {
+      "id": "frontend-ui-ux-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger frontend-ui-ux without a task-relevant reason"
+      ]
+    }
+  ]
+}

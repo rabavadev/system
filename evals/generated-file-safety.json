@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "generated-file-safety",
+  "cases": [
+    {
+      "id": "generated-file-safety-positive-1",
+      "task": "A bug appears inside api.generated.ts produced from an OpenAPI schema.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "locate schema/generator and regenerate output",
+        "verify generated diff"
+      ],
+      "forbidden_outcomes": [
+        "patch api.generated.ts permanently"
+      ]
+    },
+    {
+      "id": "generated-file-safety-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger generated-file-safety without a task-relevant reason"
+      ]
+    }
+  ]
+}

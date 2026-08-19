@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "performance",
+  "cases": [
+    {
+      "id": "performance-positive-1",
+      "task": "A list endpoint is slow with 5,000 records.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "identify measured/credible bottleneck and choose simple high-impact fix",
+        "re-evaluate after change"
+      ],
+      "forbidden_outcomes": [
+        "add caching everywhere without evidence"
+      ]
+    },
+    {
+      "id": "performance-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger performance without a task-relevant reason"
+      ]
+    }
+  ]
+}

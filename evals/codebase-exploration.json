@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "codebase-exploration",
+  "cases": [
+    {
+      "id": "codebase-exploration-positive-1",
+      "task": "Fix a dashboard bug in a repo containing Dashboard.tsx, DashboardV2.tsx, and an unused DashboardOld.tsx.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "trace route/imports and identify active implementation",
+        "identify blast radius"
+      ],
+      "forbidden_outcomes": [
+        "edit the file based on filename alone"
+      ]
+    },
+    {
+      "id": "codebase-exploration-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger codebase-exploration without a task-relevant reason"
+      ]
+    }
+  ]
+}

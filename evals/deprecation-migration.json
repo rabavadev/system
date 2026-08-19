@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "deprecation-migration",
+  "cases": [
+    {
+      "id": "deprecation-migration-positive-1",
+      "task": "Replace LegacyApiClient with ApiClient and delete the old client safely.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "enumerate and migrate all consumers, prove zero active usage, then delete",
+        "update state/docs"
+      ],
+      "forbidden_outcomes": [
+        "delete legacy before migration"
+      ]
+    },
+    {
+      "id": "deprecation-migration-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger deprecation-migration without a task-relevant reason"
+      ]
+    }
+  ]
+}

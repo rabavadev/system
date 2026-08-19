@@ -13,7 +13,7 @@
  */
 
 import assert from 'node:assert/strict'
-import { readdirSync, readFileSync, rmSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import Database from 'better-sqlite3'
@@ -23,6 +23,7 @@ const TMP = join(ROOT, 'node_modules/.cache/test-db.sqlite')
 
 function freshDb() {
   rmSync(TMP, { force: true })
+  mkdirSync(join(ROOT, 'node_modules/.cache'), { recursive: true })
   const db = new Database(TMP)
   // D1 enforces foreign keys; match that locally.
   db.pragma('foreign_keys = ON')

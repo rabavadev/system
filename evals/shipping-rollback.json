@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "shipping-rollback",
+  "cases": [
+    {
+      "id": "shipping-rollback-positive-1",
+      "task": "Release a risky schema-backed feature to production.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "verify build/runtime/migration/monitoring and rollback criteria",
+        "use staged rollout when justified"
+      ],
+      "forbidden_outcomes": [
+        "discover rollback only after failure"
+      ]
+    },
+    {
+      "id": "shipping-rollback-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger shipping-rollback without a task-relevant reason"
+      ]
+    }
+  ]
+}

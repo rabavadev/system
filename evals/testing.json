@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "testing",
+  "cases": [
+    {
+      "id": "testing-positive-1",
+      "task": "Test an API-backed form with validation, loading, server error, and success behavior.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "use behavior-focused tests and realistic failure coverage",
+        "choose appropriate unit/integration/E2E levels"
+      ],
+      "forbidden_outcomes": [
+        "mock away the server behavior that is the point of the test"
+      ]
+    },
+    {
+      "id": "testing-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger testing without a task-relevant reason"
+      ]
+    }
+  ]
+}

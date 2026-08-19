@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "ui-review",
+  "cases": [
+    {
+      "id": "ui-review-positive-1",
+      "task": "Review a newly redesigned dashboard before shipping.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "check user flow, states, consistency, responsive/accessibility and duplicate UI",
+        "identify concrete failures"
+      ],
+      "forbidden_outcomes": [
+        "review only colors and border radius"
+      ]
+    },
+    {
+      "id": "ui-review-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger ui-review without a task-relevant reason"
+      ]
+    }
+  ]
+}

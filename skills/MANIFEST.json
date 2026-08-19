@@ -1,0 +1,397 @@
+{
+  "version": "3.0.0",
+  "skills": [
+    {
+      "name": "accessibility",
+      "path": "skills/accessibility/SKILL.md",
+      "sha256": "7750063adbdb706bb645ebcb95a03ffd5089a060f568b3a66cca8b2e20f35831",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "api-integration",
+      "path": "skills/api-integration/SKILL.md",
+      "sha256": "c05ed4e09f91c2e4a34cd54fc518c8bfb3b9b3804d426c6796b4fd69fad274ce",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "api-interface-design",
+      "path": "skills/api-interface-design/SKILL.md",
+      "sha256": "60535cf2e7962bd0126d5e454fc4299f33fb675db090a58cb3553c6519726556",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "architecture-review",
+      "path": "skills/architecture-review/SKILL.md",
+      "sha256": "c2b3938885cdd1c680499a035ca13abce544a714dad286f8ed4c99f3afb985fa",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "backend",
+      "path": "skills/backend/SKILL.md",
+      "sha256": "d24f95521a8bf8d9a989ab2598b57d09a522e0ca216b3ef0dff05c71f002def8",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "behavior-validation",
+      "path": "skills/behavior-validation/SKILL.md",
+      "sha256": "b47e573aa6191238eaae7a037e798fe0148567c03bb478096597cb2a6256132a",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "browser-runtime-testing",
+      "path": "skills/browser-runtime-testing/SKILL.md",
+      "sha256": "220b4ad1a09f0d466106fe66db51eb3fffa7adf3cf76b59ae5c92acbc3d494a0",
+      "has_references": false,
+      "has_scripts": true
+    },
+    {
+      "name": "canonical-implementation",
+      "path": "skills/canonical-implementation/SKILL.md",
+      "sha256": "6b4afeaf3130aed8227a9431b0c05f1e758f2d414d175c45cc25b1bb97365b05",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "ci-cd",
+      "path": "skills/ci-cd/SKILL.md",
+      "sha256": "636579392f3a2a320a03a31ecc9041b1bff811faa7e4abc6ae4e0f10fce80341",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "code-review",
+      "path": "skills/code-review/SKILL.md",
+      "sha256": "28cad9949ead07ce03717a92b45d23a6838cf59804549ecb33d7ba7d689226bc",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "code-simplification",
+      "path": "skills/code-simplification/SKILL.md",
+      "sha256": "fc2e7f64286def0df0f153bc1b89ed42ca54352dc22720c1a4a2004f530a8a5a",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "codebase-exploration",
+      "path": "skills/codebase-exploration/SKILL.md",
+      "sha256": "52848bcb1a7a99e69424ba9bc0ed1604d0c5881c8d81a89205d2fe0721aa87f5",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "component-system",
+      "path": "skills/component-system/SKILL.md",
+      "sha256": "944946aa42236693c9b7f3b7668543d6019e6d3ccef3709ccc88b8a077312de7",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "context-management",
+      "path": "skills/context-management/SKILL.md",
+      "sha256": "a418851c3b99840d1d46375961d67612429c20dae72263218b575fb4f80d33b8",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "copywriting",
+      "path": "skills/copywriting/SKILL.md",
+      "sha256": "dc1d7d6264470efd8ba9805335192d4b834e0d5f980d95a6ccb66966455ac408",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "database",
+      "path": "skills/database/SKILL.md",
+      "sha256": "89621d945723e7d9d8f63524745316f2d3c3f3bbdb1e498897ea0ea55b6fd0a6",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "dead-code-cleanup",
+      "path": "skills/dead-code-cleanup/SKILL.md",
+      "sha256": "80c210fe30221a039c19423d6743fadf450bb96111a2de1d022ebe81b7c4fab0",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "debugging",
+      "path": "skills/debugging/SKILL.md",
+      "sha256": "31608ba106067fe6eef78e3b7d1bf95b3f7fef2d3f328fd5ef45fe2ba1b864cb",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "dependency-management",
+      "path": "skills/dependency-management/SKILL.md",
+      "sha256": "e1c72fca092b9b7147c93e4bcb3753696ef8536deff8b3365ba071fd8c4db61d",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "deprecation-migration",
+      "path": "skills/deprecation-migration/SKILL.md",
+      "sha256": "2e280c722cbb123c943bf175a33bbf0f7aaf781ffd682928b2b6e95cdf5e4ae0",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "design-system",
+      "path": "skills/design-system/SKILL.md",
+      "sha256": "a8abfad81d4dad39f88547023d862920ae17a965a1039e5a16f7a35beb37679d",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "documentation-adrs",
+      "path": "skills/documentation-adrs/SKILL.md",
+      "sha256": "de4e8c38d65311aa1726c9218143e6b5c3f4330536c4c6d3780f4d4785dad57d",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "environment-configuration",
+      "path": "skills/environment-configuration/SKILL.md",
+      "sha256": "2e2c139122f502b2e9c9228cb0260585f1c8a56e55ef77a6acfc4a6d4615af94",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "feature-flag-lifecycle",
+      "path": "skills/feature-flag-lifecycle/SKILL.md",
+      "sha256": "501714de5d87438b81cf77a7fa954fb87f5eba4bfc9472799b990e512bd310bf",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "final-review",
+      "path": "skills/final-review/SKILL.md",
+      "sha256": "dab028630c58fc85d1eb9759a087ba4f3bfa34f1c96273f1e762874a6e0deef2",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "frontend-ui-ux",
+      "path": "skills/frontend-ui-ux/SKILL.md",
+      "sha256": "79bce538875114c993bf87e426b0e6429a2dbaf124b2e1e8939d913911437fd6",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "game-development",
+      "path": "skills/game-development/SKILL.md",
+      "sha256": "37737b1eae3a2f891ab77fb35d063cf026676a1f63bc30cf836f8b75d72f9436",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "generated-file-safety",
+      "path": "skills/generated-file-safety/SKILL.md",
+      "sha256": "cffc65bf6f6814d6b870771073c982f20957f767acfbb462a835b81ae671d39c",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "git-workflow-versioning",
+      "path": "skills/git-workflow-versioning/SKILL.md",
+      "sha256": "d88d6357be997681dadf60b5f3a07f6a26c2eed7c9fdda8ec939a668c941aa4c",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "incident-response",
+      "path": "skills/incident-response/SKILL.md",
+      "sha256": "f3d1f1bda5b84661b540feb997a288c1306ccfac2231c2f23088840b9b8a55d7",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "incremental-implementation",
+      "path": "skills/incremental-implementation/SKILL.md",
+      "sha256": "df6e77ff76124f8750d0e3b12876557f1ba6aed1a1423cb3233ab18601d58b26",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "monorepo-workspaces",
+      "path": "skills/monorepo-workspaces/SKILL.md",
+      "sha256": "cae2cbfdd8b7ae841879a98383cd9e8694dcc7731af1a0098e35ae4f9e50b548",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "nextjs-best-practices",
+      "path": "skills/nextjs-best-practices/SKILL.md",
+      "sha256": "0ad3d7c5fb956be9a41194fb44e35bddc602747a5a3aab6d49696b1dd72220c6",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "observability",
+      "path": "skills/observability/SKILL.md",
+      "sha256": "de92983f9ef6844978d09aeb9370264e8f2efa176f95778a3e48818fd1a85cbe",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "page-builder",
+      "path": "skills/page-builder/SKILL.md",
+      "sha256": "947382a668481b9f070ba13898c8ab571baaa3fc47966018ddab91467563b0c7",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "performance",
+      "path": "skills/performance/SKILL.md",
+      "sha256": "f41471e798e3a38c87bc0e7da999f9719004f8f1e280ec575925009eb6d22e52",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "planning-task-breakdown",
+      "path": "skills/planning-task-breakdown/SKILL.md",
+      "sha256": "a36d66462c4a5606dc95e3ef85fccfd4655bce0b0741de3aa227143959b6d9fe",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "playwright-e2e",
+      "path": "skills/playwright-e2e/SKILL.md",
+      "sha256": "e4efb1822091e368c2db6587c4cdf39a9533c26672044e8e8d7ce2f1b850a94b",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "privacy-data-governance",
+      "path": "skills/privacy-data-governance/SKILL.md",
+      "sha256": "f7f21e51cc745e47daafd6a423da97cb0a8e049554bfd4f8d52266eb3b5da9ba",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "product-thinking",
+      "path": "skills/product-thinking/SKILL.md",
+      "sha256": "75b8ff85c6545be971158dc698a2e4e72e69de4982747127a52380ddcf73daac",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "react-best-practices",
+      "path": "skills/react-best-practices/SKILL.md",
+      "sha256": "d893024021e013321a34dd8c70cc2b9cbceba2a5e092c9109ea4a79fcef9d124",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "react-testing",
+      "path": "skills/react-testing/SKILL.md",
+      "sha256": "15a2cb93ede2cfbdee83df08403e2853a87108dcac086c7ee8ae181dfc0c251a",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "refactoring",
+      "path": "skills/refactoring/SKILL.md",
+      "sha256": "860b967f5d01552671a3d1e01163dccf20e03254eec646edab411611fb0516c3",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "reliability-resilience",
+      "path": "skills/reliability-resilience/SKILL.md",
+      "sha256": "e2987f2a6c3ea63820a8d2ba610b096f8b17bc18e5307693c7fd7f8e3960f075",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "security",
+      "path": "skills/security/SKILL.md",
+      "sha256": "991fa1d88f28210c43bd48906ce3d28e0e295d8975ade0e6cd19b13bb957b977",
+      "has_references": true,
+      "has_scripts": false
+    },
+    {
+      "name": "shipping-rollback",
+      "path": "skills/shipping-rollback/SKILL.md",
+      "sha256": "6120f789ce3c8f70d16f08ae0b1abf0251a608f640cb85f5599fcb0afea1b5c9",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "site-architecture",
+      "path": "skills/site-architecture/SKILL.md",
+      "sha256": "462f204e304e22b3c00ded761e813bc8a172ca0f1629118706befc7b1d9b54fc",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "skill-security-review",
+      "path": "skills/skill-security-review/SKILL.md",
+      "sha256": "7d36e7c384c156548cbf217fade804f3230b1fba0561e6214ef1b490c12ca225",
+      "has_references": true,
+      "has_scripts": true
+    },
+    {
+      "name": "spec-driven-development",
+      "path": "skills/spec-driven-development/SKILL.md",
+      "sha256": "660560c49306e9612b9b529198a7db84175fe4e27dbce3d91998f04bc0601aaf",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "stack-freshness",
+      "path": "skills/stack-freshness/SKILL.md",
+      "sha256": "2f8184e21a2fd55d102311a352a38fab157f8de4e33ffabb950f67116713feb1",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "test-driven-development",
+      "path": "skills/test-driven-development/SKILL.md",
+      "sha256": "cc549903ea804149083b70cd62e9cd49d4cf6af87858a065490b5172a54ab779",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "testing",
+      "path": "skills/testing/SKILL.md",
+      "sha256": "6b9530b113ec3e3226e9d107b7a480402992833f5bb07aceaeb03c07d884ac47",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "typescript-best-practices",
+      "path": "skills/typescript-best-practices/SKILL.md",
+      "sha256": "bcb7029ab8e3ef81f7ca101e11e961f7165a6307b8c700c9800da91c86332460",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "ui-review",
+      "path": "skills/ui-review/SKILL.md",
+      "sha256": "c77ec9d6773452d5c282937ad4d394245c79e627dfd635e27d09e6f2948951e2",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "using-skills",
+      "path": "skills/using-skills/SKILL.md",
+      "sha256": "d680853ce76eb7e3f74c591669f6f1902c8c9eb91028bb9837535a087ff3a76b",
+      "has_references": false,
+      "has_scripts": false
+    },
+    {
+      "name": "visual-regression",
+      "path": "skills/visual-regression/SKILL.md",
+      "sha256": "9279f13cfa57d40d56273b06b1dbc07ebd953508c13e0a40c9e5788d304f6ccf",
+      "has_references": false,
+      "has_scripts": false
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+---
+description: Repository coding-agent controller
+alwaysApply: true
+---
+
+Read and follow root `AGENTS.md`.
+
+Use `PROJECT_RULES.md`, `PROJECT_STATE.md`, and the router at `skills/using-skills/SKILL.md`.
+
+Never create V2/new/final duplicate implementations merely to avoid modifying the canonical source.

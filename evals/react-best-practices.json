@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "react-best-practices",
+  "cases": [
+    {
+      "id": "react-best-practices-positive-1",
+      "task": "A React page keeps two mirrored copies of server state and an effect syncs them.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "simplify state ownership and effects",
+        "use installed React patterns"
+      ],
+      "forbidden_outcomes": [
+        "add another synchronization effect"
+      ]
+    },
+    {
+      "id": "react-best-practices-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger react-best-practices without a task-relevant reason"
+      ]
+    }
+  ]
+}

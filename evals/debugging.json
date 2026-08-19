@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "debugging",
+  "cases": [
+    {
+      "id": "debugging-positive-1",
+      "task": "A form submits twice only on slow connections.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "find duplicate/race root cause",
+        "verify the original failure path"
+      ],
+      "forbidden_outcomes": [
+        "add an arbitrary timeout as the permanent fix"
+      ]
+    },
+    {
+      "id": "debugging-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger debugging without a task-relevant reason"
+      ]
+    }
+  ]
+}

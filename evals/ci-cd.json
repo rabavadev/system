@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "ci-cd",
+  "cases": [
+    {
+      "id": "ci-cd-positive-1",
+      "task": "Make the repository enforce typecheck, tests and build on pull requests.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "reuse package manager/lockfile and existing pipeline",
+        "add meaningful gates without duplication"
+      ],
+      "forbidden_outcomes": [
+        "create a second conflicting CI pipeline"
+      ]
+    },
+    {
+      "id": "ci-cd-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger ci-cd without a task-relevant reason"
+      ]
+    }
+  ]
+}

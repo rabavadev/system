@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "dependency-management",
+  "cases": [
+    {
+      "id": "dependency-management-positive-1",
+      "task": "Upgrade a shared dependency with a known breaking major version.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "identify current/target versions and migration impact",
+        "run relevant tests/build and preserve lockfile discipline"
+      ],
+      "forbidden_outcomes": [
+        "upgrade framework/dependencies unrelated to the task"
+      ]
+    },
+    {
+      "id": "dependency-management-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger dependency-management without a task-relevant reason"
+      ]
+    }
+  ]
+}

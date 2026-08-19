@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "stack-freshness",
+  "cases": [
+    {
+      "id": "stack-freshness-positive-1",
+      "task": "Fix a Next.js routing issue in an existing repo without assuming its router/version.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "inspect installed version and existing router pattern",
+        "use version-matched behavior"
+      ],
+      "forbidden_outcomes": [
+        "upgrade Next.js just to use a remembered API"
+      ]
+    },
+    {
+      "id": "stack-freshness-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger stack-freshness without a task-relevant reason"
+      ]
+    }
+  ]
+}

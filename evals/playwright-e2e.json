@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "playwright-e2e",
+  "cases": [
+    {
+      "id": "playwright-e2e-positive-1",
+      "task": "Add an E2E test for login \u2192 dashboard \u2192 create project.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "use stable semantic locators and observable waits",
+        "keep journey independent"
+      ],
+      "forbidden_outcomes": [
+        "use arbitrary sleeps as primary synchronization"
+      ]
+    },
+    {
+      "id": "playwright-e2e-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger playwright-e2e without a task-relevant reason"
+      ]
+    }
+  ]
+}

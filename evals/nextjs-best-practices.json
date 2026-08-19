@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "nextjs-best-practices",
+  "cases": [
+    {
+      "id": "nextjs-best-practices-positive-1",
+      "task": "Fix a Next.js data-loading route without knowing App vs Pages Router.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "detect installed Next.js/router architecture",
+        "use version-correct server/client/cache behavior"
+      ],
+      "forbidden_outcomes": [
+        "apply latest App Router APIs blindly"
+      ]
+    },
+    {
+      "id": "nextjs-best-practices-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger nextjs-best-practices without a task-relevant reason"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "incremental-implementation",
+  "cases": [
+    {
+      "id": "incremental-implementation-positive-1",
+      "task": "Build an API-backed notifications page across backend and frontend.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "implement in independently verified slices",
+        "run targeted checks between slices"
+      ],
+      "forbidden_outcomes": [
+        "edit all layers before any verification"
+      ]
+    },
+    {
+      "id": "incremental-implementation-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger incremental-implementation without a task-relevant reason"
+      ]
+    }
+  ]
+}

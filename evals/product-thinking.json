@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "skill": "product-thinking",
+  "cases": [
+    {
+      "id": "product-thinking-positive-1",
+      "task": "User asks for 14 advanced settings fields on the main dashboard.",
+      "should_trigger": true,
+      "required_outcomes": [
+        "identify underlying user goal and simplify interaction where appropriate",
+        "preserve business constraints"
+      ],
+      "forbidden_outcomes": [
+        "blindly mirror internal config"
+      ]
+    },
+    {
+      "id": "product-thinking-negative-1",
+      "task": "Correct a spelling typo in a documentation sentence unrelated to this skill.",
+      "should_trigger": false,
+      "required_outcomes": [
+        "do not invoke this specialized workflow"
+      ],
+      "forbidden_outcomes": [
+        "trigger product-thinking without a task-relevant reason"
+      ]
+    }
+  ]
+}
