@@ -29,6 +29,9 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Relationship integrity | src/server/db/relations.ts | pure module, cross-brand/archived rules |
 | Chat / conversations | src/features/chat/ + src/server/db/conversation.ts, message.ts | real workspace UI; /chat + /chat/:id; brand-scoped via cookie |
 | Context Engine | src/server/context/ + src/server/db/context.ts | central buildContext(request); precedence explicit>conversation>ui>workspace; /dev-context inspector (dev only) |
+| AI execution | src/server/ai/ | provider-neutral executeAI; Workers AI adapter (+ optional AI Gateway); echo stub for offline dev; docs/ai-execution.md |
+| Workspace Chief | src/server/agents/chief.ts + src/server/db/agent.ts | built-in versioned agent; answers in Chat via Context Engine; no tools/autonomy yet |
+| AI traceability | src/server/db/event.ts + message.provider_metadata | ai.execution.* events; per-message execution trace summary |
 
 ## Legacy / Deprecated
 
@@ -51,6 +54,10 @@ Shared components: src/components/ui/*, src/components/layout/*
 | One central Context Engine, provider-neutral | every future AI execution shares one context source; no per-agent context logic | STEP 5, docs/context-engine.md |
 | Context repository is db-first (structural SqlDatabase) | whole context pipeline testable in plain node; no cloudflare:workers import | STEP 5, src/server/db/context.ts |
 | Knowledge eligibility filtered in SQL, ranked in pure code | dead rows cannot starve the bounded candidate pool; trace samples explain exclusions | STEP 5 |
+| AI execution trace in message.provider_metadata + event payloads | no migration needed; both columns existed since 0002/0006 | STEP 6 |
+| Workers AI binding (not REST) as first provider | zero credentials in code/D1; AI Gateway via binding option | STEP 6 |
+| clientRequestId idempotency on send | browser retries/double-submit never double-execute or double-persist | STEP 6 |
+| Relative value imports in testable server modules | `~` alias only survives type-only imports under node --experimental-strip-types | STEP 6 |
 
 ## Rejected Approaches
 

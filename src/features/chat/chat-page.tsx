@@ -44,7 +44,7 @@ function ChatEmpty({ hasConversations }: { hasConversations: boolean }) {
         <EmptyState
           icon={MessageSquare}
           title="No conversations yet"
-          description="Conversations are where you brief the workspace. AI replies aren't connected yet, but everything you write is saved."
+          description="Conversations are where you brief the workspace. Chief, the workspace AI, answers with your business context."
           action={<NewConversationButton>Start a conversation</NewConversationButton>}
         />
       )}

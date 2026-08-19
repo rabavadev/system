@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { PageHeader } from '~/components/layout/page-header'
 import type { ContextPackage } from '~/server/context'
 
+import { AiExecutionsPanel } from './ai-executions-panel'
 import { type DevContextOptions, type DevContextResult, getDevContextPackage } from './server'
 
 /**
@@ -76,6 +77,8 @@ export function ContextInspectorPage({ options }: { options: DevContextOptions }
         Development only. Ids and engine internals are shown intentionally; this page is never
         linked for normal users and renders NotFound in production builds.
       </div>
+
+      <AiExecutionsPanel />
 
       <div className="grid grid-cols-1 gap-4 rounded-lg border border-zinc-200 bg-white p-4 sm:grid-cols-2">
         <div>

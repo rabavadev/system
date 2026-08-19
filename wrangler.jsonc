@@ -6,7 +6,18 @@
   "main": "@tanstack/react-start/server-entry",
 
   "vars": {
-    "APP_ENV": "development"
+    "APP_ENV": "development",
+    // AI execution (STEP 6, see docs/ai-execution.md):
+    // AI_PROVIDER: 'workers-ai' (default) or 'echo' (offline local dev).
+    // AI_GATEWAY_ID: set to route Workers AI through AI Gateway.
+    // AI_MODEL_DEFAULT: optional model id override for the 'default' strategy.
+    "AI_PROVIDER": "workers-ai"
+  },
+
+  // Workers AI binding. Chief and all future AI execution go through this
+  // (optionally via AI Gateway). Binding-based: no API keys in code or D1.
+  "ai": {
+    "binding": "AI"
   },
 
   "d1_databases": [

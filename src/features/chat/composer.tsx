@@ -27,7 +27,11 @@ export function Composer({ conversationId }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [value, setValue] = useState('')
   const [error, setError] = useState<string | null>(null)
+  const [chiefNotice, setChiefNotice] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+  // Idempotency key for the in-flight send: a retried submit of the SAME
+  // text reuses it, so the server never persists or executes twice.
+  const requestIdRef = useRef<string | null>(null)
 
   // Focus the composer when a conversation opens (and after each send).
   useEffect(() => {
@@ -49,14 +53,23 @@ export function Composer({ conversationId }: ComposerProps) {
       return
     }
     setError(null)
+    setChiefNotice(null)
+    requestIdRef.current ??= crypto.randomUUID()
+    const clientRequestId = requestIdRef.current
     startTransition(async () => {
       try {
-        await sendMessageFn({ data: { conversationId, content } })
+        const result = await sendMessageFn({ data: { conversationId, content, clientRequestId } })
+        requestIdRef.current = null
         setValue('')
         const textarea = textareaRef.current
         if (textarea) {
           textarea.style.height = 'auto'
           textarea.focus()
+        }
+        // The message was sent even when Chief couldn't answer; that is a
+        // notice, not a send failure.
+        if (result.assistantError) {
+          setChiefNotice(result.assistantError)
         }
         await router.invalidate()
       } catch (cause) {
@@ -68,9 +81,11 @@ export function Composer({ conversationId }: ComposerProps) {
   return (
     <div className="border-t border-zinc-200 bg-white">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-6 py-4">
-        <p className="text-[11px] text-zinc-400">
-          AI replies aren't connected yet. Your messages are saved.
-        </p>
+        {chiefNotice && (
+          <p role="status" className="text-xs text-amber-600">
+            {chiefNotice}
+          </p>
+        )}
         <div className="flex items-end gap-2">
           <textarea
             ref={textareaRef}
@@ -100,7 +115,7 @@ export function Composer({ conversationId }: ComposerProps) {
             className="px-3 py-2"
           >
             <SendHorizontal className="size-4" strokeWidth={1.75} />
-            Send
+            {pending ? 'Sending…' : 'Send'}
           </Button>
         </div>
         <div className="flex items-center justify-between">

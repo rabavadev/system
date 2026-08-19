@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 import type { Message, MessageSenderType } from '~/types/domain'
 
-import { execute, newId, nowIso, queryAll, type SqlDatabase } from './sql.ts'
+import { execute, newId, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
 
 /**
  * Message repository. Same structural-database pattern as conversation.ts:
@@ -87,6 +87,26 @@ export async function listRecentMessages(
 }
 
 /**
+ * Idempotency lookup: find a message carrying a client request id (stored
+ * in provider_metadata). Used to make retries/double-submits safe — the
+ * same clientRequestId never produces two messages.
+ */
+export async function findMessageByClientRequestId(
+  db: SqlDatabase,
+  conversationId: string,
+  clientRequestId: string,
+): Promise<Message | null> {
+  const row = await queryFirst<MessageRow>(
+    db,
+    `SELECT * FROM message
+     WHERE conversation_id = ? AND json_extract(provider_metadata, '$.clientRequestId') = ?
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    [conversationId, clientRequestId],
+  )
+  return row ? toMessage(row) : null
+}
+
+/**
  * Trusted append path (server-side only). Accepts any schema-valid role;
  * future AI execution writes 'agent'/'system' messages through here.
  */
@@ -127,11 +147,14 @@ export async function appendMessage(db: SqlDatabase, input: AppendMessageInput):
  */
 export async function appendUserMessage(
   db: SqlDatabase,
-  input: { conversationId: string; content: string },
+  input: { conversationId: string; content: string; clientRequestId?: string },
 ): Promise<Message> {
   return appendMessage(db, {
     conversationId: input.conversationId,
     senderType: 'user',
     content: input.content,
+    ...(input.clientRequestId
+      ? { providerMetadataJson: JSON.stringify({ clientRequestId: input.clientRequestId }) }
+      : {}),
   })
 }

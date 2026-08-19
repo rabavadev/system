@@ -44,7 +44,16 @@ npm run db:test            # fresh-DB migration + constraint test suite
 npm run test:relations     # relationship-integrity rules
 npm run test:chat          # conversation/message repository suite
 npm run test:context        # Context Engine suite (scope, ranking, trace, safety)
+npm run test:ai             # AI execution + Workspace Chief suite
 ```
+
+## AI / Chief
+
+Chat is answered by **Chief**, the built-in workspace AI. All model access
+goes through the provider-neutral execution layer in `src/server/ai`
+(Workers AI binding by default, optionally via AI Gateway). Setup,
+adapter contract, failure/timeout/retry policy and traceability:
+[docs/ai-execution.md](docs/ai-execution.md).
 
 ## Database
 

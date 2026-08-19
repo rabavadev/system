@@ -46,6 +46,7 @@ export function ConversationView({ data }: ConversationViewProps) {
           {conversation.title ?? 'Untitled conversation'}
         </h1>
         {conversation.scopeName && <Badge tone="neutral">{conversation.scopeName}</Badge>}
+        <Badge tone="muted">Chief</Badge>
         {isArchived && <Badge tone="muted">Archived</Badge>}
         <div className="ml-auto flex items-center gap-1">
           {isArchived ? (
@@ -83,8 +84,7 @@ export function ConversationView({ data }: ConversationViewProps) {
             </div>
             <h2 className="text-sm font-medium text-zinc-900">No messages yet</h2>
             <p className="text-sm text-zinc-500">
-              Write the first message below. AI replies aren't connected yet, but everything you
-              send is saved to this conversation.
+              Write the first message below. Chief answers with the context of this conversation.
             </p>
           </div>
         </div>

@@ -3,9 +3,11 @@ import { useEffect, useRef } from 'react'
 import { cn } from '~/lib/utils'
 import type { Message, MessageSenderType } from '~/types/domain'
 
+import { Markdown } from './markdown'
+
 const ROLE_LABEL: Record<MessageSenderType, string> = {
   user: 'You',
-  agent: 'Assistant',
+  agent: 'Chief',
   system: 'System',
 }
 
@@ -48,7 +50,13 @@ export function MessageList({ messages }: MessageListProps) {
                 {dateTimeFormat.format(new Date(message.createdAt))}
               </time>
             </div>
-            <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-800">{message.content}</p>
+            {message.senderType === 'agent' ? (
+              <Markdown text={message.content} />
+            ) : (
+              <p className="whitespace-pre-wrap text-sm leading-6 text-zinc-800">
+                {message.content}
+              </p>
+            )}
           </article>
         ))}
         <div ref={bottomRef} />

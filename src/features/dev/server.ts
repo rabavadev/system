@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { ACTIVE_BRAND_COOKIE } from '~/features/workspace/server'
 import { buildContext, type ContextPackage, toContextErrorPayload } from '~/server/context'
 import { getDb } from '~/server/db/client'
+import { listRecentEvents } from '~/server/db/event'
 import { getDefaultWorkspace } from '~/server/db/workspace'
 
 /**
@@ -122,3 +123,81 @@ export const getDevContextPackage = createServerFn({ method: 'POST' })
       return { ok: false, error: toContextErrorPayload(error) }
     }
   })
+
+/** One parsed AI execution event for the dev inspector. Secrets-free. */
+export interface DevAiExecution {
+  id: string
+  eventType: string
+  occurredAt: string
+  executionId: string | null
+  agentVersionId: string | null
+  provider: string | null
+  model: string | null
+  latencyMs: number | null
+  attempts: number | null
+  usage: {
+    inputTokens: number | null
+    outputTokens: number | null
+    totalTokens: number | null
+  } | null
+  scopeSource: string | null
+  errorCode: string | null
+}
+
+interface ExecutionPayloadFields {
+  executionId?: unknown
+  agentVersionId?: unknown
+  provider?: unknown
+  model?: unknown
+  latencyMs?: unknown
+  attempts?: unknown
+  usage?: DevAiExecution['usage']
+  scopeSource?: unknown
+  code?: unknown
+}
+
+function parseExecutionPayload(payload: string | null): ExecutionPayloadFields {
+  if (!payload) return {}
+  try {
+    const parsed = JSON.parse(payload)
+    return typeof parsed === 'object' && parsed !== null ? (parsed as ExecutionPayloadFields) : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Recent ai.execution.* events (started/completed/failed). Development-only
+ * execution inspector: traceability without touching production UI.
+ */
+export const getDevAiExecutions = createServerFn({ method: 'GET' }).handler(
+  async (): Promise<DevAiExecution[]> => {
+    if (!import.meta.env.DEV) {
+      throw new Error('Not available.')
+    }
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      return []
+    }
+    const rows = await listRecentEvents(getDb(), workspace.id, 'ai.execution.', 20)
+    return rows.map((row) => {
+      const payload = parseExecutionPayload(row.payload)
+      const str = (v: unknown) => (typeof v === 'string' ? v : null)
+      const num = (v: unknown) => (typeof v === 'number' ? v : null)
+      return {
+        id: row.id,
+        eventType: row.event_type,
+        occurredAt: row.occurred_at,
+        executionId: str(payload.executionId),
+        agentVersionId: str(payload.agentVersionId),
+        provider: str(payload.provider),
+        model: str(payload.model),
+        latencyMs: num(payload.latencyMs),
+        attempts: num(payload.attempts),
+        usage: payload.usage ?? null,
+        scopeSource: str(payload.scopeSource),
+        errorCode: str(payload.code),
+      }
+    })
+  },
+)

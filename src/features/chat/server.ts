@@ -2,6 +2,8 @@ import { createServerFn } from '@tanstack/react-start'
 import { getCookie } from '@tanstack/react-start/server'
 import { z } from 'zod'
 import { ACTIVE_BRAND_COOKIE } from '~/features/workspace/server'
+import { runChiefReply } from '~/server/agents/chief'
+import { resolveAiRuntime } from '~/server/ai/runtime'
 import { getBrandById } from '~/server/db/brand'
 import { getDb } from '~/server/db/client'
 import {
@@ -17,7 +19,12 @@ import {
   restoreConversation,
   touchConversation,
 } from '~/server/db/conversation'
-import { appendUserMessage, listMessages, MAX_MESSAGE_CHARS } from '~/server/db/message'
+import {
+  appendUserMessage,
+  findMessageByClientRequestId,
+  listMessages,
+  MAX_MESSAGE_CHARS,
+} from '~/server/db/message'
 import { getDefaultWorkspace } from '~/server/db/workspace'
 import type { Message } from '~/types/domain'
 
@@ -39,7 +46,8 @@ const renameConversationWire = z.object({
   title: z.string().trim().min(1, 'Give the conversation a name.').max(120),
 })
 // Note: no role/sender field here by design. The client can only ever send
-// user messages; the role is fixed server-side.
+// user messages; the role is fixed server-side. clientRequestId is an
+// idempotency key, not a role/metadata channel.
 const sendMessageWire = z.object({
   conversationId: z.uuid(),
   content: z
@@ -47,6 +55,7 @@ const sendMessageWire = z.object({
     .trim()
     .min(1, 'Write a message first.')
     .max(MAX_MESSAGE_CHARS, `Keep messages under ${MAX_MESSAGE_CHARS} characters.`),
+  clientRequestId: z.uuid().optional(),
 })
 
 export interface ChatSidebarData {
@@ -163,22 +172,60 @@ export const restoreConversationFn = createServerFn({ method: 'POST' })
     await restoreConversation(getDb(), data.id)
   })
 
+export interface SendMessageResult {
+  userMessage: Message
+  /** Chief's reply. Null when AI execution failed (see assistantError). */
+  assistantMessage: Message | null
+  /** User-safe failure text when Chief could not respond. */
+  assistantError: string | null
+  /** True when an idempotent retry returned the already-processed send. */
+  deduplicated: boolean
+}
+
 /**
- * Send a user message. Rejects archived conversations. The first message of
- * an untitled conversation becomes its title.
+ * Send a user message, then run the Workspace Chief: Context Engine → AI
+ * execution → persisted assistant reply. Rejects archived conversations.
+ * The first message of an untitled conversation becomes its title.
+ *
+ * AI failures never throw and never create fake assistant messages: the
+ * user message stays persisted and assistantError carries safe text.
+ * clientRequestId makes retries/double-submits idempotent.
  */
 export const sendMessageFn = createServerFn({ method: 'POST' })
   .validator(sendMessageWire)
-  .handler(async ({ data }): Promise<Message> => {
+  .handler(async ({ data }): Promise<SendMessageResult> => {
     const workspace = await requireWorkspace()
     const conversation = await requireOwnedConversation(data.conversationId, workspace.id)
     if (conversation.deletedAt) {
       throw new Error('This conversation is archived. Restore it to send messages.')
     }
     const db = getDb()
-    const message = await appendUserMessage(db, {
+
+    if (data.clientRequestId) {
+      const existingUser = await findMessageByClientRequestId(
+        db,
+        conversation.id,
+        data.clientRequestId,
+      )
+      if (existingUser && existingUser.senderType === 'user') {
+        const existingAssistant = await findMessageByClientRequestId(
+          db,
+          conversation.id,
+          `${data.clientRequestId}:chief`,
+        )
+        return {
+          userMessage: existingUser,
+          assistantMessage: existingAssistant,
+          assistantError: null,
+          deduplicated: true,
+        }
+      }
+    }
+
+    const userMessage = await appendUserMessage(db, {
       conversationId: conversation.id,
       content: data.content,
+      ...(data.clientRequestId ? { clientRequestId: data.clientRequestId } : {}),
     })
     if (conversation.title === null) {
       await renameConversation(db, {
@@ -188,5 +235,29 @@ export const sendMessageFn = createServerFn({ method: 'POST' })
     } else {
       await touchConversation(db, conversation.id)
     }
-    return message
+
+    const reply = await runChiefReply({
+      db,
+      workspaceId: workspace.id,
+      conversationId: conversation.id,
+      userText: data.content,
+      uiBrandId: getCookie(ACTIVE_BRAND_COOKIE) ?? null,
+      ...(data.clientRequestId ? { clientRequestId: `${data.clientRequestId}:chief` } : {}),
+      deps: resolveAiRuntime().deps,
+    })
+
+    if (!reply.ok) {
+      return {
+        userMessage,
+        assistantMessage: null,
+        assistantError: reply.userMessage,
+        deduplicated: false,
+      }
+    }
+    return {
+      userMessage,
+      assistantMessage: reply.message,
+      assistantError: null,
+      deduplicated: false,
+    }
   })

@@ -151,4 +151,5 @@ Writes are validated with zod schemas colocated in each repository
 (`createMemoryInput`, `createCampaignInput`, …), mirroring the SQL CHECK
 constraints so bad payloads fail with useful errors before touching D1.
 Repositories exist where the app actually reads/writes today (workspace,
-memory, campaign); add more as features land, not before.
+memory, campaign, conversation, message, agent, event, context reads);
+add more as features land, not before.
