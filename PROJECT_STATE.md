@@ -27,13 +27,13 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Accounts | src/features/accounts/ + src/server/db/account.ts | multi-niche via account_niche |
 | Platforms | src/server/db/platform.ts | reference data |
 | Relationship integrity | src/server/db/relations.ts | pure module, cross-brand/archived rules |
-| Conversations/messages | schema only (migration 0002) | chat UI is placeholder; STEP 4 pending |
+| Chat / conversations | src/features/chat/ + src/server/db/conversation.ts, message.ts | real workspace UI; /chat + /chat/:id; brand-scoped via cookie |
 
 ## Legacy / Deprecated
 
 | Item | Replacement | Consumers remaining | Removal status |
 |---|---|---|---|
-| Chat placeholder (FeatureScreen) | real chat workspace (STEP 4) | 1 route | pending |
+| Chat placeholder (FeatureScreen) | real chat workspace (STEP 4) | 0 | done |
 
 ## Architecture Decisions
 
@@ -44,6 +44,9 @@ Shared components: src/components/ui/*, src/components/layout/*
 | message.provider_metadata JSON | provider-agnostic conversation store | STEP 2 |
 | Wire schemas isolated from repository schemas | cloudflare:workers client tree-shaking breakage | STEP 3 gotcha |
 | Cookie-based active brand | survives navigation, no global state system | STEP 3 |
+| Conversation scope via (scope_type, scope_id), no FK | consistent with scoped-reference doctrine; optional brand/product/account/campaign context | STEP 4, migration 0007 |
+| Chat repositories take db as a parameter (structural SqlDatabase) | keeps cloudflare:workers out of the module so repositories run in plain node tests | STEP 4, src/server/db/sql.ts |
+| Client send path fixes sender role server-side | clients cannot fabricate assistant/system messages | STEP 4 |
 
 ## Rejected Approaches
 
@@ -59,11 +62,10 @@ Shared components: src/components/ui/*, src/components/layout/*
 | No auth/multi-user | medium | later step |
 | R2/Workflows/Queues/AI Gateway in architecture only | low | future steps |
 
-## Known Schema Limitations (for STEP 4)
+## Known Schema Limitations
 
 | Issue | Impact | Options |
 |---|---|---|
-| `conversation` has no brand/product/account scope columns | can't associate chat with brand context yet | add nullable scope pair later, or leave general-only |
 | `message` has no status field (pending/streaming/failed) | streaming UX will need one | add when AI execution lands, not before |
 
 ## Temporary Code

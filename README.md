@@ -41,6 +41,8 @@ npm run db:migrate:local   # apply migrations to local D1
 npm run db:migrate:remote  # apply migrations to the real D1 (needs database_id)
 npm run db:seed            # idempotent dev seed
 npm run db:test            # fresh-DB migration + constraint test suite
+npm run test:relations     # relationship-integrity rules
+npm run test:chat          # conversation/message repository suite
 ```
 
 ## Database

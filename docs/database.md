@@ -77,6 +77,9 @@ the business entities.
 Several tables point at "some entity of some type" via
 `(scope_type, scope_id)` or `(subject_type, subject_id)` — goals, memory,
 research, approvals, metric observations, experiment variants, events, audit.
+Conversations carry an optional `(scope_type, scope_id)` too (brand, product,
+account or campaign; both NULL = a general workspace conversation), so chat
+can attach to business context without forcing it.
 
 These are deliberately **not** foreign keys. The alternative — one join
 table or nullable FK column per target type — multiplies tables and forces a

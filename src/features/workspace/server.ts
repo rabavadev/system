@@ -13,7 +13,7 @@ import { getDefaultWorkspace } from '~/server/db/workspace'
  * selections (product, account, campaign) follow the same pattern.
  */
 
-const ACTIVE_BRAND_COOKIE = 'gw_active_brand'
+export const ACTIVE_BRAND_COOKIE = 'gw_active_brand'
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 
 export interface ShellBrand {

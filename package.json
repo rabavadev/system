@@ -19,7 +19,8 @@
     "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
     "db:seed": "wrangler d1 execute DB --local --file=./seed.sql",
     "db:test": "node scripts/test-db.mjs",
-    "test:relations": "node --experimental-strip-types scripts/test-relations.ts"
+    "test:relations": "node --experimental-strip-types scripts/test-relations.ts",
+    "test:chat": "node --experimental-strip-types scripts/test-chat.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",

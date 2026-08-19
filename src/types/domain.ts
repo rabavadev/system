@@ -28,6 +28,9 @@ export type MemoryScopeType =
 
 export type GoalScopeType = 'workspace' | 'brand' | 'product' | 'campaign'
 
+/** Entities a conversation can optionally be about. NULL scope = general. */
+export type ConversationScopeType = 'brand' | 'product' | 'account' | 'campaign'
+
 /* ---- Commercial hierarchy ---- */
 
 export interface Workspace {
@@ -200,6 +203,9 @@ export interface Conversation {
   id: Id
   workspaceId: Id
   title: string | null
+  /** Optional business context. Validated application-side, not an FK. */
+  scopeType: ConversationScopeType | null
+  scopeId: Id | null
   createdAt: IsoTimestamp
   updatedAt: IsoTimestamp
   deletedAt: IsoTimestamp | null
