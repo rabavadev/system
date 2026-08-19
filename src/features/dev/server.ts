@@ -201,3 +201,85 @@ export const getDevAiExecutions = createServerFn({ method: 'GET' }).handler(
     })
   },
 )
+
+/** One parsed tool execution event for the dev inspector. Secrets-free. */
+export interface DevToolExecution {
+  id: string
+  eventType: string
+  occurredAt: string
+  executionId: string | null
+  toolKey: string | null
+  agentVersionId: string | null
+  category: string | null
+  risk: string[]
+  requiredCapability: string | null
+  durationMs: number | null
+  errorCode: string | null
+  argsSummary: Record<string, string | number | boolean | null>
+}
+
+interface ToolPayloadFields {
+  executionId?: unknown
+  toolKey?: unknown
+  agentVersionId?: unknown
+  category?: unknown
+  risk?: unknown
+  requiredCapability?: unknown
+  durationMs?: unknown
+  code?: unknown
+  argsSummary?: unknown
+}
+
+function parseToolPayload(payload: string | null): ToolPayloadFields {
+  if (!payload) return {}
+  try {
+    const parsed = JSON.parse(payload)
+    return typeof parsed === 'object' && parsed !== null ? (parsed as ToolPayloadFields) : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Recent tool.execution.* events (completed/failed). Development-only tool
+ * trace: capability checks, durations and safe argument summaries. Never
+ * includes secrets, raw external payloads or provider credentials.
+ */
+export const getDevToolExecutions = createServerFn({ method: 'GET' }).handler(
+  async (): Promise<DevToolExecution[]> => {
+    if (!import.meta.env.DEV) {
+      throw new Error('Not available.')
+    }
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      return []
+    }
+    const rows = await listRecentEvents(getDb(), workspace.id, 'tool.execution.', 20)
+    return rows.map((row) => {
+      const payload = parseToolPayload(row.payload)
+      const str = (v: unknown) => (typeof v === 'string' ? v : null)
+      const num = (v: unknown) => (typeof v === 'number' ? v : null)
+      return {
+        id: row.id,
+        eventType: row.event_type,
+        occurredAt: row.occurred_at,
+        executionId: str(payload.executionId),
+        toolKey: str(payload.toolKey),
+        agentVersionId: str(payload.agentVersionId),
+        category: str(payload.category),
+        risk: Array.isArray(payload.risk)
+          ? payload.risk.filter((v): v is string => typeof v === 'string')
+          : [],
+        requiredCapability: str(payload.requiredCapability),
+        durationMs: num(payload.durationMs),
+        errorCode: str(payload.code),
+        argsSummary:
+          payload.argsSummary !== null &&
+          typeof payload.argsSummary === 'object' &&
+          !Array.isArray(payload.argsSummary)
+            ? (payload.argsSummary as Record<string, string | number | boolean | null>)
+            : {},
+      }
+    })
+  },
+)

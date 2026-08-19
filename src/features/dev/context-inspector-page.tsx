@@ -5,6 +5,7 @@ import type { ContextPackage } from '~/server/context'
 
 import { AiExecutionsPanel } from './ai-executions-panel'
 import { type DevContextOptions, type DevContextResult, getDevContextPackage } from './server'
+import { ToolExecutionsPanel } from './tool-executions-panel'
 
 /**
  * Development-only Context Inspector. Exists to verify the Context Engine
@@ -79,6 +80,7 @@ export function ContextInspectorPage({ options }: { options: DevContextOptions }
       </div>
 
       <AiExecutionsPanel />
+      <ToolExecutionsPanel />
 
       <div className="grid grid-cols-1 gap-4 rounded-lg border border-zinc-200 bg-white p-4 sm:grid-cols-2">
         <div>

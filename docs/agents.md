@@ -74,10 +74,13 @@ built-ins can be disabled but never archived.
 
 ## Capabilities
 
-Declarative intent only (`read_context`, `read_memory`, `read_research`,
+Declarative intent (`read_context`, `read_memory`, `read_research`,
 `read_analytics`, `create_draft`, `propose_memory`, `request_workflow`,
-`publish`, `modify_account`). There is no Tool Registry yet, so declaring
-`publish` grants nothing. Displayed as friendly labels in the UI.
+`publish`, `modify_account`). Since STEP 9 the Tool Registry enforces them
+server-side: a tool's required capability must be present before its adapter
+can run. Capability still does NOT imply availability or approval —
+`publish` grants nothing while `platform.publish` is unavailable. Displayed
+as friendly labels in the UI.
 
 ## Secrets
 
@@ -120,6 +123,8 @@ context sharing, validation, secret hygiene, honest unavailability).
 
 ## Not built yet (deliberately)
 
-Tool Registry, workflow execution, agent-to-agent orchestration, real
-external-agent calls, intelligent routing, web research, publishing,
-analytics ingestion, structured output persistence (ResearchReport/Draft).
+Workflow execution, agent-to-agent orchestration, real external-agent calls,
+intelligent routing, web research, publishing, analytics ingestion,
+structured output persistence (ResearchReport/Draft). The Tool Registry
+exists (STEP 9, docs/tools.md) but model-driven tool calling is not enabled
+for chat agents yet.

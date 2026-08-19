@@ -245,6 +245,54 @@ export async function getContextConnectionStatus(
   return row ? row.status : null
 }
 
+/* ---- Safe workspace reads shared with the Tool Registry ---- */
+
+export interface ContextProductListRow extends ContextProductRow {
+  brand_workspace_id: string
+  brand_deleted_at: string | null
+}
+
+/** Active products in one workspace, optionally limited to one live brand. */
+export async function listContextProducts(
+  db: SqlDatabase,
+  workspaceId: string,
+  brandId?: string,
+): Promise<ContextProductListRow[]> {
+  return queryAll<ContextProductListRow>(
+    db,
+    `SELECT p.id, p.brand_id, p.niche_id, p.name, p.description, p.url, p.status, p.deleted_at,
+            b.workspace_id AS brand_workspace_id, b.deleted_at AS brand_deleted_at
+     FROM product p JOIN brand b ON b.id = p.brand_id
+     WHERE b.workspace_id = ? AND p.deleted_at IS NULL AND p.status != 'archived'
+       ${brandId ? 'AND p.brand_id = ?' : ''}
+     ORDER BY p.created_at DESC, p.id ASC`,
+    brandId ? [workspaceId, brandId] : [workspaceId],
+  )
+}
+
+export interface ContextAccountListRow extends ContextAccountRow {
+  platform_name: string
+  connection_status: ConnectionStatus | null
+}
+
+/** Active accounts in one workspace with safe platform metadata only. */
+export async function listContextAccounts(
+  db: SqlDatabase,
+  workspaceId: string,
+): Promise<ContextAccountListRow[]> {
+  return queryAll<ContextAccountListRow>(
+    db,
+    `SELECT a.id, a.workspace_id, a.platform_id, a.handle, a.display_name, a.primary_niche_id,
+            a.status, a.deleted_at, p.name AS platform_name, pc.status AS connection_status
+     FROM account a
+     JOIN platform p ON p.id = a.platform_id
+     LEFT JOIN platform_connection pc ON pc.account_id = a.id
+     WHERE a.workspace_id = ? AND a.deleted_at IS NULL AND a.status != 'archived'
+     ORDER BY a.created_at DESC, a.id ASC`,
+    [workspaceId],
+  )
+}
+
 /* ---- Scoped knowledge candidates ---- */
 
 /** A scope pair for memory/research/goal retrieval. Null id = workspace-wide. */

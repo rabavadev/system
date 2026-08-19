@@ -24,7 +24,8 @@
     "test:context": "node --experimental-strip-types scripts/test-context.ts",
     "test:ai": "node --experimental-strip-types scripts/test-ai.ts",
     "test:memory": "node --experimental-strip-types scripts/test-memory.ts",
-    "test:agents": "node --experimental-strip-types scripts/test-agents.ts"
+    "test:agents": "node --experimental-strip-types scripts/test-agents.ts",
+    "test:tools": "node --experimental-strip-types scripts/test-tools.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",

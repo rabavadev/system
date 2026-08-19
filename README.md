@@ -47,6 +47,7 @@ npm run test:context        # Context Engine suite (scope, ranking, trace, safet
 npm run test:ai             # AI execution + Workspace Chief suite
 npm run test:memory         # Memory lifecycle, scope safety, filtering + context compatibility
 npm run test:agents         # Agent registry: roster, versioning, chat switching, safety
+npm run test:tools          # Tool Registry: execution boundary, capability enforcement, safe reads
 ```
 
 ## AI / Agents
@@ -65,7 +66,8 @@ adapter contract, failure/timeout/retry policy and traceability:
 
 See [docs/context-engine.md](docs/context-engine.md) for the central Context
 Engine (STEP 5). See [docs/memory.md](docs/memory.md) for explicit Memory
-behavior (STEP 7). See [docs/database.md](docs/database.md) for the schema,
+behavior (STEP 7). See [docs/tools.md](docs/tools.md) for the Tool Registry
+and capability enforcement boundary (STEP 9). See [docs/database.md](docs/database.md) for the schema,
 relationships, scoping/versioning/deletion doctrine, and secrets policy. All
 schema changes are migrations in `migrations/`; never edit the database by hand.
 
