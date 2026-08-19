@@ -32,6 +32,10 @@
     }
   ]
 
-  // Future bindings (not active yet): R2 buckets, Workflows, Queues,
-  // AI Gateway. Add them here when activated and run `npm run cf-typegen`.
+  // Future bindings (not active yet): R2 buckets, Queues, AI Gateway.
+  // Cloudflare Workflows (durable workflow runtime, STEP 10 §33): add a
+  // `workflows` binding here and implement a WorkflowRuntime that wraps
+  // driveRun in a Workflow entrypoint (src/server/workflows/runtime.ts).
+  // Until then the inline runtime drives runs; semantics are identical.
+  // Add bindings here when activated and run `npm run cf-typegen`.
 }

@@ -602,6 +602,11 @@ async function loadExplicitEntities(
       description: row.description,
       deletedAt: row.deleted_at,
     }
+    // Niches carry no workspace_id; the owning brand defines the boundary.
+    const nicheBrand = await getContextBrand(db, row.brand_id)
+    if (nicheBrand) {
+      assertEntityWorkspace(nicheBrand.workspace_id, workspaceId, 'niche', niche.id)
+    }
     if (isNicheArchived(niche)) throw archivedError(trace, 'niche', niche.id, niche.name)
   }
 
@@ -618,6 +623,11 @@ async function loadExplicitEntities(
       url: row.url,
       status: row.status,
       deletedAt: row.deleted_at,
+    }
+    // Products carry no workspace_id; the owning brand defines the boundary.
+    const productBrand = await getContextBrand(db, row.brand_id)
+    if (productBrand) {
+      assertEntityWorkspace(productBrand.workspace_id, workspaceId, 'product', product.id)
     }
     if (isProductArchived(product)) throw archivedError(trace, 'product', product.id, product.name)
   }

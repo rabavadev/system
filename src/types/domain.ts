@@ -167,7 +167,22 @@ export interface AgentVersion {
 }
 
 export type WorkflowStatus = 'draft' | 'active' | 'disabled' | 'archived'
-export type WorkflowRunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+export type WorkflowRunStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+export type WorkflowStepType = 'agent' | 'tool' | 'condition' | 'end'
+export type WorkflowStepRunStatus =
+  | 'queued'
+  | 'running'
+  | 'waiting'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled'
+  | 'skipped'
 
 export interface Workflow {
   id: Id
@@ -186,6 +201,8 @@ export interface WorkflowVersion {
   workflowId: Id
   version: number
   definitionJson: string
+  /** Short human note about why this version exists. Display only. */
+  changeNote: string | null
   createdAt: IsoTimestamp
 }
 
@@ -198,10 +215,37 @@ export interface WorkflowRun {
   inputJson: string | null
   outputJson: string | null
   error: string | null
+  /** Safe ContextPackage snapshot from run start. Never secrets. */
+  contextJson: string | null
+  /** Resolved run plan: frozen agent versions, limits, entry step. */
+  planJson: string | null
+  /** Resumable engine state: next step, visit counts, counters. */
+  stateJson: string | null
   startedAt: IsoTimestamp | null
   finishedAt: IsoTimestamp | null
   createdAt: IsoTimestamp
   updatedAt: IsoTimestamp
+}
+
+export interface WorkflowStepRun {
+  id: Id
+  workflowRunId: Id
+  stepKey: string
+  stepType: WorkflowStepType
+  status: WorkflowStepRunStatus
+  attempt: number
+  /** Exact agent version that executed an agent/tool step. */
+  agentVersionId: Id | null
+  /** Tool Registry execution id for tool steps. */
+  toolExecutionId: Id | null
+  inputJson: string | null
+  outputJson: string | null
+  error: string | null
+  /** JSON: condition evaluation / chosen branch / next step. */
+  decisionJson: string | null
+  startedAt: IsoTimestamp | null
+  finishedAt: IsoTimestamp | null
+  createdAt: IsoTimestamp
 }
 
 /* ---- Conversations ---- */
