@@ -11,7 +11,7 @@ Navigation: src/components/layout/nav-items.ts + topbar.tsx (shows active brand)
 Auth: none yet — single seeded workspace
 Current user: n/a; active brand via cookie (src/features/workspace/server.ts)
 API client: per-feature server functions (src/features/*/server.ts)
-Schema: migrations/0001–0006 + docs/database.md
+Schema: migrations/0001–0007 + docs/database.md
 Design system: Tailwind v4 + src/components/ui/
 Shared components: src/components/ui/*, src/components/layout/*
 ```
@@ -28,6 +28,7 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Platforms | src/server/db/platform.ts | reference data |
 | Relationship integrity | src/server/db/relations.ts | pure module, cross-brand/archived rules |
 | Chat / conversations | src/features/chat/ + src/server/db/conversation.ts, message.ts | real workspace UI; /chat + /chat/:id; brand-scoped via cookie |
+| Context Engine | src/server/context/ + src/server/db/context.ts | central buildContext(request); precedence explicit>conversation>ui>workspace; /dev-context inspector (dev only) |
 
 ## Legacy / Deprecated
 
@@ -47,6 +48,9 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Conversation scope via (scope_type, scope_id), no FK | consistent with scoped-reference doctrine; optional brand/product/account/campaign context | STEP 4, migration 0007 |
 | Chat repositories take db as a parameter (structural SqlDatabase) | keeps cloudflare:workers out of the module so repositories run in plain node tests | STEP 4, src/server/db/sql.ts |
 | Client send path fixes sender role server-side | clients cannot fabricate assistant/system messages | STEP 4 |
+| One central Context Engine, provider-neutral | every future AI execution shares one context source; no per-agent context logic | STEP 5, docs/context-engine.md |
+| Context repository is db-first (structural SqlDatabase) | whole context pipeline testable in plain node; no cloudflare:workers import | STEP 5, src/server/db/context.ts |
+| Knowledge eligibility filtered in SQL, ranked in pure code | dead rows cannot starve the bounded candidate pool; trace samples explain exclusions | STEP 5 |
 
 ## Rejected Approaches
 

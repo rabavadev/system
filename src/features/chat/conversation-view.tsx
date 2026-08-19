@@ -160,7 +160,6 @@ function RenameDialog({ conversationId, currentTitle, onClose }: RenameDialogPro
             value={title}
             onChange={(event) => setTitle(event.target.value)}
             maxLength={120}
-            autoFocus
           />
         </Field>
         <FormError message={error} />

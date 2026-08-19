@@ -66,6 +66,27 @@ export async function listMessages(db: SqlDatabase, conversationId: string): Pro
 }
 
 /**
+ * The most recent `limit` messages, returned in chronological order
+ * (oldest first). Ordering is explicit on (created_at, rowid) both ways —
+ * never accidental database order. Used by the Context Engine.
+ */
+export async function listRecentMessages(
+  db: SqlDatabase,
+  conversationId: string,
+  limit: number,
+): Promise<Message[]> {
+  const rows = await queryAll<MessageRow>(
+    db,
+    `SELECT * FROM (
+       SELECT m.*, m.rowid AS _seq FROM message m WHERE m.conversation_id = ?
+       ORDER BY m.created_at DESC, _seq DESC LIMIT ?
+     ) ORDER BY created_at ASC, _seq ASC`,
+    [conversationId, limit],
+  )
+  return rows.map(toMessage)
+}
+
+/**
  * Trusted append path (server-side only). Accepts any schema-valid role;
  * future AI execution writes 'agent'/'system' messages through here.
  */

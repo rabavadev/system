@@ -43,11 +43,13 @@ npm run db:seed            # idempotent dev seed
 npm run db:test            # fresh-DB migration + constraint test suite
 npm run test:relations     # relationship-integrity rules
 npm run test:chat          # conversation/message repository suite
+npm run test:context        # Context Engine suite (scope, ranking, trace, safety)
 ```
 
 ## Database
 
-See [docs/database.md](docs/database.md) for the schema, relationships,
+See [docs/context-engine.md](docs/context-engine.md) for the central Context
+Engine (STEP 5). See [docs/database.md](docs/database.md) for the schema, relationships,
 scoping/versioning/deletion doctrine, and secrets policy. All schema changes
 are migrations in `migrations/`; never edit the database by hand.
 
