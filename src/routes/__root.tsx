@@ -4,11 +4,11 @@ import { AppShell } from '~/components/layout/app-shell'
 import { ErrorState } from '~/components/ui/error-state'
 import { Loading } from '~/components/ui/loading'
 import { NotFound } from '~/components/ui/not-found'
-import { getWorkspaceSummary } from '~/features/workspace/server'
+import { getShellData } from '~/features/workspace/server'
 import appCss from '~/styles.css?url'
 
 export const Route = createRootRoute({
-  loader: () => getWorkspaceSummary(),
+  loader: () => getShellData(),
   head: () => ({
     meta: [
       { charSet: 'utf-8' },
@@ -40,14 +40,14 @@ export const Route = createRootRoute({
 })
 
 function RootComponent() {
-  const workspace = Route.useLoaderData()
+  const shell = Route.useLoaderData()
   return (
     <html lang="en">
       <head>
         <HeadContent />
       </head>
       <body>
-        <AppShell workspaceName={workspace?.name ?? null}>
+        <AppShell shell={shell}>
           <Outlet />
         </AppShell>
         <Scripts />

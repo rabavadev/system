@@ -320,3 +320,144 @@ test('seed applies cleanly and is idempotent', () => {
   assert.equal(metrics.n, 7)
   db.close()
 })
+
+test('hard-deleting a niche nulls account.primary_niche_id (SET NULL)', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const ws = id()
+  const platformId = id()
+  const brandId = id()
+  const nicheId = id()
+  const accountId = id()
+
+  db.prepare(`INSERT INTO workspace (id, name, created_at, updated_at) VALUES (?, 'ws', ?, ?)`).run(
+    ws,
+    NOW,
+    NOW,
+  )
+  db.prepare(
+    `INSERT INTO platform (id, adapter_key, name, created_at) VALUES (?, 'p', 'P', ?)`,
+  ).run(platformId, NOW)
+  db.prepare(
+    `INSERT INTO brand (id, workspace_id, name, created_at, updated_at) VALUES (?, ?, 'b', ?, ?)`,
+  ).run(brandId, ws, NOW, NOW)
+  db.prepare(
+    `INSERT INTO niche (id, brand_id, name, created_at, updated_at) VALUES (?, ?, 'n', ?, ?)`,
+  ).run(nicheId, brandId, NOW, NOW)
+  db.prepare(
+    `INSERT INTO account (id, workspace_id, platform_id, handle, primary_niche_id, created_at, updated_at)
+     VALUES (?, ?, ?, '@h', ?, ?, ?)`,
+  ).run(accountId, ws, platformId, nicheId, NOW, NOW)
+
+  // product referencing the niche RESTRICTs hard deletion
+  db.prepare(
+    `INSERT INTO product (id, brand_id, niche_id, name, created_at, updated_at) VALUES (?, ?, ?, 'pr', ?, ?)`,
+  ).run(id(), brandId, nicheId, NOW, NOW)
+  assert.throws(() => db.prepare(`DELETE FROM niche WHERE id = ?`).run(nicheId), /FOREIGN KEY/i)
+
+  // without the product, hard deletion succeeds and the primary niche is nulled
+  db.prepare(`DELETE FROM product WHERE niche_id = ?`).run(nicheId)
+  db.prepare(`DELETE FROM niche WHERE id = ?`).run(nicheId)
+  const account = db.prepare(`SELECT primary_niche_id FROM account WHERE id = ?`).get(accountId)
+  assert.equal(account.primary_niche_id, null, 'primary niche must be SET NULL on niche delete')
+  db.close()
+})
+
+test('account handle is unique per platform, not globally', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const ws = id()
+  const p1 = id()
+  const p2 = id()
+  db.prepare(`INSERT INTO workspace (id, name, created_at, updated_at) VALUES (?, 'ws', ?, ?)`).run(
+    ws,
+    NOW,
+    NOW,
+  )
+  db.prepare(
+    `INSERT INTO platform (id, adapter_key, name, created_at) VALUES (?, 'p1', 'P1', ?)`,
+  ).run(p1, NOW)
+  db.prepare(
+    `INSERT INTO platform (id, adapter_key, name, created_at) VALUES (?, 'p2', 'P2', ?)`,
+  ).run(p2, NOW)
+
+  const insert = db.prepare(
+    `INSERT INTO account (id, workspace_id, platform_id, handle, created_at, updated_at) VALUES (?, ?, ?, '@same', ?, ?)`,
+  )
+  insert.run(id(), ws, p1, NOW, NOW)
+  assert.throws(
+    () => insert.run(id(), ws, p1, NOW, NOW),
+    /UNIQUE/i,
+    'same handle on the same platform must fail',
+  )
+  insert.run(id(), ws, p2, NOW, NOW) // same handle on another platform is fine
+  db.close()
+})
+
+test('account_niche rejects duplicate pairs', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const ws = id()
+  const platformId = id()
+  const brandId = id()
+  const nicheId = id()
+  const accountId = id()
+
+  db.prepare(`INSERT INTO workspace (id, name, created_at, updated_at) VALUES (?, 'ws', ?, ?)`).run(
+    ws,
+    NOW,
+    NOW,
+  )
+  db.prepare(
+    `INSERT INTO platform (id, adapter_key, name, created_at) VALUES (?, 'p', 'P', ?)`,
+  ).run(platformId, NOW)
+  db.prepare(
+    `INSERT INTO brand (id, workspace_id, name, created_at, updated_at) VALUES (?, ?, 'b', ?, ?)`,
+  ).run(brandId, ws, NOW, NOW)
+  db.prepare(
+    `INSERT INTO niche (id, brand_id, name, created_at, updated_at) VALUES (?, ?, 'n', ?, ?)`,
+  ).run(nicheId, brandId, NOW, NOW)
+  db.prepare(
+    `INSERT INTO account (id, workspace_id, platform_id, handle, created_at, updated_at) VALUES (?, ?, ?, '@h', ?, ?)`,
+  ).run(accountId, ws, platformId, NOW, NOW)
+
+  const link = db.prepare(
+    `INSERT INTO account_niche (account_id, niche_id, created_at) VALUES (?, ?, ?)`,
+  )
+  link.run(accountId, nicheId, NOW)
+  assert.throws(
+    () => link.run(accountId, nicheId, NOW),
+    /UNIQUE|PRIMARY/i,
+    'duplicate account_niche pair must fail',
+  )
+  db.close()
+})
+
+test('product status transitions archive without touching the row history', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const ws = id()
+  const brandId = id()
+  db.prepare(`INSERT INTO workspace (id, name, created_at, updated_at) VALUES (?, 'ws', ?, ?)`).run(
+    ws,
+    NOW,
+    NOW,
+  )
+  db.prepare(
+    `INSERT INTO brand (id, workspace_id, name, created_at, updated_at) VALUES (?, ?, 'b', ?, ?)`,
+  ).run(brandId, ws, NOW, NOW)
+
+  const productId = id()
+  db.prepare(
+    `INSERT INTO product (id, brand_id, name, status, created_at, updated_at) VALUES (?, ?, 'p', 'draft', ?, ?)`,
+  ).run(productId, brandId, NOW, NOW)
+  db.prepare(`UPDATE product SET status = 'archived' WHERE id = ?`).run(productId)
+  const row = db.prepare(`SELECT status, deleted_at FROM product WHERE id = ?`).get(productId)
+  assert.equal(row.status, 'archived')
+  assert.equal(row.deleted_at, null, 'archiving a product is a status change, not a soft delete')
+  db.close()
+})

@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Package,
   Settings,
+  Tag,
   Workflow,
 } from 'lucide-react'
 
@@ -22,6 +23,7 @@ export interface NavItem {
 
 export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { to: '/', label: 'Home', icon: Home },
+  { to: '/brands', label: 'Brands', icon: Tag },
   { to: '/chat', label: 'Chat', icon: MessageSquare },
   { to: '/products', label: 'Products', icon: Package },
   { to: '/accounts', label: 'Accounts', icon: AtSign },
