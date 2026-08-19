@@ -91,6 +91,12 @@ Every scoped column pair is indexed.
 ## Versioning
 
 - `agent` / `workflow` are mutable shells holding `current_version_id`.
+  The agent shell also carries identity metadata that does not change how
+  the agent runs: `origin` (`builtin` | `custom`; built-ins can be disabled
+  but never archived) and `description` (purpose). `agent_version` carries
+  `change_note` (display-only). Everything execution-relevant (instructions,
+  model strategy, capabilities, external/router config) lives in the
+  versioned config JSON — see docs/agents.md.
 - `agent_version` / `workflow_version` are immutable snapshots
   (`UNIQUE(parent, version)`; no `updated_at`). A version referenced by a run
   must never be edited — the repository layer rejects updates to versions

@@ -1,6 +1,6 @@
-import { useNavigate, useRouter } from '@tanstack/react-router'
+import { useNavigate, useRouter, useSearch } from '@tanstack/react-router'
 import { Archive, ArchiveRestore, MessageSquare, Pencil } from 'lucide-react'
-import { useEffect, useRef, useState, useTransition } from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
@@ -11,6 +11,7 @@ import { MemoryEditorDialog } from '~/features/memory/memory-editor'
 import { getMemoryScopeOptions, type MemoryScopeOptions } from '~/features/memory/server'
 import type { Message } from '~/types/domain'
 
+import { AgentSelector, resolveSelectedAgent } from './agent-selector'
 import { Composer } from './composer'
 import { MessageList } from './message-list'
 import type { ConversationPageData } from './server'
@@ -21,9 +22,27 @@ interface ConversationViewProps {
 }
 
 export function ConversationView({ data }: ConversationViewProps) {
-  const { conversation, messages } = data
+  const { conversation, messages, agents } = data
   const router = useRouter()
   const navigate = useNavigate()
+  const search = useSearch({ strict: false }) as { agent?: string }
+  // Agent selection is per-send, not per-conversation: the user can switch
+  // agents mid-thread and every reply records who actually answered.
+  const selectedAgent = useMemo(
+    () => resolveSelectedAgent(agents, search.agent),
+    [agents, search.agent],
+  )
+  const agentNames = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents])
+
+  function selectAgent(agentId: string) {
+    const chief = agents.find((agent) => agent.name === 'Chief' && agent.origin === 'builtin')
+    navigate({
+      to: '.',
+      // Chief is the default; keep the URL clean for it.
+      search: chief && agentId === chief.id ? {} : { agent: agentId },
+      replace: true,
+    })
+  }
   const [showRename, setShowRename] = useState(false)
   const [saveMessage, setSaveMessage] = useState<Message | null>(null)
   const [memoryOptions, setMemoryOptions] = useState<MemoryScopeOptions | null>(null)
@@ -67,8 +86,15 @@ export function ConversationView({ data }: ConversationViewProps) {
           {conversation.title ?? 'Untitled conversation'}
         </h1>
         {conversation.scopeName && <Badge tone="neutral">{conversation.scopeName}</Badge>}
-        <Badge tone="muted">Chief</Badge>
         {isArchived && <Badge tone="muted">Archived</Badge>}
+        {selectedAgent && (
+          <AgentSelector
+            agents={agents}
+            selectedId={selectedAgent.id}
+            onChange={selectAgent}
+            disabled={isArchived}
+          />
+        )}
         <div className="ml-auto flex items-center gap-1">
           {isArchived ? (
             <Button variant="secondary" onClick={restore} disabled={pending}>
@@ -105,13 +131,15 @@ export function ConversationView({ data }: ConversationViewProps) {
             </div>
             <h2 className="text-sm font-medium text-zinc-900">No messages yet</h2>
             <p className="text-sm text-zinc-500">
-              Write the first message below. Chief answers with the context of this conversation.
+              Write the first message below. {selectedAgent?.name ?? 'Chief'} answers with the
+              context of this conversation.
             </p>
           </div>
         </div>
       ) : (
         <MessageList
           messages={messages}
+          agentNames={agentNames}
           savedMessageIds={savedMessageIds}
           onSaveToMemory={openSaveToMemory}
         />
@@ -122,7 +150,11 @@ export function ConversationView({ data }: ConversationViewProps) {
           This conversation is archived. Restore it to send messages.
         </div>
       ) : (
-        <Composer conversationId={conversation.id} />
+        <Composer
+          conversationId={conversation.id}
+          agentId={selectedAgent?.id ?? null}
+          agentName={selectedAgent?.name ?? 'Chief'}
+        />
       )}
 
       {showRename && (

@@ -4,7 +4,7 @@ The single provider-neutral path from the application to any model:
 
 ```
 feature code (e.g. Chat)
-  → agent runtime (src/server/agents/chief.ts)
+  → agent runtime (src/server/agents/reply.ts — generic since STEP 8)
   → Context Engine (src/server/context)      ← context ONLY from here
   → composer (src/server/ai/composer.ts)     ← ContextPackage → OUR messages
   → executeAI (src/server/ai/executor.ts)    ← timeout, retry, normalization
@@ -83,15 +83,26 @@ an account, use `AI_PROVIDER=echo`. First real call checklist:
 `wrangler login` → send a chat message → confirm `ai.execution.completed`
 on `/dev-context`.
 
+## The agent runtime (STEP 8)
+
+`src/server/agents/reply.ts` runs ONE direct-chat turn for any registry
+agent: resolve agent (server-authoritative) → current immutable version →
+Context Engine → composer → `executeAI` → persisted assistant message with
+agent id + version + safe trace. `external_agent` and `router` agents fail
+controlled ("not connected/enabled yet") — never faked.
+
 ## The Workspace Chief
 
-Built-in agent (`src/server/agents/chief.ts`): stable lookup by
-name/role per workspace, created on first use, instructions versioned
-through `agent_version` — shipping changed instructions rotates the
-version, so every assistant message's `agent_version_id` still points at
-the exact configuration that produced it. Chief has **no tools, no
-workflows, no autonomy**: it reads context, reasons, recommends, replies,
-and says so when asked to do something execution is not enabled for.
+Chief is the default built-in agent (`src/server/agents/chief.ts`, a thin
+wrapper over the generic runtime): stable lookup by name/role per
+workspace, created on first use, instructions versioned through
+`agent_version` — shipping changed instructions rotates the version, so
+every assistant message's `agent_version_id` still points at the exact
+configuration that produced it. Chief has **no tools, no workflows, no
+autonomy**: it reads context, reasons, recommends, replies, and says so
+when asked to do something execution is not enabled for. The specialist
+agents (Researcher, Strategist, Creator, Critic, Analytics, Publisher) use
+the same machinery; see docs/agents.md.
 
 Per send: user message persists → `buildContext` (conversation id + UI
 selection; STEP 5 precedence unchanged) → composer renders the structured

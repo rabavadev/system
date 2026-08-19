@@ -137,12 +137,17 @@ export interface Goal {
 
 export type AgentExecutionType = 'direct_model' | 'external_agent' | 'router'
 export type AgentStatus = 'active' | 'disabled' | 'archived'
+/** 'builtin' identities are shipped by the app and protected from deletion. */
+export type AgentOrigin = 'builtin' | 'custom'
 
 export interface Agent {
   id: Id
   workspaceId: Id
   name: string
   role: string | null
+  /** Identity-level purpose shown in the registry. */
+  description: string | null
+  origin: AgentOrigin
   executionType: AgentExecutionType
   status: AgentStatus
   currentVersionId: Id | null
@@ -156,6 +161,8 @@ export interface AgentVersion {
   agentId: Id
   version: number
   configJson: string
+  /** Short human note about why this version exists. Display only. */
+  changeNote: string | null
   createdAt: IsoTimestamp
 }
 

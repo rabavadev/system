@@ -931,8 +931,10 @@ test('35. no secrets or secret references enter the package or trace', async () 
 test('36. the package carries no provider-specific shapes', async () => {
   const pkg = await build({ conversationId: CONV_GEN })
   for (const message of pkg.recentMessages) {
+    // STEP 8 added agentName (display label); still no provider shapes.
     assert.deepEqual(Object.keys(message).sort(), [
       'agentId',
+      'agentName',
       'content',
       'createdAt',
       'id',

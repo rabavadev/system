@@ -9,7 +9,7 @@ import { Markdown } from './markdown'
 
 const ROLE_LABEL: Record<MessageSenderType, string> = {
   user: 'You',
-  agent: 'Chief',
+  agent: 'Assistant',
   system: 'System',
 }
 
@@ -24,11 +24,18 @@ const dateTimeFormat = new Intl.DateTimeFormat(undefined, {
 
 interface MessageListProps {
   messages: Message[]
+  /** Agent id → display name, so each reply shows WHO answered. */
+  agentNames?: Map<string, string>
   savedMessageIds?: Set<string>
   onSaveToMemory?: (message: Message) => void
 }
 
-export function MessageList({ messages, savedMessageIds, onSaveToMemory }: MessageListProps) {
+export function MessageList({
+  messages,
+  agentNames,
+  savedMessageIds,
+  onSaveToMemory,
+}: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll when new messages arrive
@@ -48,7 +55,9 @@ export function MessageList({ messages, savedMessageIds, onSaveToMemory }: Messa
                   message.senderType === 'user' ? 'text-zinc-900' : 'text-zinc-500',
                 )}
               >
-                {ROLE_LABEL[message.senderType]}
+                {message.senderType === 'agent' && message.agentId
+                  ? (agentNames?.get(message.agentId) ?? ROLE_LABEL.agent)
+                  : ROLE_LABEL[message.senderType]}
               </span>
               <time dateTime={message.createdAt} className="text-[11px] text-zinc-400">
                 {dateTimeFormat.format(new Date(message.createdAt))}

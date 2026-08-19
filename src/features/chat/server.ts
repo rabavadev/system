@@ -2,8 +2,9 @@ import { createServerFn } from '@tanstack/react-start'
 import { getCookie } from '@tanstack/react-start/server'
 import { z } from 'zod'
 import { ACTIVE_BRAND_COOKIE } from '~/features/workspace/server'
-import { runChiefReply } from '~/server/agents/chief'
+import { runAgentReply } from '~/server/agents/reply'
 import { resolveAiRuntime } from '~/server/ai/runtime'
+import { listAgents } from '~/server/db/agent'
 import { getBrandById } from '~/server/db/brand'
 import { getDb } from '~/server/db/client'
 import {
@@ -25,6 +26,7 @@ import {
   listMessages,
   MAX_MESSAGE_CHARS,
 } from '~/server/db/message'
+import type { SqlDatabase } from '~/server/db/sql'
 import { getDefaultWorkspace } from '~/server/db/workspace'
 import type { Message } from '~/types/domain'
 
@@ -47,9 +49,11 @@ const renameConversationWire = z.object({
 })
 // Note: no role/sender field here by design. The client can only ever send
 // user messages; the role is fixed server-side. clientRequestId is an
-// idempotency key, not a role/metadata channel.
+// idempotency key, not a role/metadata channel. agentId selects WHO answers;
+// instructions/config are resolved server-side and can never be injected.
 const sendMessageWire = z.object({
   conversationId: z.uuid(),
+  agentId: z.uuid().optional(),
   content: z
     .string()
     .trim()
@@ -63,9 +67,38 @@ export interface ChatSidebarData {
   archivedConversations: ConversationSummary[]
 }
 
+/** An agent as the Chat UI needs it: identity + whether it can run now. */
+export interface ChatAgentOption {
+  id: string
+  name: string
+  status: 'active' | 'disabled' | 'archived'
+  origin: 'builtin' | 'custom'
+  executionType: 'direct_model' | 'external_agent' | 'router'
+  /** True when the agent can be picked for a new execution right now. */
+  selectable: boolean
+}
+
 export interface ConversationPageData {
   conversation: ConversationSummary
   messages: Message[]
+  /** Live agents, for the selector and per-message author labels. */
+  agents: ChatAgentOption[]
+}
+
+/** Registry agents reduced to what Chat needs. Never exposes config. */
+export async function listChatAgents(
+  db: SqlDatabase,
+  workspaceId: string,
+): Promise<ChatAgentOption[]> {
+  const agents = await listAgents(db, workspaceId)
+  return agents.map((agent) => ({
+    id: agent.id,
+    name: agent.name,
+    status: agent.status,
+    origin: agent.origin,
+    executionType: agent.executionType,
+    selectable: agent.status === 'active' && agent.executionType === 'direct_model',
+  }))
 }
 
 async function requireWorkspace() {
@@ -114,7 +147,8 @@ export const getConversationPageData = createServerFn({ method: 'GET' })
       return null
     }
     const messages = await listMessages(db, conversation.id)
-    return { conversation, messages }
+    const agents = await listChatAgents(db, workspace.id)
+    return { conversation, messages, agents }
   })
 
 /**
@@ -174,17 +208,18 @@ export const restoreConversationFn = createServerFn({ method: 'POST' })
 
 export interface SendMessageResult {
   userMessage: Message
-  /** Chief's reply. Null when AI execution failed (see assistantError). */
+  /** The selected agent's reply. Null when execution failed (assistantError). */
   assistantMessage: Message | null
-  /** User-safe failure text when Chief could not respond. */
+  /** User-safe failure text when the agent could not respond. */
   assistantError: string | null
   /** True when an idempotent retry returned the already-processed send. */
   deduplicated: boolean
 }
 
 /**
- * Send a user message, then run the Workspace Chief: Context Engine → AI
- * execution → persisted assistant reply. Rejects archived conversations.
+ * Send a user message, then run the selected registry agent (default: the
+ * Workspace Chief): Context Engine → AI execution → persisted assistant
+ * reply. Rejects archived conversations.
  * The first message of an untitled conversation becomes its title.
  *
  * AI failures never throw and never create fake assistant messages: the
@@ -211,7 +246,7 @@ export const sendMessageFn = createServerFn({ method: 'POST' })
         const existingAssistant = await findMessageByClientRequestId(
           db,
           conversation.id,
-          `${data.clientRequestId}:chief`,
+          `${data.clientRequestId}:reply`,
         )
         return {
           userMessage: existingUser,
@@ -236,13 +271,14 @@ export const sendMessageFn = createServerFn({ method: 'POST' })
       await touchConversation(db, conversation.id)
     }
 
-    const reply = await runChiefReply({
+    const reply = await runAgentReply({
       db,
       workspaceId: workspace.id,
       conversationId: conversation.id,
+      ...(data.agentId ? { agentId: data.agentId } : {}),
       userText: data.content,
       uiBrandId: getCookie(ACTIVE_BRAND_COOKIE) ?? null,
-      ...(data.clientRequestId ? { clientRequestId: `${data.clientRequestId}:chief` } : {}),
+      ...(data.clientRequestId ? { clientRequestId: `${data.clientRequestId}:reply` } : {}),
       deps: resolveAiRuntime().deps,
     })
 

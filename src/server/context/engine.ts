@@ -3,6 +3,7 @@ import type { AgentExecutionType, ConversationScopeType } from '~/types/domain'
 import {
   getContextAccount,
   getContextAgent,
+  getContextAgentNames,
   getContextBrand,
   getContextCampaign,
   getContextConnectionStatus,
@@ -345,10 +346,17 @@ export async function buildContext(
   let recentMessages: ContextMessage[] = []
   if (conversation) {
     const rows = await listRecentMessages(db, conversation.id, limits.recentMessages)
+    // Resolve authoring agent names so the transcript labels WHO answered
+    // (Chief, Critic, ...) instead of flattening every reply to one label.
+    const agentNames = await getContextAgentNames(
+      db,
+      rows.map((m) => m.agentId).filter((id): id is string => id !== null),
+    )
     recentMessages = rows.map((m) => ({
       id: m.id,
       senderType: m.senderType,
       agentId: m.agentId,
+      agentName: m.agentId ? (agentNames.get(m.agentId) ?? null) : null,
       content: m.content,
       createdAt: m.createdAt,
     }))

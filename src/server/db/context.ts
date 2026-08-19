@@ -192,6 +192,28 @@ export async function getContextAgent(
   )
 }
 
+/** Display names for a set of agent ids (recent-conversation labeling). */
+export async function getContextAgentNames(
+  db: SqlDatabase,
+  ids: string[],
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>()
+  const unique = [...new Set(ids)]
+  if (unique.length === 0) {
+    return names
+  }
+  const placeholders = unique.map(() => '?').join(', ')
+  const rows = await queryAll<{ id: string; name: string }>(
+    db,
+    `SELECT id, name FROM agent WHERE id IN (${placeholders})`,
+    unique,
+  )
+  for (const row of rows) {
+    names.set(row.id, row.name)
+  }
+  return names
+}
+
 /** All niches associated with an account (including archived link targets). */
 export async function listContextAccountNiches(
   db: SqlDatabase,

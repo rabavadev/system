@@ -46,12 +46,17 @@ npm run test:chat          # conversation/message repository suite
 npm run test:context        # Context Engine suite (scope, ranking, trace, safety)
 npm run test:ai             # AI execution + Workspace Chief suite
 npm run test:memory         # Memory lifecycle, scope safety, filtering + context compatibility
+npm run test:agents         # Agent registry: roster, versioning, chat switching, safety
 ```
 
-## AI / Chief
+## AI / Agents
 
-Chat is answered by **Chief**, the built-in workspace AI. All model access
-goes through the provider-neutral execution layer in `src/server/ai`
+Chat is answered by the workspace's **agents**: Chief by default, plus the
+built-in specialists (Researcher, Strategist, Creator, Critic, Analytics —
+Publisher exists but stays disabled until publishing tools exist). The user
+can switch agents mid-conversation; every reply records the exact agent
+version that produced it. See [docs/agents.md](docs/agents.md). All model
+access goes through the provider-neutral execution layer in `src/server/ai`
 (Workers AI binding by default, optionally via AI Gateway). Setup,
 adapter contract, failure/timeout/retry policy and traceability:
 [docs/ai-execution.md](docs/ai-execution.md).

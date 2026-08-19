@@ -141,7 +141,12 @@ export function renderContextDocument(pkg: ContextPackage): string {
 
   if (pkg.recentMessages.length > 0) {
     const lines = pkg.recentMessages.map((m) => {
-      const who = m.senderType === 'user' ? 'User' : m.senderType === 'agent' ? 'Chief' : 'System'
+      const who =
+        m.senderType === 'user'
+          ? 'User'
+          : m.senderType === 'agent'
+            ? (m.agentName ?? 'Assistant')
+            : 'System'
       return `${who}: ${m.content}`
     })
     sections.push(`# Recent conversation\n${lines.join('\n')}`)
@@ -157,9 +162,9 @@ export function renderContextDocument(pkg: ContextPackage): string {
 /**
  * Compose the provider-neutral message list for an agent execution.
  * `instructions` come from the agent's versioned config (never a loose
- * constant scattered through feature code).
+ * constant scattered through feature code, never from the client).
  */
-export function composeChiefPrompt(instructions: string, pkg: ContextPackage): ComposedPrompt {
+export function composeAgentPrompt(instructions: string, pkg: ContextPackage): ComposedPrompt {
   return {
     messages: [
       { role: 'system', content: instructions },
@@ -172,3 +177,6 @@ export function composeChiefPrompt(instructions: string, pkg: ContextPackage): C
     },
   }
 }
+
+/** STEP 6 name kept for existing callers/tests. */
+export const composeChiefPrompt = composeAgentPrompt

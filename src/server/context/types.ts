@@ -164,6 +164,8 @@ export interface ContextMessage {
   id: Id
   senderType: MessageSenderType
   agentId: Id | null
+  /** Display name of the authoring agent (null for users/legacy rows). */
+  agentName: string | null
   content: string
   createdAt: IsoTimestamp
 }

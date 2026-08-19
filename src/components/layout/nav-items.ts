@@ -2,6 +2,7 @@ import type { LucideIcon } from 'lucide-react'
 import {
   AtSign,
   BarChart3,
+  Bot,
   Brain,
   CircleCheck,
   Files,
@@ -25,6 +26,7 @@ export const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { to: '/', label: 'Home', icon: Home },
   { to: '/brands', label: 'Brands', icon: Tag },
   { to: '/chat', label: 'Chat', icon: MessageSquare },
+  { to: '/agents', label: 'Agents', icon: Bot },
   { to: '/products', label: 'Products', icon: Package },
   { to: '/accounts', label: 'Accounts', icon: AtSign },
   { to: '/campaigns', label: 'Campaigns', icon: Megaphone },

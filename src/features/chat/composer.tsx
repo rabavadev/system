@@ -16,18 +16,21 @@ const COUNTER_FROM = MAX_MESSAGE_CHARS - 400
 
 interface ComposerProps {
   conversationId: string
+  /** Who answers. Null = Chief (server default); config stays server-side. */
+  agentId: string | null
+  agentName: string
 }
 
 /**
- * Message composer foundation. Deliberately no model/agent selectors, file
- * upload, or voice yet — the layout leaves room for a future toolbar row.
+ * Message composer. The agent selector lives in the conversation header;
+ * this component just tags each send with the selected agent id.
  */
-export function Composer({ conversationId }: ComposerProps) {
+export function Composer({ conversationId, agentId, agentName }: ComposerProps) {
   const router = useRouter()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [value, setValue] = useState('')
   const [error, setError] = useState<string | null>(null)
-  const [chiefNotice, setChiefNotice] = useState<string | null>(null)
+  const [agentNotice, setAgentNotice] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   // Idempotency key for the in-flight send: a retried submit of the SAME
   // text reuses it, so the server never persists or executes twice.
@@ -53,12 +56,19 @@ export function Composer({ conversationId }: ComposerProps) {
       return
     }
     setError(null)
-    setChiefNotice(null)
+    setAgentNotice(null)
     requestIdRef.current ??= crypto.randomUUID()
     const clientRequestId = requestIdRef.current
     startTransition(async () => {
       try {
-        const result = await sendMessageFn({ data: { conversationId, content, clientRequestId } })
+        const result = await sendMessageFn({
+          data: {
+            conversationId,
+            content,
+            clientRequestId,
+            ...(agentId ? { agentId } : {}),
+          },
+        })
         requestIdRef.current = null
         setValue('')
         const textarea = textareaRef.current
@@ -66,10 +76,10 @@ export function Composer({ conversationId }: ComposerProps) {
           textarea.style.height = 'auto'
           textarea.focus()
         }
-        // The message was sent even when Chief couldn't answer; that is a
-        // notice, not a send failure.
+        // The message was sent even when the agent couldn't answer; that
+        // is a notice, not a send failure.
         if (result.assistantError) {
-          setChiefNotice(result.assistantError)
+          setAgentNotice(result.assistantError)
         }
         await router.invalidate()
       } catch (cause) {
@@ -81,9 +91,9 @@ export function Composer({ conversationId }: ComposerProps) {
   return (
     <div className="border-t border-zinc-200 bg-white">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-6 py-4">
-        {chiefNotice && (
+        {agentNotice && (
           <p role="status" className="text-xs text-amber-600">
-            {chiefNotice}
+            {agentNotice}
           </p>
         )}
         <div className="flex items-end gap-2">
@@ -105,7 +115,7 @@ export function Composer({ conversationId }: ComposerProps) {
             disabled={pending}
             aria-label="Message"
             title="Enter to send, Shift+Enter for a new line"
-            placeholder="Write a message…"
+            placeholder={`Message ${agentName}…`}
             className="max-h-[200px] flex-1 resize-none rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm leading-6 text-zinc-900 placeholder:text-zinc-400 focus:border-zinc-400 focus:outline-none disabled:bg-zinc-50 disabled:text-zinc-400"
           />
           <Button
