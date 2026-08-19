@@ -1,5 +1,7 @@
+import { BookmarkPlus } from 'lucide-react'
 import { useEffect, useRef } from 'react'
 
+import { Button } from '~/components/ui/button'
 import { cn } from '~/lib/utils'
 import type { Message, MessageSenderType } from '~/types/domain'
 
@@ -22,9 +24,11 @@ const dateTimeFormat = new Intl.DateTimeFormat(undefined, {
 
 interface MessageListProps {
   messages: Message[]
+  savedMessageIds?: Set<string>
+  onSaveToMemory?: (message: Message) => void
 }
 
-export function MessageList({ messages }: MessageListProps) {
+export function MessageList({ messages, savedMessageIds, onSaveToMemory }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll when new messages arrive
@@ -57,6 +61,19 @@ export function MessageList({ messages }: MessageListProps) {
                 {message.content}
               </p>
             )}
+            {onSaveToMemory && message.senderType !== 'system' ? (
+              <div>
+                <Button
+                  variant="ghost"
+                  className="px-0 text-xs"
+                  onClick={() => onSaveToMemory(message)}
+                  aria-label="Save message to Memory"
+                >
+                  <BookmarkPlus className="size-3.5" strokeWidth={1.75} />
+                  {savedMessageIds?.has(message.id) ? 'Saved to Memory' : 'Save to Memory'}
+                </Button>
+              </div>
+            ) : null}
           </article>
         ))}
         <div ref={bottomRef} />

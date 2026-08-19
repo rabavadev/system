@@ -5,7 +5,11 @@ import { useEffect, useRef, useState, useTransition } from 'react'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
 import { Field, FormError, inputClass } from '~/components/ui/form'
+import { Loading } from '~/components/ui/loading'
 import { Modal } from '~/components/ui/modal'
+import { MemoryEditorDialog } from '~/features/memory/memory-editor'
+import { getMemoryScopeOptions, type MemoryScopeOptions } from '~/features/memory/server'
+import type { Message } from '~/types/domain'
 
 import { Composer } from './composer'
 import { MessageList } from './message-list'
@@ -21,6 +25,10 @@ export function ConversationView({ data }: ConversationViewProps) {
   const router = useRouter()
   const navigate = useNavigate()
   const [showRename, setShowRename] = useState(false)
+  const [saveMessage, setSaveMessage] = useState<Message | null>(null)
+  const [memoryOptions, setMemoryOptions] = useState<MemoryScopeOptions | null>(null)
+  const [memoryOptionsError, setMemoryOptionsError] = useState<string | null>(null)
+  const [savedMessageIds, setSavedMessageIds] = useState<Set<string>>(new Set())
   const [pending, startTransition] = useTransition()
   const isArchived = conversation.deletedAt !== null
 
@@ -37,6 +45,19 @@ export function ConversationView({ data }: ConversationViewProps) {
       await restoreConversationFn({ data: { id: conversation.id } })
       await router.invalidate()
     })
+  }
+
+  function openSaveToMemory(message: Message) {
+    setSaveMessage(message)
+    setMemoryOptionsError(null)
+    if (memoryOptions) return
+    getMemoryScopeOptions()
+      .then(setMemoryOptions)
+      .catch((cause) =>
+        setMemoryOptionsError(
+          cause instanceof Error ? cause.message : 'Memory choices could not be loaded.',
+        ),
+      )
   }
 
   return (
@@ -89,7 +110,11 @@ export function ConversationView({ data }: ConversationViewProps) {
           </div>
         </div>
       ) : (
-        <MessageList messages={messages} />
+        <MessageList
+          messages={messages}
+          savedMessageIds={savedMessageIds}
+          onSaveToMemory={openSaveToMemory}
+        />
       )}
 
       {isArchived ? (
@@ -107,6 +132,35 @@ export function ConversationView({ data }: ConversationViewProps) {
           onClose={() => setShowRename(false)}
         />
       )}
+
+      {saveMessage ? (
+        memoryOptions ? (
+          <MemoryEditorDialog
+            mode="message"
+            scopeOptions={memoryOptions}
+            initialContent={saveMessage.content}
+            initialClass={
+              saveMessage.senderType === 'agent' ? 'proposed_learning' : 'permanent_fact'
+            }
+            initialScope={
+              conversation.scopeType && conversation.scopeId
+                ? { scopeType: conversation.scopeType, scopeId: conversation.scopeId }
+                : { scopeType: 'workspace', scopeId: null }
+            }
+            sourceMessageId={saveMessage.id}
+            onClose={() => setSaveMessage(null)}
+            onSaved={() => setSavedMessageIds((current) => new Set(current).add(saveMessage.id))}
+          />
+        ) : (
+          <Modal title="Save to Memory" onClose={() => setSaveMessage(null)}>
+            {memoryOptionsError ? (
+              <FormError message={memoryOptionsError} />
+            ) : (
+              <Loading label="Loading memory choices" />
+            )}
+          </Modal>
+        )
+      ) : null}
     </section>
   )
 }

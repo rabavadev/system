@@ -45,6 +45,7 @@ npm run test:relations     # relationship-integrity rules
 npm run test:chat          # conversation/message repository suite
 npm run test:context        # Context Engine suite (scope, ranking, trace, safety)
 npm run test:ai             # AI execution + Workspace Chief suite
+npm run test:memory         # Memory lifecycle, scope safety, filtering + context compatibility
 ```
 
 ## AI / Chief
@@ -58,9 +59,10 @@ adapter contract, failure/timeout/retry policy and traceability:
 ## Database
 
 See [docs/context-engine.md](docs/context-engine.md) for the central Context
-Engine (STEP 5). See [docs/database.md](docs/database.md) for the schema, relationships,
-scoping/versioning/deletion doctrine, and secrets policy. All schema changes
-are migrations in `migrations/`; never edit the database by hand.
+Engine (STEP 5). See [docs/memory.md](docs/memory.md) for explicit Memory
+behavior (STEP 7). See [docs/database.md](docs/database.md) for the schema,
+relationships, scoping/versioning/deletion doctrine, and secrets policy. All
+schema changes are migrations in `migrations/`; never edit the database by hand.
 
 
 ## Structure

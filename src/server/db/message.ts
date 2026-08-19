@@ -55,6 +55,12 @@ const appendMessageInput = z.object({
 })
 export type AppendMessageInput = z.input<typeof appendMessageInput>
 
+/** Fetch one message, for server-side provenance checks. */
+export async function getMessageById(db: SqlDatabase, id: string): Promise<Message | null> {
+  const row = await queryFirst<MessageRow>(db, `SELECT * FROM message WHERE id = ?`, [id])
+  return row ? toMessage(row) : null
+}
+
 /** All messages of a conversation, oldest first. */
 export async function listMessages(db: SqlDatabase, conversationId: string): Promise<Message[]> {
   const rows = await queryAll<MessageRow>(
