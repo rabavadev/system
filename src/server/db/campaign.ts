@@ -1,6 +1,15 @@
 import { z } from 'zod'
 
-import type { Campaign, CampaignStatus } from '../../types/domain.ts'
+import type {
+  Campaign,
+  CampaignAudience,
+  CampaignMetricKey,
+  CampaignObjective,
+  CampaignPriority,
+  CampaignStatus,
+  CampaignStrategy,
+  CampaignTarget,
+} from '../../types/domain.ts'
 import { writeAuditLog } from './audit.ts'
 import { emitEventSafe } from './event.ts'
 import { IntegrityError, requireActiveBrand, requireProductForBrand } from './relations.ts'
@@ -15,12 +24,94 @@ interface CampaignRow {
   name: string
   audience: string | null
   angle: string | null
+  objective: CampaignObjective | null
+  priority: CampaignPriority
+  positioning: string | null
+  offer_message: string | null
+  hypothesis: string | null
+  audience_json: string | null
+  targets_json: string | null
   status: CampaignStatus
   starts_at: string | null
   ends_at: string | null
   created_at: string
   updated_at: string
   deleted_at: string | null
+}
+
+export function parseCampaignAudience(row: {
+  audience: string | null
+  audience_json?: string | null
+  audienceJson?: string | null
+}): CampaignAudience {
+  const rawJson = row.audience_json ?? row.audienceJson
+  if (rawJson) {
+    try {
+      const parsed = JSON.parse(rawJson)
+      if (parsed && typeof parsed === 'object') {
+        return {
+          summary: typeof parsed.summary === 'string' ? parsed.summary : (row.audience ?? ''),
+          problem: typeof parsed.problem === 'string' ? parsed.problem : null,
+          awarenessLevel: parsed.awarenessLevel ?? null,
+          geography: typeof parsed.geography === 'string' ? parsed.geography : null,
+          notes: typeof parsed.notes === 'string' ? parsed.notes : null,
+        }
+      }
+    } catch {
+      // ignore JSON parse error and fallback
+    }
+  }
+  return {
+    summary: row.audience ?? '',
+    problem: null,
+    awarenessLevel: null,
+    geography: null,
+    notes: null,
+  }
+}
+
+export function parseCampaignStrategy(row: {
+  positioning?: string | null
+  angle?: string | null
+  offer_message?: string | null
+  offerMessage?: string | null
+  hypothesis?: string | null
+}): CampaignStrategy {
+  return {
+    positioning: row.positioning ?? null,
+    coreAngle: row.angle ?? null,
+    offerMessage: row.offer_message ?? row.offerMessage ?? null,
+    hypothesis: row.hypothesis ?? null,
+  }
+}
+
+export function parseCampaignTargets(row: {
+  targets_json?: string | null
+  targetsJson?: string | null
+}): CampaignTarget[] {
+  const rawJson = row.targets_json ?? row.targetsJson
+  if (rawJson) {
+    try {
+      const parsed = JSON.parse(rawJson)
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((t, idx) => ({
+            id: t.id || newId(),
+            metricKey: t.metricKey as CampaignMetricKey,
+            targetValue: Number(t.targetValue),
+            unit: t.unit ?? null,
+            isPrimary: Boolean(t.isPrimary),
+            orderIndex: typeof t.orderIndex === 'number' ? t.orderIndex : idx,
+          }))
+          .sort(
+            (a, b) => (b.isPrimary ? 1 : 0) - (a.isPrimary ? 1 : 0) || a.orderIndex - b.orderIndex,
+          )
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return []
 }
 
 function toCampaign(row: CampaignRow): Campaign {
@@ -33,6 +124,13 @@ function toCampaign(row: CampaignRow): Campaign {
     name: row.name,
     audience: row.audience,
     angle: row.angle,
+    objective: row.objective ?? null,
+    priority: row.priority ?? 'normal',
+    positioning: row.positioning ?? null,
+    offerMessage: row.offer_message ?? null,
+    hypothesis: row.hypothesis ?? null,
+    audienceJson: row.audience_json ?? null,
+    targetsJson: row.targets_json ?? null,
     status: row.status,
     startsAt: row.starts_at,
     endsAt: row.ends_at,
@@ -60,6 +158,11 @@ export interface CampaignSummary extends Campaign {
 
 export interface CampaignDetail extends CampaignSummary {
   accounts: CampaignAccountItem[]
+  audienceDetails: CampaignAudience
+  strategy: CampaignStrategy
+  targets: CampaignTarget[]
+  primaryTarget: CampaignTarget | null
+  supportingTargets: CampaignTarget[]
   researchCount: number
   recentResearch: Array<{
     id: string
@@ -68,6 +171,85 @@ export interface CampaignDetail extends CampaignSummary {
     status: string
   }>
 }
+
+export const campaignObjectiveSchema = z.enum([
+  'revenue',
+  'conversions',
+  'traffic',
+  'leads',
+  'awareness',
+  'engagement',
+  'retention',
+  'validation',
+])
+
+export const campaignPrioritySchema = z.enum(['high', 'normal', 'low'])
+
+export const audienceAwarenessLevelSchema = z.enum([
+  'unaware',
+  'problem_aware',
+  'solution_aware',
+  'product_aware',
+  'most_aware',
+])
+
+export const campaignAudienceSchema = z.object({
+  summary: z.string().trim().max(2000),
+  problem: z.string().trim().max(2000).nullish(),
+  awarenessLevel: audienceAwarenessLevelSchema.nullish(),
+  geography: z.string().trim().max(500).nullish(),
+  notes: z.string().trim().max(2000).nullish(),
+})
+
+export const campaignStrategySchema = z.object({
+  positioning: z.string().trim().max(2000).nullish(),
+  coreAngle: z.string().trim().max(2000).nullish(),
+  offerMessage: z.string().trim().max(2000).nullish(),
+  hypothesis: z.string().trim().max(2000).nullish(),
+})
+
+export const campaignMetricKeySchema = z.enum([
+  'revenue',
+  'conversions',
+  'orders',
+  'conversion_rate',
+  'qualified_visits',
+  'clicks',
+  'outbound_clicks',
+  'ctr',
+  'leads',
+  'saves',
+  'engagements',
+  'impressions',
+])
+
+export const campaignTargetInputSchema = z
+  .object({
+    id: z.string().uuid().optional(),
+    metricKey: campaignMetricKeySchema,
+    targetValue: z.number().finite().min(0, 'Target value must be non-negative.'),
+    unit: z.string().trim().max(50).nullish(),
+    isPrimary: z.boolean().default(false),
+    orderIndex: z.number().int().default(0),
+  })
+  .refine(
+    (t) => {
+      if (t.metricKey === 'conversion_rate' || t.metricKey === 'ctr') {
+        return t.targetValue >= 0 && t.targetValue <= 100
+      }
+      return true
+    },
+    { message: 'Percentage metrics must be between 0 and 100.' },
+  )
+
+export const campaignTargetsListSchema = z.array(campaignTargetInputSchema).refine(
+  (targets) => {
+    if (targets.length === 0) return true
+    const primaryCount = targets.filter((t) => t.isPrimary).length
+    return primaryCount === 1
+  },
+  { message: 'Exactly one target must be marked as Primary KPI.' },
+)
 
 export const createCampaignInput = z
   .object({
@@ -78,6 +260,13 @@ export const createCampaignInput = z
     name: z.string().trim().min(1, 'Give the campaign a name.').max(200),
     audience: z.string().trim().max(2000).nullish(),
     angle: z.string().trim().max(2000).nullish(),
+    objective: campaignObjectiveSchema.nullish(),
+    priority: campaignPrioritySchema.default('normal'),
+    positioning: z.string().trim().max(2000).nullish(),
+    offerMessage: z.string().trim().max(2000).nullish(),
+    hypothesis: z.string().trim().max(2000).nullish(),
+    audienceDetails: campaignAudienceSchema.nullish(),
+    targets: campaignTargetsListSchema.nullish(),
     status: z.enum(['draft', 'active', 'paused', 'completed', 'archived']).default('draft'),
     startsAt: z.iso.datetime({ offset: false }).nullish(),
     endsAt: z.iso.datetime({ offset: false }).nullish(),
@@ -98,6 +287,13 @@ export const updateCampaignInput = z
     name: z.string().trim().min(1, 'Give the campaign a name.').max(200).optional(),
     audience: z.string().trim().max(2000).nullish(),
     angle: z.string().trim().max(2000).nullish(),
+    objective: campaignObjectiveSchema.nullish(),
+    priority: campaignPrioritySchema.optional(),
+    positioning: z.string().trim().max(2000).nullish(),
+    offerMessage: z.string().trim().max(2000).nullish(),
+    hypothesis: z.string().trim().max(2000).nullish(),
+    audienceDetails: campaignAudienceSchema.nullish(),
+    targets: campaignTargetsListSchema.nullish(),
     status: z.enum(['draft', 'active', 'paused', 'completed', 'archived']).optional(),
     startsAt: z.iso.datetime({ offset: false }).nullish(),
     endsAt: z.iso.datetime({ offset: false }).nullish(),
@@ -107,6 +303,26 @@ export const updateCampaignInput = z
     message: 'End date must be on or after start date.',
   })
 export type UpdateCampaignInput = z.input<typeof updateCampaignInput>
+
+export const updateCampaignStrategyInput = z.object({
+  workspaceId: z.uuid(),
+  id: z.uuid(),
+  objective: campaignObjectiveSchema.nullish(),
+  priority: campaignPrioritySchema.optional(),
+  positioning: z.string().trim().max(2000).nullish(),
+  angle: z.string().trim().max(2000).nullish(),
+  offerMessage: z.string().trim().max(2000).nullish(),
+  hypothesis: z.string().trim().max(2000).nullish(),
+  audience: campaignAudienceSchema.or(z.string().trim().max(2000)).nullish(),
+})
+export type UpdateCampaignStrategyInput = z.input<typeof updateCampaignStrategyInput>
+
+export const updateCampaignTargetsInput = z.object({
+  workspaceId: z.uuid(),
+  id: z.uuid(),
+  targets: campaignTargetsListSchema,
+})
+export type UpdateCampaignTargetsInput = z.input<typeof updateCampaignTargetsInput>
 
 /** Validate accounts list and return unique IDs */
 async function validateAccounts(
@@ -121,17 +337,14 @@ async function validateAccounts(
       `SELECT id, workspace_id, deleted_at FROM account WHERE id = ?`,
       [accountId],
     )
-    if (!acc || acc.workspace_id !== workspaceId) {
+    if (!acc || acc.workspace_id !== workspaceId || acc.deleted_at !== null) {
       throw new IntegrityError('Account not found in this workspace.')
-    }
-    if (acc.deleted_at !== null) {
-      throw new IntegrityError('An archived account cannot be added to a campaign.')
     }
   }
   return unique
 }
 
-/** Set campaign account relationships */
+/** Synchronize accounts for a campaign */
 async function syncCampaignAccounts(
   db: SqlDatabase,
   campaignId: string,
@@ -142,7 +355,7 @@ async function syncCampaignAccounts(
   for (const accountId of accountIds) {
     await execute(
       db,
-      `INSERT INTO campaign_account (campaign_id, account_id, created_at) VALUES (?, ?, ?)`,
+      `INSERT OR IGNORE INTO campaign_account (campaign_id, account_id, created_at) VALUES (?, ?, ?)`,
       [campaignId, accountId, now],
     )
   }
@@ -150,49 +363,36 @@ async function syncCampaignAccounts(
 
 export async function createCampaign(
   db: SqlDatabase,
-  input: CreateCampaignInput,
+  rawInput: CreateCampaignInput,
 ): Promise<CampaignSummary> {
-  const data = createCampaignInput.parse(input)
+  const data = createCampaignInput.parse(rawInput)
 
   // 1. Validate Brand
   const brandRow = await queryFirst<{
     id: string
     workspace_id: string
-    name: string
-    description: string | null
-    created_at: string
-    updated_at: string
     deleted_at: string | null
-  }>(db, `SELECT * FROM brand WHERE id = ?`, [data.brandId])
-
+  }>(db, `SELECT id, workspace_id, deleted_at FROM brand WHERE id = ?`, [data.brandId])
   if (!brandRow || brandRow.workspace_id !== data.workspaceId) {
     throw new IntegrityError('Brand not found in this workspace.')
   }
   requireActiveBrand({
     id: brandRow.id,
     workspaceId: brandRow.workspace_id,
-    name: brandRow.name,
-    description: brandRow.description,
-    createdAt: brandRow.created_at,
-    updatedAt: brandRow.updated_at,
+    name: '',
+    description: null,
+    createdAt: '',
+    updatedAt: '',
     deletedAt: brandRow.deleted_at,
   })
 
-  // 2. Validate Product (if provided)
+  // 2. Validate Product if specified
   if (data.productId) {
-    const prodRow = await queryFirst<{
-      id: string
-      brand_id: string
-      niche_id: string | null
-      name: string
-      description: string | null
-      url: string | null
-      status: 'draft' | 'active' | 'archived'
-      created_at: string
-      updated_at: string
-      deleted_at: string | null
-    }>(db, `SELECT * FROM product WHERE id = ?`, [data.productId])
-
+    const prodRow = await queryFirst<{ id: string; brand_id: string; deleted_at: string | null }>(
+      db,
+      `SELECT id, brand_id, deleted_at FROM product WHERE id = ?`,
+      [data.productId],
+    )
     if (!prodRow) {
       throw new IntegrityError('Product not found.')
     }
@@ -200,13 +400,13 @@ export async function createCampaign(
       {
         id: prodRow.id,
         brandId: prodRow.brand_id,
-        nicheId: prodRow.niche_id,
-        name: prodRow.name,
-        description: prodRow.description,
-        url: prodRow.url,
-        status: prodRow.status,
-        createdAt: prodRow.created_at,
-        updatedAt: prodRow.updated_at,
+        nicheId: null,
+        name: '',
+        description: null,
+        url: null,
+        status: 'active',
+        createdAt: '',
+        updatedAt: '',
         deletedAt: prodRow.deleted_at,
       },
       data.brandId,
@@ -214,7 +414,29 @@ export async function createCampaign(
   }
 
   // 3. Validate Accounts
-  const validAccountIds = await validateAccounts(db, data.workspaceId, data.accountIds)
+  const validAccountIds = await validateAccounts(db, data.workspaceId, data.accountIds ?? [])
+
+  let audienceSummary = data.audience ?? null
+  let audienceJson: string | null = null
+  if (data.audienceDetails) {
+    audienceSummary = data.audienceDetails.summary
+    audienceJson = JSON.stringify(data.audienceDetails)
+  } else if (data.audience) {
+    audienceJson = JSON.stringify({ summary: data.audience })
+  }
+
+  let targetsJson: string | null = null
+  if (data.targets && data.targets.length > 0) {
+    const formattedTargets: CampaignTarget[] = data.targets.map((t, idx) => ({
+      id: t.id || newId(),
+      metricKey: t.metricKey,
+      targetValue: t.targetValue,
+      unit: t.unit ?? null,
+      isPrimary: t.isPrimary,
+      orderIndex: typeof t.orderIndex === 'number' ? t.orderIndex : idx,
+    }))
+    targetsJson = JSON.stringify(formattedTargets)
+  }
 
   const id = newId()
   const now = nowIso()
@@ -222,8 +444,9 @@ export async function createCampaign(
     db,
     `INSERT INTO campaign (
        id, workspace_id, brand_id, product_id, goal_id, name, audience, angle,
+       objective, priority, positioning, offer_message, hypothesis, audience_json, targets_json,
        status, starts_at, ends_at, created_at, updated_at, deleted_at
-     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
     [
       id,
       data.workspaceId,
@@ -231,8 +454,15 @@ export async function createCampaign(
       data.productId ?? null,
       data.goalId ?? null,
       data.name,
-      data.audience ?? null,
+      audienceSummary,
       data.angle ?? null,
+      data.objective ?? null,
+      data.priority ?? 'normal',
+      data.positioning ?? null,
+      data.offerMessage ?? null,
+      data.hypothesis ?? null,
+      audienceJson,
+      targetsJson,
       data.status,
       data.startsAt ?? null,
       data.endsAt ?? null,
@@ -241,17 +471,12 @@ export async function createCampaign(
     ],
   )
 
-  // 4. Attach Accounts
+  // 5. Link accounts
   if (validAccountIds.length > 0) {
     await syncCampaignAccounts(db, id, validAccountIds)
   }
 
-  const created = await getCampaignSummaryById(db, id)
-  if (!created) {
-    throw new Error('campaign insert did not produce a readable summary')
-  }
-
-  // 5. Audit log & Event
+  // 6. Audit log & Event
   await writeAuditLog(db, {
     workspaceId: data.workspaceId,
     entityType: 'campaign',
@@ -259,76 +484,76 @@ export async function createCampaign(
     action: 'create',
     actorType: 'user',
     newValueJson: JSON.stringify({
-      id: created.id,
-      name: created.name,
-      brandId: created.brandId,
-      productId: created.productId,
-      status: created.status,
-      accountCount: validAccountIds.length,
+      id,
+      name: data.name,
+      brandId: data.brandId,
+      status: data.status,
+      objective: data.objective,
+      priority: data.priority,
     }),
   })
 
   await emitEventSafe(db, {
     workspaceId: data.workspaceId,
     eventType: 'campaign.created',
-    actorType: 'user',
     subjectType: 'campaign',
     subjectId: id,
     payloadJson: JSON.stringify({
-      name: created.name,
-      brandId: created.brandId,
-      productId: created.productId,
-      status: created.status,
+      campaignId: id,
+      brandId: data.brandId,
+      status: data.status,
+      name: data.name,
     }),
   })
 
-  return created
+  const summary = await getCampaignSummaryById(db, id)
+  if (!summary) throw new Error('Failed to load created campaign summary')
+  return summary
 }
 
 export async function updateCampaign(
   db: SqlDatabase,
-  input: UpdateCampaignInput,
+  rawInput: UpdateCampaignInput,
 ): Promise<CampaignSummary> {
-  const data = updateCampaignInput.parse(input)
+  const data = updateCampaignInput.parse(rawInput)
 
   const existing = await queryFirst<CampaignRow>(db, `SELECT * FROM campaign WHERE id = ?`, [
     data.id,
   ])
   if (!existing) {
-    throw new IntegrityError('Campaign not found.')
+    throw new IntegrityError('Campaign not found in this workspace.')
   }
 
-  const workspaceId = existing.workspace_id
+  const workspaceId = data.workspaceId ?? existing.workspace_id
+  if (existing.workspace_id !== workspaceId) {
+    throw new IntegrityError('Cannot update campaign from another workspace.')
+  }
+
   const targetBrandId = data.brandId ?? existing.brand_id
   if (!targetBrandId) {
-    throw new IntegrityError('Every campaign must belong to a brand.')
+    throw new IntegrityError('Campaign must belong to a brand.')
   }
 
-  // Validate brand if changing or checking
+  // Validate brand if changing or confirming
   const brandRow = await queryFirst<{
     id: string
     workspace_id: string
-    name: string
-    description: string | null
-    created_at: string
-    updated_at: string
     deleted_at: string | null
-  }>(db, `SELECT * FROM brand WHERE id = ?`, [targetBrandId])
-
+  }>(db, `SELECT id, workspace_id, deleted_at FROM brand WHERE id = ?`, [targetBrandId])
   if (!brandRow || brandRow.workspace_id !== workspaceId) {
     throw new IntegrityError('Brand not found in this workspace.')
   }
   requireActiveBrand({
     id: brandRow.id,
     workspaceId: brandRow.workspace_id,
-    name: brandRow.name,
-    description: brandRow.description,
-    createdAt: brandRow.created_at,
-    updatedAt: brandRow.updated_at,
+    name: '',
+    description: null,
+    createdAt: '',
+    updatedAt: '',
     deletedAt: brandRow.deleted_at,
   })
 
-  // Validate product if supplied
+  // Validate product if changing
   const targetProductId = data.productId !== undefined ? data.productId : existing.product_id
   if (targetProductId) {
     const prodRow = await queryFirst<{
@@ -343,7 +568,6 @@ export async function updateCampaign(
       updated_at: string
       deleted_at: string | null
     }>(db, `SELECT * FROM product WHERE id = ?`, [targetProductId])
-
     if (!prodRow) {
       throw new IntegrityError('Product not found.')
     }
@@ -370,10 +594,41 @@ export async function updateCampaign(
     await syncCampaignAccounts(db, data.id, validAccountIds)
   }
 
+  let audienceSummary = data.audience !== undefined ? data.audience : existing.audience
+  let audienceJson = existing.audience_json
+  if (data.audienceDetails) {
+    audienceSummary = data.audienceDetails.summary
+    audienceJson = JSON.stringify(data.audienceDetails)
+  } else if (data.audience !== undefined) {
+    audienceJson = data.audience ? JSON.stringify({ summary: data.audience }) : null
+  }
+
+  let targetsJson = existing.targets_json
+  if (data.targets !== undefined) {
+    if (data.targets && data.targets.length > 0) {
+      const formattedTargets: CampaignTarget[] = data.targets.map((t, idx) => ({
+        id: t.id || newId(),
+        metricKey: t.metricKey,
+        targetValue: t.targetValue,
+        unit: t.unit ?? null,
+        isPrimary: t.isPrimary,
+        orderIndex: typeof t.orderIndex === 'number' ? t.orderIndex : idx,
+      }))
+      targetsJson = JSON.stringify(formattedTargets)
+    } else {
+      targetsJson = null
+    }
+  }
+
   const now = nowIso()
   const nextName = data.name ?? existing.name
-  const nextAudience = data.audience !== undefined ? data.audience : existing.audience
   const nextAngle = data.angle !== undefined ? data.angle : existing.angle
+  const nextObjective = data.objective !== undefined ? data.objective : existing.objective
+  const nextPriority = data.priority !== undefined ? data.priority : existing.priority
+  const nextPositioning = data.positioning !== undefined ? data.positioning : existing.positioning
+  const nextOfferMessage =
+    data.offerMessage !== undefined ? data.offerMessage : existing.offer_message
+  const nextHypothesis = data.hypothesis !== undefined ? data.hypothesis : existing.hypothesis
   const nextStatus = data.status ?? existing.status
   const nextStartsAt = data.startsAt !== undefined ? data.startsAt : existing.starts_at
   const nextEndsAt = data.endsAt !== undefined ? data.endsAt : existing.ends_at
@@ -383,15 +638,23 @@ export async function updateCampaign(
     db,
     `UPDATE campaign
      SET brand_id = ?, product_id = ?, goal_id = ?, name = ?, audience = ?, angle = ?,
-         status = ?, starts_at = ?, ends_at = ?, updated_at = ?
+         objective = ?, priority = ?, positioning = ?, offer_message = ?, hypothesis = ?,
+         audience_json = ?, targets_json = ?, status = ?, starts_at = ?, ends_at = ?, updated_at = ?
      WHERE id = ?`,
     [
       targetBrandId,
       targetProductId ?? null,
       nextGoalId ?? null,
       nextName,
-      nextAudience ?? null,
+      audienceSummary ?? null,
       nextAngle ?? null,
+      nextObjective ?? null,
+      nextPriority,
+      nextPositioning ?? null,
+      nextOfferMessage ?? null,
+      nextHypothesis ?? null,
+      audienceJson ?? null,
+      targetsJson ?? null,
       nextStatus,
       nextStartsAt ?? null,
       nextEndsAt ?? null,
@@ -416,12 +679,16 @@ export async function updateCampaign(
       brandId: existing.brand_id,
       productId: existing.product_id,
       status: existing.status,
+      objective: existing.objective,
+      priority: existing.priority,
     }),
     newValueJson: JSON.stringify({
       name: updated.name,
       brandId: updated.brandId,
       productId: updated.productId,
       status: updated.status,
+      objective: updated.objective,
+      priority: updated.priority,
     }),
   })
 
@@ -436,10 +703,161 @@ export async function updateCampaign(
       brandId: updated.brandId,
       productId: updated.productId,
       status: updated.status,
+      objective: updated.objective,
+      priority: updated.priority,
     }),
   })
 
   return updated
+}
+
+export async function updateCampaignStrategy(
+  db: SqlDatabase,
+  rawInput: UpdateCampaignStrategyInput,
+): Promise<CampaignDetail> {
+  const data = updateCampaignStrategyInput.parse(rawInput)
+  const existing = await queryFirst<CampaignRow>(db, `SELECT * FROM campaign WHERE id = ?`, [
+    data.id,
+  ])
+  if (!existing || existing.workspace_id !== data.workspaceId) {
+    throw new IntegrityError('Campaign not found in this workspace.')
+  }
+
+  let audienceSummary = existing.audience
+  let audienceJson = existing.audience_json
+  if (data.audience !== undefined) {
+    if (typeof data.audience === 'string') {
+      audienceSummary = data.audience
+      audienceJson = data.audience ? JSON.stringify({ summary: data.audience }) : null
+    } else if (data.audience) {
+      audienceSummary = data.audience.summary
+      audienceJson = JSON.stringify(data.audience)
+    } else {
+      audienceSummary = null
+      audienceJson = null
+    }
+  }
+
+  const nextObjective = data.objective !== undefined ? data.objective : existing.objective
+  const nextPriority = data.priority !== undefined ? data.priority : existing.priority
+  const nextPositioning = data.positioning !== undefined ? data.positioning : existing.positioning
+  const nextAngle = data.angle !== undefined ? data.angle : existing.angle
+  const nextOfferMessage =
+    data.offerMessage !== undefined ? data.offerMessage : existing.offer_message
+  const nextHypothesis = data.hypothesis !== undefined ? data.hypothesis : existing.hypothesis
+
+  const now = nowIso()
+  await execute(
+    db,
+    `UPDATE campaign
+     SET objective = ?, priority = ?, positioning = ?, angle = ?, offer_message = ?,
+         hypothesis = ?, audience = ?, audience_json = ?, updated_at = ?
+     WHERE id = ?`,
+    [
+      nextObjective ?? null,
+      nextPriority,
+      nextPositioning ?? null,
+      nextAngle ?? null,
+      nextOfferMessage ?? null,
+      nextHypothesis ?? null,
+      audienceSummary ?? null,
+      audienceJson ?? null,
+      now,
+      data.id,
+    ],
+  )
+
+  await writeAuditLog(db, {
+    workspaceId: data.workspaceId,
+    entityType: 'campaign',
+    entityId: data.id,
+    action: 'update',
+    actorType: 'user',
+    newValueJson: JSON.stringify({
+      objective: nextObjective,
+      priority: nextPriority,
+      positioning: nextPositioning,
+      angle: nextAngle,
+      hypothesis: nextHypothesis,
+    }),
+  })
+
+  await emitEventSafe(db, {
+    workspaceId: data.workspaceId,
+    eventType: 'campaign.strategy_updated',
+    subjectType: 'campaign',
+    subjectId: data.id,
+    payloadJson: JSON.stringify({
+      campaignId: data.id,
+      objective: nextObjective,
+      priority: nextPriority,
+    }),
+  })
+
+  const detail = await getCampaignDetail(db, data.workspaceId, data.id)
+  if (!detail) throw new Error('Failed to load updated campaign detail')
+  return detail
+}
+
+export async function updateCampaignTargets(
+  db: SqlDatabase,
+  rawInput: UpdateCampaignTargetsInput,
+): Promise<CampaignDetail> {
+  const data = updateCampaignTargetsInput.parse(rawInput)
+  const existing = await queryFirst<CampaignRow>(db, `SELECT * FROM campaign WHERE id = ?`, [
+    data.id,
+  ])
+  if (!existing || existing.workspace_id !== data.workspaceId) {
+    throw new IntegrityError('Campaign not found in this workspace.')
+  }
+
+  const formattedTargets: CampaignTarget[] = data.targets.map((t, idx) => ({
+    id: t.id || newId(),
+    metricKey: t.metricKey,
+    targetValue: t.targetValue,
+    unit: t.unit ?? null,
+    isPrimary: t.isPrimary,
+    orderIndex: typeof t.orderIndex === 'number' ? t.orderIndex : idx,
+  }))
+
+  const targetsJson = formattedTargets.length > 0 ? JSON.stringify(formattedTargets) : null
+  const now = nowIso()
+
+  await execute(
+    db,
+    `UPDATE campaign
+     SET targets_json = ?, updated_at = ?
+     WHERE id = ?`,
+    [targetsJson, now, data.id],
+  )
+
+  await writeAuditLog(db, {
+    workspaceId: data.workspaceId,
+    entityType: 'campaign',
+    entityId: data.id,
+    action: 'update',
+    actorType: 'user',
+    newValueJson: JSON.stringify({
+      targetsCount: formattedTargets.length,
+      primaryMetric: formattedTargets.find((t) => t.isPrimary)?.metricKey ?? null,
+    }),
+  })
+
+  await emitEventSafe(db, {
+    workspaceId: data.workspaceId,
+    eventType: 'campaign.targets_updated',
+    subjectType: 'campaign',
+    subjectId: data.id,
+    payloadJson: JSON.stringify({
+      campaignId: data.id,
+      targetsCount: formattedTargets.length,
+      primaryMetric: formattedTargets.find((t) => t.isPrimary)?.metricKey ?? null,
+    }),
+  })
+
+  const detail = await getCampaignDetail(db, data.workspaceId, data.id)
+  if (!detail) throw new Error('Failed to load updated campaign detail')
+  return detail
 }
 
 async function transitionCampaignStatus(
@@ -448,31 +866,32 @@ async function transitionCampaignStatus(
   nextStatus: CampaignStatus = 'active',
   eventType: string = 'campaign.updated',
   auditAction: 'create' | 'update' | 'delete' | 'restore' = 'update',
-  deletedAt: string | null | undefined = undefined,
+  nowOverride?: string,
 ): Promise<CampaignSummary> {
-  const existing = await queryFirst<CampaignRow>(
-    db,
-    `SELECT * FROM campaign WHERE id = ? AND workspace_id = ?`,
-    [params.id, params.workspaceId],
-  )
+  const existing = await queryFirst<CampaignRow>(db, `SELECT * FROM campaign WHERE id = ?`, [
+    params.id,
+  ])
   if (!existing) {
-    throw new IntegrityError('Campaign not found.')
+    throw new IntegrityError('Campaign not found in this workspace.')
+  }
+  if (existing.workspace_id !== params.workspaceId) {
+    throw new IntegrityError('Cannot modify campaign from another workspace.')
   }
 
-  const now = nowIso()
-  const nextDeletedAt = deletedAt !== undefined ? deletedAt : existing.deleted_at
+  const now = nowOverride ?? nowIso()
+  const deletedAt = nextStatus === 'archived' ? now : null
 
   await execute(
     db,
     `UPDATE campaign
      SET status = ?, deleted_at = ?, updated_at = ?
      WHERE id = ?`,
-    [nextStatus, nextDeletedAt, now, params.id],
+    [nextStatus, deletedAt, now, params.id],
   )
 
   const updated = await getCampaignSummaryById(db, params.id)
   if (!updated) {
-    throw new Error('status transition did not produce a readable summary')
+    throw new Error('campaign status transition did not produce a summary')
   }
 
   await writeAuditLog(db, {
@@ -481,8 +900,8 @@ async function transitionCampaignStatus(
     entityId: params.id,
     action: auditAction,
     actorType: 'user',
-    previousValueJson: JSON.stringify({ status: existing.status, deletedAt: existing.deleted_at }),
-    newValueJson: JSON.stringify({ status: updated.status, deletedAt: updated.deletedAt }),
+    previousValueJson: JSON.stringify({ status: existing.status }),
+    newValueJson: JSON.stringify({ status: updated.status }),
   })
 
   await emitEventSafe(db, {
@@ -492,8 +911,8 @@ async function transitionCampaignStatus(
     subjectType: 'campaign',
     subjectId: params.id,
     payloadJson: JSON.stringify({
+      id: updated.id,
       status: updated.status,
-      deletedAt: updated.deletedAt,
     }),
   })
 
@@ -504,21 +923,21 @@ export async function activateCampaign(
   db: SqlDatabase,
   params: { workspaceId: string; id: string },
 ): Promise<CampaignSummary> {
-  return transitionCampaignStatus(db, params, 'active', 'campaign.activated', 'update', null)
+  return transitionCampaignStatus(db, params, 'active', 'campaign.activated')
 }
 
 export async function pauseCampaign(
   db: SqlDatabase,
   params: { workspaceId: string; id: string },
 ): Promise<CampaignSummary> {
-  return transitionCampaignStatus(db, params, 'paused', 'campaign.paused', 'update')
+  return transitionCampaignStatus(db, params, 'paused', 'campaign.paused')
 }
 
 export async function completeCampaign(
   db: SqlDatabase,
   params: { workspaceId: string; id: string },
 ): Promise<CampaignSummary> {
-  return transitionCampaignStatus(db, params, 'completed', 'campaign.completed', 'update')
+  return transitionCampaignStatus(db, params, 'completed', 'campaign.completed')
 }
 
 export async function archiveCampaign(
@@ -532,7 +951,7 @@ export async function restoreCampaign(
   db: SqlDatabase,
   params: { workspaceId: string; id: string },
 ): Promise<CampaignSummary> {
-  return transitionCampaignStatus(db, params, 'draft', 'campaign.restored', 'restore', null)
+  return transitionCampaignStatus(db, params, 'draft', 'campaign.restored', 'restore', undefined)
 }
 
 export async function getCampaignById(db: SqlDatabase, id: string): Promise<Campaign | null> {
@@ -565,6 +984,7 @@ export async function getCampaignSummaryById(
     [id],
   )
   if (!row) return null
+
   return {
     ...toCampaign(row),
     brandName: row.brand_name ?? 'Unknown Brand',
@@ -587,10 +1007,10 @@ export async function listCampaignAccounts(
     status: string
   }>(
     db,
-    `SELECT a.id, a.handle, a.display_name, a.platform_id, pl.name AS platform_name, a.status
+    `SELECT a.id, a.handle, a.display_name, a.platform_id, p.name AS platform_name, a.status
      FROM campaign_account ca
      JOIN account a ON a.id = ca.account_id
-     JOIN platform pl ON pl.id = a.platform_id
+     LEFT JOIN platform p ON p.id = a.platform_id
      WHERE ca.campaign_id = ?
      ORDER BY a.handle ASC`,
     [campaignId],
@@ -651,9 +1071,33 @@ export async function getCampaignDetail(
     [workspaceId, id, summary.brandId],
   )
 
+  const audienceDetails = parseCampaignAudience({
+    audience: summary.audience,
+    audienceJson: summary.audienceJson,
+  })
+
+  const strategy = parseCampaignStrategy({
+    positioning: summary.positioning,
+    angle: summary.angle,
+    offerMessage: summary.offerMessage,
+    hypothesis: summary.hypothesis,
+  })
+
+  const targets = parseCampaignTargets({
+    targetsJson: summary.targetsJson,
+  })
+
+  const primaryTarget = targets.find((t) => t.isPrimary) ?? null
+  const supportingTargets = targets.filter((t) => !t.isPrimary)
+
   return {
     ...summary,
     accounts,
+    audienceDetails,
+    strategy,
+    targets,
+    primaryTarget,
+    supportingTargets,
     researchCount: researchCountRow?.count ?? researchRows.length,
     recentResearch: researchRows.map((r) => ({
       id: r.id,

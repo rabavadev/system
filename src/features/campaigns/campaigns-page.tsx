@@ -239,13 +239,25 @@ export function CampaignsPage() {
                 {campaigns.map((c) => (
                   <tr key={c.id} className="hover:bg-zinc-50/50 transition-colors">
                     <td className="px-4 py-3 font-medium text-zinc-900">
-                      <Link
-                        to="/campaigns/$campaignId"
-                        params={{ campaignId: c.id }}
-                        className="hover:text-blue-600 hover:underline block max-w-xs truncate font-semibold"
-                      >
-                        {c.name}
-                      </Link>
+                      <div className="flex items-center gap-2">
+                        <Link
+                          to="/campaigns/$campaignId"
+                          params={{ campaignId: c.id }}
+                          className="hover:text-blue-600 hover:underline font-semibold"
+                        >
+                          {c.name}
+                        </Link>
+                        {c.priority === 'high' && (
+                          <span className="rounded bg-red-100 px-1.5 py-0.2 text-[10px] font-bold text-red-700 uppercase">
+                            High
+                          </span>
+                        )}
+                        {c.objective && (
+                          <span className="rounded bg-blue-50 px-1.5 py-0.2 text-[10px] font-medium text-blue-700 border border-blue-200">
+                            {c.objective}
+                          </span>
+                        )}
+                      </div>
                       {c.angle ? (
                         <p className="mt-0.5 max-w-xs truncate text-[11px] text-zinc-400 font-normal">
                           {c.angle}

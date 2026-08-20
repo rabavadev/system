@@ -88,7 +88,44 @@ export function renderContextDocument(pkg: ContextPackage): string {
     sections.push(`# Account\n${lines.join('\n')}`)
   }
   if (pkg.campaign) {
-    sections.push(`# Campaign\n${pkg.campaign.name} (status: ${pkg.campaign.status})`)
+    const lines = [
+      `Name: ${pkg.campaign.name}`,
+      `Status: ${pkg.campaign.status}`,
+      `Priority: ${pkg.campaign.priority}`,
+    ]
+    if (pkg.campaign.objective) {
+      lines.push(`Primary Objective: ${pkg.campaign.objective}`)
+    }
+    if (pkg.campaign.audience?.summary) {
+      lines.push(`Target Audience: ${pkg.campaign.audience.summary}`)
+      if (pkg.campaign.audience.problem) {
+        lines.push(`Audience Problem: ${pkg.campaign.audience.problem}`)
+      }
+      if (pkg.campaign.audience.awarenessLevel) {
+        lines.push(`Awareness Level: ${pkg.campaign.audience.awarenessLevel}`)
+      }
+    }
+    if (pkg.campaign.strategy?.positioning) {
+      lines.push(`Positioning: ${pkg.campaign.strategy.positioning}`)
+    }
+    if (pkg.campaign.strategy?.coreAngle) {
+      lines.push(`Core Angle: ${pkg.campaign.strategy.coreAngle}`)
+    }
+    if (pkg.campaign.strategy?.offerMessage) {
+      lines.push(`Offer / Message: ${pkg.campaign.strategy.offerMessage}`)
+    }
+    if (pkg.campaign.strategy?.hypothesis) {
+      lines.push(`Hypothesis: ${pkg.campaign.strategy.hypothesis}`)
+    }
+    if (pkg.campaign.targets && pkg.campaign.targets.length > 0) {
+      const targetLines = pkg.campaign.targets.map((t) => {
+        const primaryTag = t.isPrimary ? ' [Primary KPI]' : ''
+        const unitSuffix = t.unit ? ` ${t.unit}` : ''
+        return `  - ${t.metricKey}: target ${t.targetValue}${unitSuffix}${primaryTag}`
+      })
+      lines.push(`Success Targets:\n${targetLines.join('\n')}`)
+    }
+    sections.push(`# Campaign\n${lines.join('\n')}`)
   }
 
   if (pkg.goals.length > 0) {

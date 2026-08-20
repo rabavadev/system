@@ -341,6 +341,63 @@ export interface ResearchSource {
 
 export type CampaignStatus = 'draft' | 'active' | 'paused' | 'completed' | 'archived'
 
+export type CampaignObjective =
+  | 'revenue'
+  | 'conversions'
+  | 'traffic'
+  | 'leads'
+  | 'awareness'
+  | 'engagement'
+  | 'retention'
+  | 'validation'
+
+export type CampaignPriority = 'high' | 'normal' | 'low'
+
+export type AudienceAwarenessLevel =
+  | 'unaware'
+  | 'problem_aware'
+  | 'solution_aware'
+  | 'product_aware'
+  | 'most_aware'
+
+export interface CampaignAudience {
+  summary: string
+  problem?: string | null
+  awarenessLevel?: AudienceAwarenessLevel | null
+  geography?: string | null
+  notes?: string | null
+}
+
+export interface CampaignStrategy {
+  positioning?: string | null
+  coreAngle?: string | null
+  offerMessage?: string | null
+  hypothesis?: string | null
+}
+
+export type CampaignMetricKey =
+  | 'revenue'
+  | 'conversions'
+  | 'orders'
+  | 'conversion_rate'
+  | 'qualified_visits'
+  | 'clicks'
+  | 'outbound_clicks'
+  | 'ctr'
+  | 'leads'
+  | 'saves'
+  | 'engagements'
+  | 'impressions'
+
+export interface CampaignTarget {
+  id: Id
+  metricKey: CampaignMetricKey
+  targetValue: number
+  unit?: string | null
+  isPrimary: boolean
+  orderIndex: number
+}
+
 export interface Campaign {
   id: Id
   workspaceId: Id
@@ -350,6 +407,13 @@ export interface Campaign {
   name: string
   audience: string | null
   angle: string | null
+  objective: CampaignObjective | null
+  priority: CampaignPriority
+  positioning: string | null
+  offerMessage: string | null
+  hypothesis: string | null
+  audienceJson: string | null
+  targetsJson: string | null
   status: CampaignStatus
   startsAt: IsoTimestamp | null
   endsAt: IsoTimestamp | null

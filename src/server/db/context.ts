@@ -65,6 +65,15 @@ export interface ContextCampaignRow {
   brand_id: string | null
   product_id: string | null
   name: string
+  audience: string | null
+  angle: string | null
+  objective: string | null
+  priority: string
+  positioning: string | null
+  offer_message: string | null
+  hypothesis: string | null
+  audience_json: string | null
+  targets_json: string | null
   status: string
   starts_at: string | null
   ends_at: string | null
@@ -167,7 +176,9 @@ export async function getContextCampaign(
 ): Promise<ContextCampaignRow | null> {
   return queryFirst<ContextCampaignRow>(
     db,
-    `SELECT id, workspace_id, brand_id, product_id, name, status, starts_at, ends_at, deleted_at
+    `SELECT id, workspace_id, brand_id, product_id, name, audience, angle,
+            objective, priority, positioning, offer_message, hypothesis,
+            audience_json, targets_json, status, starts_at, ends_at, deleted_at
      FROM campaign WHERE id = ?`,
     [id],
   )

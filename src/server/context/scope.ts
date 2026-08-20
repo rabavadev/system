@@ -56,6 +56,15 @@ export interface ScopedCampaign {
   brandId: string | null
   productId: string | null
   name: string
+  audience: string | null
+  angle: string | null
+  objective: string | null
+  priority: string
+  positioning: string | null
+  offerMessage: string | null
+  hypothesis: string | null
+  audienceJson: string | null
+  targetsJson: string | null
   status: string
   startsAt: string | null
   endsAt: string | null

@@ -8,7 +8,7 @@ import { createCampaignFn, updateCampaignFn } from '~/features/campaigns/server'
 import type { AccountSummary } from '~/server/db/account'
 import type { CampaignDetail, CampaignSummary } from '~/server/db/campaign'
 import type { ProductSummary } from '~/server/db/product'
-import type { Brand, CampaignStatus } from '~/types/domain'
+import type { Brand, CampaignObjective, CampaignPriority, CampaignStatus } from '~/types/domain'
 
 interface CampaignFormModalProps {
   brands: Brand[]
@@ -29,6 +29,17 @@ function toDateInputVal(isoString: string | null | undefined): string {
   }
 }
 
+const OBJECTIVE_OPTIONS: Array<{ value: CampaignObjective; label: string }> = [
+  { value: 'revenue', label: 'Revenue' },
+  { value: 'conversions', label: 'Sales / Conversions' },
+  { value: 'traffic', label: 'Qualified Traffic' },
+  { value: 'leads', label: 'Leads / Signups' },
+  { value: 'awareness', label: 'Awareness' },
+  { value: 'engagement', label: 'Engagement' },
+  { value: 'retention', label: 'Retention' },
+  { value: 'validation', label: 'Validation / Learning' },
+]
+
 export function CampaignFormModal({
   brands,
   productsByBrand,
@@ -44,6 +55,8 @@ export function CampaignFormModal({
   const initialBrandId = campaign?.brandId ?? defaultBrandId ?? brands[0]?.id ?? ''
   const [brandId, setBrandId] = useState(initialBrandId)
   const [productId, setProductId] = useState(campaign?.productId ?? '')
+  const [objective, setObjective] = useState<CampaignObjective | ''>(campaign?.objective ?? '')
+  const [priority, setPriority] = useState<CampaignPriority>(campaign?.priority ?? 'normal')
 
   // Initial account selection
   const initialAccountIds =
@@ -88,6 +101,8 @@ export function CampaignFormModal({
             brandId,
             productId: productId || null,
             name,
+            objective: objective || null,
+            priority,
             angle: angle || null,
             audience: audience || null,
             status,
@@ -103,6 +118,8 @@ export function CampaignFormModal({
             brandId,
             productId: productId || undefined,
             name,
+            objective: objective || undefined,
+            priority,
             angle: angle || undefined,
             audience: audience || undefined,
             status,
@@ -177,7 +194,38 @@ export function CampaignFormModal({
           </Field>
         </div>
 
-        <Field label="Objective / Description" htmlFor="campaign-angle">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field label="Primary Objective" htmlFor="campaign-objective">
+            <select
+              id="campaign-objective"
+              value={objective}
+              onChange={(e) => setObjective(e.target.value as CampaignObjective | '')}
+              className={inputClass}
+            >
+              <option value="">-- No Objective Selected --</option>
+              {OBJECTIVE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Priority" htmlFor="campaign-priority">
+            <select
+              id="campaign-priority"
+              value={priority}
+              onChange={(e) => setPriority(e.target.value as CampaignPriority)}
+              className={inputClass}
+            >
+              <option value="high">High Priority</option>
+              <option value="normal">Normal Priority</option>
+              <option value="low">Low Priority</option>
+            </select>
+          </Field>
+        </div>
+
+        <Field label="Objective Notes / Angle" htmlFor="campaign-angle">
           <textarea
             id="campaign-angle"
             name="angle"
@@ -189,7 +237,7 @@ export function CampaignFormModal({
           />
         </Field>
 
-        <Field label="Target Audience (optional)" htmlFor="campaign-audience">
+        <Field label="Target Audience (summary)" htmlFor="campaign-audience">
           <input
             id="campaign-audience"
             name="audience"

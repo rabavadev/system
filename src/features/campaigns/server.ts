@@ -18,6 +18,10 @@ import {
   restoreCampaign,
   updateCampaign,
   updateCampaignInput,
+  updateCampaignStrategy,
+  updateCampaignStrategyInput,
+  updateCampaignTargets,
+  updateCampaignTargetsInput,
 } from '~/server/db/campaign'
 import { getDb } from '~/server/db/client'
 import { listProducts, type ProductSummary } from '~/server/db/product'
@@ -131,6 +135,20 @@ export const updateCampaignFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }): Promise<CampaignSummary> => {
     const db = getDb()
     return updateCampaign(db, data)
+  })
+
+export const updateCampaignStrategyFn = createServerFn({ method: 'POST' })
+  .validator(updateCampaignStrategyInput)
+  .handler(async ({ data }): Promise<CampaignDetail> => {
+    const db = getDb()
+    return updateCampaignStrategy(db, data)
+  })
+
+export const updateCampaignTargetsFn = createServerFn({ method: 'POST' })
+  .validator(updateCampaignTargetsInput)
+  .handler(async ({ data }): Promise<CampaignDetail> => {
+    const db = getDb()
+    return updateCampaignTargets(db, data)
   })
 
 export const activateCampaignFn = createServerFn({ method: 'POST' })

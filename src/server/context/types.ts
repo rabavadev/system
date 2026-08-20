@@ -1,7 +1,12 @@
 import type {
   AccountStatus,
   AgentExecutionType,
+  CampaignAudience,
+  CampaignObjective,
+  CampaignPriority,
   CampaignStatus,
+  CampaignStrategy,
+  CampaignTarget,
   ConnectionStatus,
   ConversationScopeType,
   GoalScopeType,
@@ -136,6 +141,11 @@ export interface CampaignContext {
   status: CampaignStatus
   brandId: Id | null
   productId: Id | null
+  objective: CampaignObjective | null
+  priority: CampaignPriority
+  audience: CampaignAudience
+  strategy: CampaignStrategy
+  targets: CampaignTarget[]
   startsAt: IsoTimestamp | null
   endsAt: IsoTimestamp | null
 }

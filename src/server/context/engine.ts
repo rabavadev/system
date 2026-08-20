@@ -1,5 +1,15 @@
-import type { AgentExecutionType, ConversationScopeType } from '~/types/domain'
+import type {
+  AgentExecutionType,
+  CampaignObjective,
+  CampaignPriority,
+  ConversationScopeType,
+} from '~/types/domain'
 
+import {
+  parseCampaignAudience,
+  parseCampaignStrategy,
+  parseCampaignTargets,
+} from '../db/campaign.ts'
 import {
   getContextAccount,
   getContextAgent,
@@ -498,6 +508,21 @@ export async function buildContext(
           status: graph.campaign.status as 'draft' | 'active' | 'paused' | 'completed' | 'archived',
           brandId: graph.campaign.brandId,
           productId: graph.campaign.productId,
+          objective: (graph.campaign.objective as CampaignObjective | null) ?? null,
+          priority: (graph.campaign.priority as CampaignPriority) ?? 'normal',
+          audience: parseCampaignAudience({
+            audience: graph.campaign.audience,
+            audienceJson: graph.campaign.audienceJson,
+          }),
+          strategy: parseCampaignStrategy({
+            positioning: graph.campaign.positioning,
+            angle: graph.campaign.angle,
+            offerMessage: graph.campaign.offerMessage,
+            hypothesis: graph.campaign.hypothesis,
+          }),
+          targets: parseCampaignTargets({
+            targetsJson: graph.campaign.targetsJson,
+          }),
           startsAt: graph.campaign.startsAt,
           endsAt: graph.campaign.endsAt,
         }
@@ -663,6 +688,15 @@ async function loadExplicitEntities(
       brandId: row.brand_id,
       productId: row.product_id,
       name: row.name,
+      audience: row.audience,
+      angle: row.angle,
+      objective: row.objective,
+      priority: row.priority,
+      positioning: row.positioning,
+      offerMessage: row.offer_message,
+      hypothesis: row.hypothesis,
+      audienceJson: row.audience_json,
+      targetsJson: row.targets_json,
       status: row.status,
       startsAt: row.starts_at,
       endsAt: row.ends_at,
@@ -839,6 +873,15 @@ async function loadConversationScope(
       brandId: row.brand_id,
       productId: row.product_id,
       name: row.name,
+      audience: row.audience,
+      angle: row.angle,
+      objective: row.objective,
+      priority: row.priority,
+      positioning: row.positioning,
+      offerMessage: row.offer_message,
+      hypothesis: row.hypothesis,
+      audienceJson: row.audience_json,
+      targetsJson: row.targets_json,
       status: row.status,
       startsAt: row.starts_at,
       endsAt: row.ends_at,
