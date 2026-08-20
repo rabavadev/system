@@ -490,6 +490,37 @@ export interface ContentVariant {
   deletedAt: IsoTimestamp | null
 }
 
+export type ReviewVerdict = 'pass' | 'revise'
+export type IssueSeverity = 'low' | 'medium' | 'high'
+
+export interface ReviewIssue {
+  category: string
+  severity: IssueSeverity
+  message: string
+}
+
+export interface ContentReview {
+  id: Id
+  workspaceId: Id
+  contentId: Id
+  contentVariantId: Id
+  criticAgentId: Id
+  criticAgentVersionId: Id
+  aiExecutionId: string
+  verdict: ReviewVerdict
+  reviewJson: string
+  createdAt: IsoTimestamp
+}
+
+export interface ContentReviewDetail extends ContentReview {
+  criticAgentName: string
+  criticAgentVersionNumber: number
+  summary: string
+  strengths: string[]
+  issues: ReviewIssue[]
+  recommendedChanges: string[]
+}
+
 export type PostStatus = 'draft' | 'scheduled' | 'publishing' | 'published' | 'failed' | 'removed'
 
 export interface Post {

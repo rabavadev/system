@@ -37,6 +37,12 @@ import {
   updateCampaignContentInput,
 } from '~/server/db/content'
 import {
+  type GenerateContentReviewResult,
+  generateCampaignContentReview,
+  listContentReviews,
+  saveCampaignContentReview,
+} from '~/server/db/content-review'
+import {
   type ContentVariantDetail,
   type GenerateContentDraftResult,
   generateCampaignContentDraft,
@@ -50,7 +56,13 @@ import { getWorkflowById, getWorkflowVersion, listWorkflows } from '~/server/db/
 import { getDefaultWorkspace } from '~/server/db/workspace'
 import type { WorkflowInputDecl } from '~/server/workflows/definition'
 import { resolveWorkflowRuntime } from '~/server/workflows/runtime'
-import type { Brand, CampaignContentItem, CampaignStatus, ContentStatus } from '~/types/domain'
+import type {
+  Brand,
+  CampaignContentItem,
+  CampaignStatus,
+  ContentReviewDetail,
+  ContentStatus,
+} from '~/types/domain'
 
 const idWire = z.object({ id: z.uuid() })
 const filterWire = z.object({
@@ -170,14 +182,14 @@ export const updateCampaignFn = createServerFn({ method: 'POST' })
 
 export const updateCampaignStrategyFn = createServerFn({ method: 'POST' })
   .validator(updateCampaignStrategyInput)
-  .handler(async ({ data }): Promise<CampaignDetail> => {
+  .handler(async ({ data }): Promise<CampaignSummary> => {
     const db = getDb()
     return updateCampaignStrategy(db, data)
   })
 
 export const updateCampaignTargetsFn = createServerFn({ method: 'POST' })
   .validator(updateCampaignTargetsInput)
-  .handler(async ({ data }): Promise<CampaignDetail> => {
+  .handler(async ({ data }): Promise<CampaignSummary> => {
     const db = getDb()
     return updateCampaignTargets(db, data)
   })
@@ -437,4 +449,91 @@ export const listContentVariantsFn = createServerFn({ method: 'GET' })
     const workspace = await getDefaultWorkspace()
     if (!workspace) return []
     return listContentVariants(db, workspace.id, data.contentId)
+  })
+
+export const generateCampaignContentReviewFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      campaignId: z.uuid(),
+      contentId: z.uuid(),
+      contentVariantId: z.uuid(),
+    }),
+  )
+  .handler(async ({ data }): Promise<GenerateContentReviewResult> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      return { ok: false, errorCode: 'workspace_not_found', message: 'Workspace not found' }
+    }
+    const { deps } = resolveAiRuntime()
+    return generateCampaignContentReview(
+      db,
+      {
+        workspaceId: workspace.id,
+        campaignId: data.campaignId,
+        contentId: data.contentId,
+        contentVariantId: data.contentVariantId,
+      },
+      deps,
+    )
+  })
+
+export const saveCampaignContentReviewFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      campaignId: z.uuid(),
+      contentId: z.uuid(),
+      contentVariantId: z.uuid(),
+      verdict: z.enum(['pass', 'revise']),
+      review: z.object({
+        verdict: z.enum(['pass', 'revise']),
+        summary: z.string().min(1, 'Review summary cannot be empty'),
+        strengths: z.array(z.string()).default([]),
+        issues: z
+          .array(
+            z.object({
+              category: z.string(),
+              severity: z.enum(['low', 'medium', 'high']),
+              message: z.string(),
+            }),
+          )
+          .default([]),
+        recommendedChanges: z.array(z.string()).default([]),
+      }),
+      provenance: z
+        .object({
+          criticAgentId: z.string().uuid(),
+          criticAgentName: z.string(),
+          criticAgentVersionId: z.string().uuid(),
+          versionNumber: z.number(),
+          executionId: z.string().uuid(),
+          model: z.string(),
+          createdAt: z.string(),
+        })
+        .nullable()
+        .optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<ContentReviewDetail> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) throw new Error('Workspace not found')
+    return saveCampaignContentReview(db, {
+      workspaceId: workspace.id,
+      campaignId: data.campaignId,
+      contentId: data.contentId,
+      contentVariantId: data.contentVariantId,
+      verdict: data.verdict,
+      review: data.review,
+      provenance: data.provenance,
+    })
+  })
+
+export const listContentReviewsFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ contentVariantId: z.uuid() }))
+  .handler(async ({ data }): Promise<ContentReviewDetail[]> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) return []
+    return listContentReviews(db, workspace.id, data.contentVariantId)
   })

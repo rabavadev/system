@@ -36,7 +36,8 @@
     "test:campaign-strategy": "node --experimental-strip-types scripts/test-campaign-strategy.ts",
     "test:campaign-content": "node --experimental-strip-types scripts/test-campaign-content.ts",
     "test:campaign-orchestration": "node --experimental-strip-types scripts/test-campaign-orchestration.ts",
-    "test:creator-draft": "node --experimental-strip-types scripts/test-creator-draft.ts"
+    "test:creator-draft": "node --experimental-strip-types scripts/test-creator-draft.ts",
+    "test:critic-review": "node --experimental-strip-types scripts/test-critic-review.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",

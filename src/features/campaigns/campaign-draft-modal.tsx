@@ -1,4 +1,17 @@
-import { Bot, CheckCircle2, Copy, FileText, Loader2, RefreshCw, Sparkles } from 'lucide-react'
+import {
+  AlertTriangle,
+  Bot,
+  CheckCircle2,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  FileText,
+  History,
+  Loader2,
+  RefreshCw,
+  ShieldAlert,
+  Sparkles,
+} from 'lucide-react'
 import { useEffect, useState, useTransition } from 'react'
 
 import { Badge } from '~/components/ui/badge'
@@ -6,13 +19,24 @@ import { Button } from '~/components/ui/button'
 import { Field, FormError, inputClass } from '~/components/ui/form'
 import { Modal } from '~/components/ui/modal'
 import type { GeneratedContentDraft } from '~/server/agents/content-draft'
+import type { GeneratedContentReview } from '~/server/agents/content-review'
 import type { CampaignDetail } from '~/server/db/campaign'
+import type { CriticReviewProvenance } from '~/server/db/content-review'
 import type { ContentVariantDetail, DraftProvenance } from '~/server/db/content-variant'
-import type { CampaignContentItem } from '~/types/domain'
+import type {
+  CampaignContentItem,
+  ContentReviewDetail,
+  IssueSeverity,
+  ReviewIssue,
+  ReviewVerdict,
+} from '~/types/domain'
 import {
   generateCampaignContentDraftFn,
+  generateCampaignContentReviewFn,
+  listContentReviewsFn,
   listContentVariantsFn,
   saveCampaignContentDraftFn,
+  saveCampaignContentReviewFn,
 } from './server'
 
 interface CampaignDraftModalProps {
@@ -22,6 +46,26 @@ interface CampaignDraftModalProps {
   onSuccess?: () => Promise<void> | void
 }
 
+function getSeverityBadge(severity: IssueSeverity) {
+  switch (severity) {
+    case 'high':
+      return <Badge tone="warning">High</Badge>
+    case 'medium':
+      return <Badge tone="warning">Medium</Badge>
+    case 'low':
+      return <Badge tone="neutral">Low</Badge>
+    default:
+      return <Badge tone="neutral">{severity}</Badge>
+  }
+}
+
+function getVerdictBadge(verdict: ReviewVerdict) {
+  if (verdict === 'pass') {
+    return <Badge tone="success">Pass</Badge>
+  }
+  return <Badge tone="warning">Revise</Badge>
+}
+
 export function CampaignDraftModal({
   campaign,
   contentItem,
@@ -29,6 +73,7 @@ export function CampaignDraftModal({
   onSuccess,
 }: CampaignDraftModalProps) {
   const [_existingVariants, setExistingVariants] = useState<ContentVariantDetail[]>([])
+  const [savedVariantId, setSavedVariantId] = useState<string | null>(null)
   const [isLoadingVariants, setIsLoadingVariants] = useState(true)
 
   // Draft state (candidate or edited)
@@ -44,8 +89,19 @@ export function CampaignDraftModal({
   const [isSaved, setIsSaved] = useState(false)
   const [hasCopied, setHasCopied] = useState(false)
 
+  // Critic Review states
+  const [reviews, setReviews] = useState<ContentReviewDetail[]>([])
+  const [_isLoadingReviews, setIsLoadingReviews] = useState(false)
+  const [candidateReview, setCandidateReview] = useState<GeneratedContentReview | null>(null)
+  const [reviewProvenance, setReviewProvenance] = useState<CriticReviewProvenance | null>(null)
+  const [isReviewCandidate, setIsReviewCandidate] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
+  const [expandedReviewId, setExpandedReviewId] = useState<string | null>(null)
+
   const [isGenerating, startGenerating] = useTransition()
   const [isSaving, startSaving] = useTransition()
+  const [isReviewing, startReviewing] = useTransition()
+  const [isSavingReview, startSavingReview] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
@@ -63,6 +119,7 @@ export function CampaignDraftModal({
         if (variants && variants.length > 0) {
           const latest = variants[0]
           if (latest) {
+            setSavedVariantId(latest.id)
             setDraft({
               headline: latest.headline ?? '',
               body: latest.body ?? '',
@@ -73,6 +130,17 @@ export function CampaignDraftModal({
             setProvenance(latest.provenance)
             setIsSaved(true)
             setIsCandidate(false)
+
+            // Load reviews for this variant
+            setIsLoadingReviews(true)
+            try {
+              const reviewList = await listContentReviewsFn({
+                data: { contentVariantId: latest.id },
+              })
+              if (active) setReviews(reviewList)
+            } finally {
+              if (active) setIsLoadingReviews(false)
+            }
           }
         }
       } catch {
@@ -90,6 +158,8 @@ export function CampaignDraftModal({
   const handleGenerate = () => {
     setError(null)
     setSuccessMessage(null)
+    setCandidateReview(null)
+    setIsReviewCandidate(false)
     startGenerating(async () => {
       try {
         const result = await generateCampaignContentDraftFn({
@@ -129,7 +199,7 @@ export function CampaignDraftModal({
     setError(null)
     startSaving(async () => {
       try {
-        await saveCampaignContentDraftFn({
+        const saved = await saveCampaignContentDraftFn({
           data: {
             campaignId: campaign.id,
             contentId: contentItem.id,
@@ -144,12 +214,75 @@ export function CampaignDraftModal({
           },
         })
 
+        setSavedVariantId(saved.variant.id)
         setIsCandidate(false)
         setIsSaved(true)
         setSuccessMessage('Draft saved successfully to content variant!')
         await onSuccess?.()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to save draft.')
+      }
+    })
+  }
+
+  const handleReviewDraft = () => {
+    if (!savedVariantId) {
+      setError('Please save the draft variant before requesting a Critic review.')
+      return
+    }
+
+    setError(null)
+    setSuccessMessage(null)
+    startReviewing(async () => {
+      try {
+        const result = await generateCampaignContentReviewFn({
+          data: {
+            campaignId: campaign.id,
+            contentId: contentItem.id,
+            contentVariantId: savedVariantId,
+          },
+        })
+
+        if (!result.ok) {
+          setError(result.message || 'Critic review failed.')
+          return
+        }
+
+        setCandidateReview(result.review)
+        setReviewProvenance(result.provenance)
+        setIsReviewCandidate(true)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Critic review failed.')
+      }
+    })
+  }
+
+  const handleSaveReview = () => {
+    if (!candidateReview || !savedVariantId) return
+
+    setError(null)
+    startSavingReview(async () => {
+      try {
+        const savedReview = await saveCampaignContentReviewFn({
+          data: {
+            campaignId: campaign.id,
+            contentId: contentItem.id,
+            contentVariantId: savedVariantId,
+            verdict: candidateReview.verdict,
+            review: candidateReview,
+            provenance: reviewProvenance ?? undefined,
+          },
+        })
+
+        setReviews((prev) => [savedReview, ...prev.filter((r) => r.id !== savedReview.id)])
+        setIsReviewCandidate(false)
+        setCandidateReview(null)
+        setSuccessMessage(
+          `Editorial review (${savedReview.verdict.toUpperCase()}) saved to history!`,
+        )
+        await onSuccess?.()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to save editorial review.')
       }
     })
   }
@@ -162,6 +295,7 @@ export function CampaignDraftModal({
   }
 
   const hasDraftContent = draft.body.trim().length > 0 || (draft.headline ?? '').trim().length > 0
+  const latestSavedReview = reviews.length > 0 ? reviews[0] : null
 
   return (
     <Modal
@@ -248,7 +382,7 @@ export function CampaignDraftModal({
           </div>
         ) : (
           /* Draft Form / Review State */
-          <div className="space-y-3">
+          <div className="space-y-4">
             {isCandidate && (
               <div className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2 text-xs text-amber-800">
                 <div className="flex items-center gap-2">
@@ -353,6 +487,319 @@ export function CampaignDraftModal({
                 </div>
               </div>
             )}
+
+            {/* STEP 15B: Critic Editorial Review Section */}
+            {isSaved && !isCandidate && savedVariantId && (
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50/30 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <ShieldAlert className="size-4 text-indigo-700" />
+                    <span className="text-xs font-semibold text-zinc-900">
+                      Critic Editorial Review
+                    </span>
+                    {latestSavedReview && getVerdictBadge(latestSavedReview.verdict)}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {reviews.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setShowHistory((h) => !h)}
+                        className="text-xs font-medium text-indigo-700 hover:text-indigo-900 flex items-center gap-1"
+                      >
+                        <History className="size-3.5" />
+                        History ({reviews.length})
+                        {showHistory ? (
+                          <ChevronDown className="size-3" />
+                        ) : (
+                          <ChevronRight className="size-3" />
+                        )}
+                      </button>
+                    )}
+
+                    <Button
+                      variant="secondary"
+                      onClick={handleReviewDraft}
+                      disabled={isReviewing || isGenerating || isSavingReview}
+                      className="h-7 px-2.5 text-xs text-indigo-700 bg-white hover:bg-indigo-50 border-indigo-200"
+                    >
+                      {isReviewing ? (
+                        <>
+                          <Loader2 className="size-3 mr-1 animate-spin" />
+                          Reviewing...
+                        </>
+                      ) : (
+                        <>
+                          <Bot className="size-3 mr-1 text-indigo-600" />
+                          {reviews.length > 0 ? 'Review Again' : 'Review Draft with Critic'}
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Review In-Progress */}
+                {isReviewing && (
+                  <div className="py-6 text-center space-y-2 bg-white rounded-lg border border-indigo-100">
+                    <Loader2 className="size-6 animate-spin text-indigo-600 mx-auto" />
+                    <p className="text-xs font-medium text-zinc-800">
+                      Critic Agent is analyzing copy, audience fit, positioning, and claims...
+                    </p>
+                    <p className="text-[11px] text-zinc-400">
+                      Evaluating against Campaign objective, primary angle, and known platform
+                      guidelines.
+                    </p>
+                  </div>
+                )}
+
+                {/* Candidate Review Preview */}
+                {isReviewCandidate && candidateReview && (
+                  <div className="rounded-lg border border-amber-300 bg-white p-3.5 space-y-3 shadow-xs">
+                    <div className="flex items-center justify-between border-b border-zinc-100 pb-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-zinc-900">
+                          Review Candidate
+                        </span>
+                        {getVerdictBadge(candidateReview.verdict)}
+                      </div>
+                      <Badge tone="warning">Unsaved Review</Badge>
+                    </div>
+
+                    <p className="text-xs text-zinc-700 font-medium leading-relaxed">
+                      {candidateReview.summary}
+                    </p>
+
+                    {/* Strengths */}
+                    {candidateReview.strengths.length > 0 && (
+                      <div className="space-y-1">
+                        <span className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wider">
+                          Strengths
+                        </span>
+                        <ul className="text-xs text-zinc-600 space-y-1 list-disc list-inside">
+                          {candidateReview.strengths.map((s: string) => (
+                            <li key={s}>{s}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Issues */}
+                    {candidateReview.issues.length > 0 && (
+                      <div className="space-y-1.5">
+                        <span className="text-[11px] font-semibold text-amber-800 uppercase tracking-wider">
+                          Identified Issues
+                        </span>
+                        <div className="space-y-1.5">
+                          {candidateReview.issues.map((iss: ReviewIssue) => (
+                            <div
+                              key={`${iss.category}-${iss.message}`}
+                              className="rounded border border-zinc-200 bg-zinc-50 p-2 text-xs text-zinc-700 flex items-start gap-2"
+                            >
+                              <div className="mt-0.5 shrink-0">
+                                {getSeverityBadge(iss.severity)}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <span className="font-semibold text-zinc-800 capitalize">
+                                  [{iss.category.replace(/_/g, ' ')}]:{' '}
+                                </span>
+                                <span>{iss.message}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Recommended Changes */}
+                    {candidateReview.recommendedChanges.length > 0 && (
+                      <div className="space-y-1">
+                        <span className="text-[11px] font-semibold text-indigo-800 uppercase tracking-wider">
+                          Recommended Changes
+                        </span>
+                        <ul className="text-xs text-zinc-600 space-y-1 list-disc list-inside">
+                          {candidateReview.recommendedChanges.map((rec: string) => (
+                            <li key={rec}>{rec}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Critic Provenance */}
+                    {reviewProvenance && (
+                      <div className="pt-2 border-t border-zinc-100 flex items-center justify-between text-[11px] text-zinc-400">
+                        <span>
+                          Critic v{reviewProvenance.versionNumber} ({reviewProvenance.model})
+                        </span>
+                        <span className="font-mono">
+                          {reviewProvenance.executionId.slice(0, 8)}...
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Candidate Review Actions */}
+                    <div className="pt-2 flex items-center justify-end gap-2 border-t border-zinc-100">
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          setIsReviewCandidate(false)
+                          setCandidateReview(null)
+                        }}
+                        disabled={isSavingReview}
+                        className="text-xs"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        onClick={handleReviewDraft}
+                        disabled={isReviewing || isSavingReview}
+                        className="text-xs"
+                      >
+                        <RefreshCw className="size-3 mr-1" />
+                        Run Again
+                      </Button>
+                      <Button
+                        variant="primary"
+                        onClick={handleSaveReview}
+                        disabled={isSavingReview}
+                        className="text-xs"
+                      >
+                        {isSavingReview ? (
+                          <>
+                            <Loader2 className="size-3 mr-1 animate-spin" />
+                            Saving...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle2 className="size-3 mr-1" />
+                            Save Review
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Latest Saved Review Summary if not in candidate mode and no history expanded */}
+                {!isReviewCandidate && !showHistory && latestSavedReview && (
+                  <div className="rounded-lg border border-zinc-200 bg-white p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-zinc-800">
+                        Latest Review Summary
+                      </span>
+                      <span className="text-[11px] text-zinc-400 font-mono">
+                        {latestSavedReview.createdAt.slice(0, 19).replace('T', ' ')}
+                      </span>
+                    </div>
+                    <p className="text-xs text-zinc-600">{latestSavedReview.summary}</p>
+                    {latestSavedReview.issues.length > 0 && (
+                      <div className="flex flex-wrap gap-1 pt-1">
+                        {latestSavedReview.issues.slice(0, 3).map((iss: ReviewIssue) => (
+                          <span
+                            key={`${iss.category}-${iss.message}`}
+                            className="inline-flex items-center gap-1 rounded bg-zinc-100 px-1.5 py-0.5 text-[11px] text-zinc-700"
+                          >
+                            <AlertTriangle className="size-2.5 text-amber-600" />
+                            {iss.category}: {iss.message.slice(0, 40)}...
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Review History Accordion */}
+                {showHistory && (
+                  <div className="space-y-2 pt-1">
+                    <span className="text-[11px] font-semibold text-zinc-700 uppercase tracking-wider">
+                      Saved Review History
+                    </span>
+                    <div className="space-y-2">
+                      {reviews.map((rev: ContentReviewDetail) => {
+                        const isExpanded = expandedReviewId === rev.id
+                        return (
+                          <div
+                            key={rev.id}
+                            className="rounded-lg border border-zinc-200 bg-white overflow-hidden text-xs"
+                          >
+                            <button
+                              type="button"
+                              onClick={() => setExpandedReviewId(isExpanded ? null : rev.id)}
+                              className="w-full p-2.5 flex items-center justify-between hover:bg-zinc-50 transition-colors text-left"
+                            >
+                              <div className="flex items-center gap-2">
+                                {getVerdictBadge(rev.verdict)}
+                                <span className="font-medium text-zinc-800 truncate max-w-xs">
+                                  {rev.summary}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 text-zinc-400 shrink-0">
+                                <span>v{rev.criticAgentVersionNumber}</span>
+                                <span>{rev.createdAt.slice(0, 10)}</span>
+                                {isExpanded ? (
+                                  <ChevronDown className="size-3.5" />
+                                ) : (
+                                  <ChevronRight className="size-3.5" />
+                                )}
+                              </div>
+                            </button>
+
+                            {isExpanded && (
+                              <div className="p-3 border-t border-zinc-100 bg-zinc-50/50 space-y-2">
+                                {rev.strengths.length > 0 && (
+                                  <div>
+                                    <strong className="text-zinc-700 block mb-0.5">
+                                      Strengths:
+                                    </strong>
+                                    <ul className="list-disc list-inside text-zinc-600 space-y-0.5">
+                                      {rev.strengths.map((s: string) => (
+                                        <li key={s}>{s}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+
+                                {rev.issues.length > 0 && (
+                                  <div>
+                                    <strong className="text-zinc-700 block mb-0.5">Issues:</strong>
+                                    <div className="space-y-1">
+                                      {rev.issues.map((iss: ReviewIssue) => (
+                                        <div
+                                          key={`${iss.category}-${iss.message}`}
+                                          className="flex items-center gap-1.5 text-zinc-600"
+                                        >
+                                          {getSeverityBadge(iss.severity)}
+                                          <span>
+                                            <strong>[{iss.category}]:</strong> {iss.message}
+                                          </span>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {rev.recommendedChanges.length > 0 && (
+                                  <div>
+                                    <strong className="text-zinc-700 block mb-0.5">
+                                      Recommended Changes:
+                                    </strong>
+                                    <ul className="list-disc list-inside text-zinc-600 space-y-0.5">
+                                      {rev.recommendedChanges.map((rec: string) => (
+                                        <li key={rec}>{rec}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -363,17 +810,21 @@ export function CampaignDraftModal({
               <Button
                 variant="ghost"
                 onClick={handleGenerate}
-                disabled={isGenerating || isSaving}
+                disabled={isGenerating || isSaving || isReviewing || isSavingReview}
                 className="text-xs text-zinc-600 hover:text-zinc-900"
               >
                 <RefreshCw className={`size-3.5 mr-1.5 ${isGenerating ? 'animate-spin' : ''}`} />
-                Regenerate
+                Regenerate Draft
               </Button>
             )}
           </div>
 
           <div className="flex items-center gap-2">
-            <Button variant="ghost" onClick={onClose} disabled={isSaving || isGenerating}>
+            <Button
+              variant="ghost"
+              onClick={onClose}
+              disabled={isSaving || isGenerating || isSavingReview}
+            >
               {isCandidate ? 'Discard' : 'Close'}
             </Button>
 
@@ -381,7 +832,7 @@ export function CampaignDraftModal({
               <Button
                 variant="primary"
                 onClick={handleSave}
-                disabled={isSaving || isGenerating || !draft.body.trim()}
+                disabled={isSaving || isGenerating || isSavingReview || !draft.body.trim()}
               >
                 {isSaving ? (
                   <>
