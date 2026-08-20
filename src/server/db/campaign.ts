@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type {
   Campaign,
   CampaignAudience,
+  CampaignContentItem,
   CampaignMetricKey,
   CampaignObjective,
   CampaignPriority,
@@ -11,6 +12,7 @@ import type {
   CampaignTarget,
 } from '../../types/domain.ts'
 import { writeAuditLog } from './audit.ts'
+import { listCampaignContent } from './content.ts'
 import { emitEventSafe } from './event.ts'
 import { IntegrityError, requireActiveBrand, requireProductForBrand } from './relations.ts'
 import { execute, newId, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
@@ -170,6 +172,8 @@ export interface CampaignDetail extends CampaignSummary {
     researchType: string
     status: string
   }>
+  contentCount: number
+  contentItems: CampaignContentItem[]
 }
 
 export const campaignObjectiveSchema = z.enum([
@@ -1090,6 +1094,11 @@ export async function getCampaignDetail(
   const primaryTarget = targets.find((t) => t.isPrimary) ?? null
   const supportingTargets = targets.filter((t) => !t.isPrimary)
 
+  const contentItems = await listCampaignContent(db, {
+    workspaceId,
+    campaignId: id,
+  })
+
   return {
     ...summary,
     accounts,
@@ -1105,6 +1114,8 @@ export async function getCampaignDetail(
       researchType: r.research_type,
       status: r.status,
     })),
+    contentCount: contentItems.length,
+    contentItems,
   }
 }
 

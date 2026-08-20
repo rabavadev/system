@@ -422,20 +422,58 @@ export interface Campaign {
   deletedAt: IsoTimestamp | null
 }
 
-export type ContentStatus = 'draft' | 'in_review' | 'approved' | 'archived'
+export type ContentType =
+  | 'post'
+  | 'short_form'
+  | 'long_form'
+  | 'image'
+  | 'video'
+  | 'thread'
+  | 'email'
+  | 'other'
+
+export type ContentPurpose =
+  | 'awareness'
+  | 'traffic'
+  | 'conversion'
+  | 'engagement'
+  | 'education'
+  | 'retention'
+  | 'validation'
+
+export type ContentStatus =
+  | 'idea'
+  | 'planned'
+  | 'draft'
+  | 'ready'
+  | 'in_review'
+  | 'approved'
+  | 'archived'
 
 export interface Content {
   id: Id
   workspaceId: Id
   campaignId: Id | null
   productId: Id | null
+  targetAccountId: Id | null
   title: string | null
+  contentType: ContentType
+  purpose: ContentPurpose | null
+  theme: string | null
   brief: string | null
   body: string | null
   status: ContentStatus
+  plannedAt: IsoTimestamp | null
   createdAt: IsoTimestamp
   updatedAt: IsoTimestamp
   deletedAt: IsoTimestamp | null
+}
+
+export interface CampaignContentItem extends Content {
+  accountHandle?: string | null
+  accountDisplayName?: string | null
+  platformId?: string | null
+  platformName?: string | null
 }
 
 export interface ContentVariant {

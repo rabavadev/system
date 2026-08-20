@@ -16,6 +16,7 @@ import {
   getContextAgentNames,
   getContextBrand,
   getContextCampaign,
+  getContextCampaignContentPlan,
   getContextConnectionStatus,
   getContextNiche,
   getContextPlatform,
@@ -523,6 +524,7 @@ export async function buildContext(
           targets: parseCampaignTargets({
             targetsJson: graph.campaign.targetsJson,
           }),
+          contentSummary: await getContextCampaignContentPlan(db, graph.campaign.id),
           startsAt: graph.campaign.startsAt,
           endsAt: graph.campaign.endsAt,
         }

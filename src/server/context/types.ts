@@ -135,6 +135,21 @@ export interface AccountContext {
   platform: PlatformContext
 }
 
+export interface CampaignPlannedContentSummaryItem {
+  title: string
+  contentType: string
+  purpose: string | null
+  accountHandle: string | null
+  plannedAt: string | null
+  status: string
+}
+
+export interface CampaignContentPlanSummary {
+  total: number
+  byStatus: Record<string, number>
+  items: CampaignPlannedContentSummaryItem[]
+}
+
 export interface CampaignContext {
   id: Id
   name: string
@@ -146,6 +161,7 @@ export interface CampaignContext {
   audience: CampaignAudience
   strategy: CampaignStrategy
   targets: CampaignTarget[]
+  contentSummary?: CampaignContentPlanSummary | null
   startsAt: IsoTimestamp | null
   endsAt: IsoTimestamp | null
 }

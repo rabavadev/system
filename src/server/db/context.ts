@@ -184,6 +184,64 @@ export async function getContextCampaign(
   )
 }
 
+export interface ContextCampaignContentRow {
+  title: string | null
+  content_type: string
+  purpose: string | null
+  account_handle: string | null
+  planned_at: string | null
+  status: string
+}
+
+/**
+ * Safe summary of active planned content for a campaign.
+ */
+export async function getContextCampaignContentPlan(
+  db: SqlDatabase,
+  campaignId: string,
+): Promise<{
+  total: number
+  byStatus: Record<string, number>
+  items: Array<{
+    title: string
+    contentType: string
+    purpose: string | null
+    accountHandle: string | null
+    plannedAt: string | null
+    status: string
+  }>
+}> {
+  const rows = await queryAll<ContextCampaignContentRow>(
+    db,
+    `SELECT c.title, c.content_type, c.purpose, a.handle AS account_handle, c.planned_at, c.status
+     FROM content c
+     LEFT JOIN account a ON a.id = c.target_account_id
+     WHERE c.campaign_id = ? AND c.deleted_at IS NULL AND c.status != 'archived'
+     ORDER BY 
+       CASE WHEN c.planned_at IS NOT NULL THEN 0 ELSE 1 END ASC,
+       c.planned_at ASC,
+       c.created_at ASC
+     LIMIT 20`,
+    [campaignId],
+  )
+  const byStatus: Record<string, number> = {}
+  for (const r of rows) {
+    byStatus[r.status] = (byStatus[r.status] ?? 0) + 1
+  }
+  return {
+    total: rows.length,
+    byStatus,
+    items: rows.map((r) => ({
+      title: r.title ?? 'Untitled',
+      contentType: r.content_type,
+      purpose: r.purpose,
+      accountHandle: r.account_handle,
+      plannedAt: r.planned_at,
+      status: r.status,
+    })),
+  }
+}
+
 export async function getContextPlatform(
   db: SqlDatabase,
   id: string,

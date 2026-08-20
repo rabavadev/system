@@ -24,6 +24,7 @@ import { useState, useTransition } from 'react'
 
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
+import { CampaignContentPlan } from '~/features/campaigns/campaign-content-plan'
 import { CampaignFormModal } from '~/features/campaigns/campaign-form-modal'
 import { CampaignStrategyModal } from '~/features/campaigns/campaign-strategy-modal'
 import { CampaignTargetsModal } from '~/features/campaigns/campaign-targets-modal'
@@ -525,7 +526,15 @@ export function CampaignDetailPage({
             )}
           </div>
 
-          {/* Section 3: Connected Accounts */}
+          {/* Section 3: Campaign Content Plan */}
+          <CampaignContentPlan
+            campaign={campaign}
+            onRefresh={async () => {
+              await router.invalidate()
+            }}
+          />
+
+          {/* Section 4: Connected Accounts */}
           <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-zinc-900 flex items-center gap-2">

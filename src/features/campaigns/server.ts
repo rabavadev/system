@@ -24,9 +24,18 @@ import {
   updateCampaignTargetsInput,
 } from '~/server/db/campaign'
 import { getDb } from '~/server/db/client'
+import {
+  archiveCampaignContent,
+  archiveCampaignContentInput,
+  createCampaignContent,
+  createCampaignContentInput,
+  listCampaignContent,
+  updateCampaignContent,
+  updateCampaignContentInput,
+} from '~/server/db/content'
 import { listProducts, type ProductSummary } from '~/server/db/product'
 import { getDefaultWorkspace } from '~/server/db/workspace'
-import type { Brand, CampaignStatus } from '~/types/domain'
+import type { Brand, CampaignContentItem, CampaignStatus, ContentStatus } from '~/types/domain'
 
 const idWire = z.object({ id: z.uuid() })
 const filterWire = z.object({
@@ -194,4 +203,47 @@ export const restoreCampaignFn = createServerFn({ method: 'POST' })
     const workspace = await getDefaultWorkspace()
     if (!workspace) throw new Error('Workspace not found')
     return restoreCampaign(db, { workspaceId: workspace.id, id: data.id })
+  })
+
+const listContentWire = z.object({
+  campaignId: z.uuid(),
+  status: z
+    .enum(['idea', 'planned', 'draft', 'ready', 'in_review', 'approved', 'archived'])
+    .optional(),
+  includeArchived: z.boolean().optional(),
+})
+
+export const listCampaignContentFn = createServerFn({ method: 'GET' })
+  .validator(listContentWire)
+  .handler(async ({ data }): Promise<CampaignContentItem[]> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) return []
+    return listCampaignContent(db, {
+      workspaceId: workspace.id,
+      campaignId: data.campaignId,
+      status: data.status as ContentStatus | undefined,
+      includeArchived: data.includeArchived,
+    })
+  })
+
+export const createCampaignContentFn = createServerFn({ method: 'POST' })
+  .validator(createCampaignContentInput)
+  .handler(async ({ data }): Promise<CampaignContentItem> => {
+    const db = getDb()
+    return createCampaignContent(db, data)
+  })
+
+export const updateCampaignContentFn = createServerFn({ method: 'POST' })
+  .validator(updateCampaignContentInput)
+  .handler(async ({ data }): Promise<CampaignContentItem> => {
+    const db = getDb()
+    return updateCampaignContent(db, data)
+  })
+
+export const archiveCampaignContentFn = createServerFn({ method: 'POST' })
+  .validator(archiveCampaignContentInput)
+  .handler(async ({ data }): Promise<CampaignContentItem> => {
+    const db = getDb()
+    return archiveCampaignContent(db, data)
   })

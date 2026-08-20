@@ -125,6 +125,17 @@ export function renderContextDocument(pkg: ContextPackage): string {
       })
       lines.push(`Success Targets:\n${targetLines.join('\n')}`)
     }
+    if (pkg.campaign.contentSummary && pkg.campaign.contentSummary.total > 0) {
+      const planLines = pkg.campaign.contentSummary.items.map((item) => {
+        const accountPart = item.accountHandle ? ` (@${item.accountHandle.replace(/^@/, '')})` : ''
+        const datePart = item.plannedAt ? ` [due ${item.plannedAt.slice(0, 10)}]` : ''
+        const purposePart = item.purpose ? ` (${item.purpose})` : ''
+        return `  - [${item.status}] ${item.title} — ${item.contentType}${purposePart}${accountPart}${datePart}`
+      })
+      lines.push(
+        `Content Plan (${pkg.campaign.contentSummary.total} items):\n${planLines.join('\n')}`,
+      )
+    }
     sections.push(`# Campaign\n${lines.join('\n')}`)
   }
 
