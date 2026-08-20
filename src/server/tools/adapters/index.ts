@@ -1,5 +1,6 @@
 import type { ToolAdapter, ToolKey } from '../types.ts'
 import { listRelevantMemoryAdapter, listRelevantResearchAdapter } from './knowledge.ts'
+import { webSearchAdapter } from './web/index.ts'
 import {
   getAccountAdapter,
   getCurrentContextAdapter,
@@ -22,4 +23,5 @@ export const TOOL_ADAPTERS: ReadonlyMap<ToolKey, ToolAdapter> = new Map<ToolKey,
   [listAccountsAdapter.key, listAccountsAdapter],
   [listRelevantMemoryAdapter.key, listRelevantMemoryAdapter],
   [listRelevantResearchAdapter.key, listRelevantResearchAdapter],
+  [webSearchAdapter.key, webSearchAdapter],
 ])

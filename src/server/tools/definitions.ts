@@ -106,11 +106,20 @@ const analyticsOutput = z.object({
   ),
 })
 
+const webSearchResultItem = z.object({
+  title: z.string(),
+  url: z.string().url(),
+  snippet: z.string().nullable(),
+  publisher: z.string().nullable(),
+  publishedAt: z.string().nullable(),
+  retrievedAt: z.string(),
+})
+
 const webSearchOutput = z.object({
   query: z.string(),
-  results: z.array(
-    z.object({ title: z.string(), url: z.string().url(), snippet: z.string().nullable() }),
-  ),
+  provider: z.string(),
+  resultCount: z.number().int().nonnegative(),
+  results: z.array(webSearchResultItem),
 })
 
 const fileListOutput = z.object({
@@ -298,14 +307,21 @@ export const TOOL_DEFINITIONS = [
   {
     key: 'web.search',
     name: 'Web search',
-    description: 'Will search the public web once a safe search provider is configured.',
+    description:
+      'Searches the public web via a configured search provider and returns normalized, safe results.',
     category: 'web',
-    inputSchema: z.object({ query: z.string().trim().min(1).max(300), limit: limitArg }).strict(),
+    inputSchema: z
+      .object({
+        query: z.string().trim().min(1).max(300),
+        limit: z.number().int().min(1).max(10).default(5),
+        freshness: z.enum(['day', 'week', 'month', 'year', 'all']).optional(),
+      })
+      .strict(),
     outputSchema: webSearchOutput,
     requiredCapability: 'read_research',
     risk: ['read', 'external'] as const,
     executionMode: 'sync',
-    status: 'unavailable',
+    status: 'available',
     origin: 'external',
     version: 1,
     timeoutMs: 10_000,

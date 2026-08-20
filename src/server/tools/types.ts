@@ -118,6 +118,8 @@ export const TOOL_ERROR_CODES = [
   'no_data',
   'execution_failed',
   'timeout',
+  'rate_limited',
+  'provider_error',
 ] as const
 export type ToolErrorCode = (typeof TOOL_ERROR_CODES)[number]
 

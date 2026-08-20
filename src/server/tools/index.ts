@@ -1,3 +1,19 @@
+export {
+  type BraveClientOptions,
+  BraveSearchClient,
+  createWebSearchAdapter,
+  getActiveWebSearchClient,
+  MockWebSearchClient,
+  type MockWebSearchOptions,
+  setActiveWebSearchClient,
+  webSearchAdapter,
+} from './adapters/web/index.ts'
+export type {
+  RawSearchResult,
+  WebSearchOutput,
+  WebSearchProviderClient,
+  WebSearchResultItem,
+} from './adapters/web/types.ts'
 export { TOOL_DEFINITIONS } from './definitions.ts'
 export type { ExecuteToolDeps, ExecuteToolInput } from './executor.ts'
 export { executeTool, getAvailableTools } from './executor.ts'

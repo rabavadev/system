@@ -47,6 +47,8 @@ export interface ToolsOverview {
   tools: ToolOverviewItem[]
 }
 
+import { resolveWebSearchRuntime } from '~/server/tools/adapters/web/runtime'
+
 /**
  * Compact, non-technical Tools overview for Settings. Descriptors never
  * include input/output schemas; usedBy is resolved server-side from real
@@ -70,13 +72,21 @@ export const getToolsOverview = createServerFn({ method: 'GET' }).handler(
         activeAgents.push({ name: agent.name, capabilities: config.capabilities })
       }
     }
+    const webSearchRuntime = resolveWebSearchRuntime()
     return {
-      tools: listToolDescriptors().map((tool) => ({
-        ...tool,
-        usedBy: activeAgents
-          .filter((agent) => agent.capabilities.includes(tool.requiredCapability))
-          .map((agent) => agent.name),
-      })),
+      tools: listToolDescriptors().map((tool) => {
+        let status = tool.status
+        if (tool.key === 'web.search') {
+          status = webSearchRuntime.status.configured ? 'available' : 'needs_setup'
+        }
+        return {
+          ...tool,
+          status,
+          usedBy: activeAgents
+            .filter((agent) => agent.capabilities.includes(tool.requiredCapability))
+            .map((agent) => agent.name),
+        }
+      }),
     }
   },
 )

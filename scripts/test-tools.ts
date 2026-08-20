@@ -18,13 +18,18 @@ import type { AgentCapability } from '../src/server/agents/config.ts'
 import { listRecentEvents } from '../src/server/db/event.ts'
 import type { SqlDatabase } from '../src/server/db/sql.ts'
 import {
+  BraveSearchClient,
+  createWebSearchAdapter,
   executeTool,
   getAvailableTools,
   listToolDefinitions,
+  MockWebSearchClient,
+  setActiveWebSearchClient,
   TOOL_KEYS,
   type ToolAdapter,
   type ToolCaller,
   type ToolDefinition,
+  ToolError,
   type ToolKey,
 } from '../src/server/tools/index.ts'
 
@@ -385,12 +390,13 @@ test('available-tool filtering follows capability, status and adapter presence',
   assert.ok(chiefTools.includes('research.list_relevant'))
   assert.ok(!chiefTools.includes('analytics.read'))
   assert.ok(!chiefTools.includes('platform.publish'))
-  assert.ok(!chiefTools.includes('web.search'))
+  assert.ok(chiefTools.includes('web.search'))
 
   const creatorTools = getAvailableTools(
     caller(['read_context', 'read_memory', 'create_draft']),
   ).map((t) => t.key)
   assert.ok(!creatorTools.includes('research.list_relevant'))
+  assert.ok(!creatorTools.includes('web.search'))
   assert.ok(!creatorTools.includes('image.generate'))
 })
 
@@ -638,4 +644,610 @@ test('approval is a separate layer: gated tools cannot run on capability alone',
   )
   assert.equal(result.error?.code, 'approval_required')
   assert.equal(adapterCalls, 0)
+})
+
+/* ========================================================================= */
+/* STEP 13A: Real Provider-Neutral Web Search Tool Tests                     */
+/* ========================================================================= */
+
+test('web.search tool metadata is registered with correct category, risk, capability, and schemas', () => {
+  const definitions = listToolDefinitions()
+  const webSearch = definitions.find((d) => d.key === 'web.search')
+  assert.ok(webSearch, 'web.search definition must exist')
+  assert.equal(webSearch.key, 'web.search')
+  assert.equal(webSearch.category, 'web')
+  assert.deepEqual(webSearch.risk, ['read', 'external'])
+  assert.equal(webSearch.requiredCapability, 'read_research')
+  assert.equal(webSearch.status, 'available')
+  assert.equal(webSearch.timeoutMs, 10_000)
+  assert.equal(webSearch.cost, 'metered')
+
+  // Validate inputSchema
+  assert.equal(webSearch.inputSchema.safeParse({ query: 'ai trends' }).success, true)
+  assert.equal(webSearch.inputSchema.safeParse({ query: 'ai trends', limit: 5 }).success, true)
+  assert.equal(
+    webSearch.inputSchema.safeParse({ query: 'ai trends', freshness: 'week' }).success,
+    true,
+  )
+  assert.equal(webSearch.inputSchema.safeParse({ query: '' }).success, false)
+  assert.equal(webSearch.inputSchema.safeParse({ query: '   ' }).success, false)
+  assert.equal(webSearch.inputSchema.safeParse({ query: 'test', limit: 0 }).success, false)
+  assert.equal(webSearch.inputSchema.safeParse({ query: 'test', limit: 11 }).success, false)
+
+  // Validate outputSchema
+  const validOutput = {
+    query: 'ai trends',
+    provider: 'mock',
+    resultCount: 1,
+    results: [
+      {
+        title: 'AI News',
+        url: 'https://example.com/ai',
+        snippet: 'Latest trends in AI',
+        publisher: 'example.com',
+        publishedAt: '2026-08-20T00:00:00Z',
+        retrievedAt: '2026-08-20T00:00:00.000Z',
+      },
+    ],
+  }
+  assert.equal(webSearch.outputSchema.safeParse(validOutput).success, true)
+})
+
+test('web.search tool returns not_configured when no provider client is active', async () => {
+  const db = freshDb()
+  setActiveWebSearchClient(null)
+
+  const result = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'test query' },
+    caller: CHIEF,
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.error?.code, 'not_configured')
+  assert.match(result.error?.message ?? '', /needs setup/i)
+})
+
+test('web.search executes with MockWebSearchClient and returns normalized result structure', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({
+    results: [
+      {
+        title: 'Modern Architecture',
+        url: 'https://example.org/modern-arch',
+        snippet: 'A deep dive into clean modular software design.',
+        publisher: 'example.org',
+        publishedAt: '2026-08-15',
+      },
+      {
+        title: 'TypeScript Best Practices',
+        url: 'https://ts.dev/guide',
+        snippet: 'Effective type-level modeling in enterprise apps.',
+        publisher: 'ts.dev',
+        publishedAt: null,
+      },
+    ],
+  })
+  setActiveWebSearchClient(mockClient)
+
+  const result = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'typescript modular architecture', limit: 5 },
+    caller: CHIEF,
+  })
+
+  assert.equal(result.ok, true)
+  const data = result.data as {
+    query: string
+    provider: string
+    resultCount: number
+    results: Array<{
+      title: string
+      url: string
+      snippet: string | null
+      publisher: string | null
+      publishedAt: string | null
+      retrievedAt: string
+    }>
+  }
+
+  assert.equal(data.query, 'typescript modular architecture')
+  assert.equal(data.provider, 'mock')
+  assert.equal(data.resultCount, 2)
+  assert.equal(data.results.length, 2)
+
+  assert.equal(data.results[0].title, 'Modern Architecture')
+  assert.equal(data.results[0].url, 'https://example.org/modern-arch')
+  assert.equal(data.results[0].snippet, 'A deep dive into clean modular software design.')
+  assert.equal(data.results[0].publisher, 'example.org')
+  assert.equal(data.results[0].publishedAt, '2026-08-15')
+  assert.match(data.results[0].retrievedAt, /^\d{4}-\d{2}-\d{2}T/)
+
+  assert.equal(data.results[1].title, 'TypeScript Best Practices')
+  assert.equal(data.results[1].url, 'https://ts.dev/guide')
+  assert.equal(data.results[1].snippet, 'Effective type-level modeling in enterprise apps.')
+  assert.equal(data.results[1].publisher, 'ts.dev')
+  assert.equal(data.results[1].publishedAt, null)
+
+  setActiveWebSearchClient(null)
+})
+
+test('web.search rejects empty or whitespace-only query', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({ results: [] })
+  setActiveWebSearchClient(mockClient)
+
+  const resEmpty = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: '' },
+    caller: CHIEF,
+  })
+  assert.equal(resEmpty.ok, false)
+  assert.equal(resEmpty.error?.code, 'invalid_input')
+
+  const resWhitespace = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: '    ' },
+    caller: CHIEF,
+  })
+  assert.equal(resWhitespace.ok, false)
+  assert.equal(resWhitespace.error?.code, 'invalid_input')
+
+  setActiveWebSearchClient(null)
+})
+
+test('web.search rejects oversized query (> 300 characters)', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({ results: [] })
+  setActiveWebSearchClient(mockClient)
+
+  const longQuery = 'x'.repeat(301)
+  const result = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: longQuery },
+    caller: CHIEF,
+  })
+  assert.equal(result.ok, false)
+  assert.equal(result.error?.code, 'invalid_input')
+
+  setActiveWebSearchClient(null)
+})
+
+test('web.search enforces limit bounds and defaults', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({
+    results: [
+      { title: 'R1', url: 'https://e.com/1' },
+      { title: 'R2', url: 'https://e.com/2' },
+      { title: 'R3', url: 'https://e.com/3' },
+      { title: 'R4', url: 'https://e.com/4' },
+      { title: 'R5', url: 'https://e.com/5' },
+      { title: 'R6', url: 'https://e.com/6' },
+    ],
+  })
+  setActiveWebSearchClient(mockClient)
+
+  // Default limit is 5
+  const resDefault = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'test' },
+    caller: CHIEF,
+  })
+  assert.equal(resDefault.ok, true)
+  const defaultData = resDefault.data as { results: unknown[] }
+  assert.equal(defaultData.results.length, 5)
+
+  // Explicit limit 2
+  const res2 = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'test', limit: 2 },
+    caller: CHIEF,
+  })
+  assert.equal(res2.ok, true)
+  const data2 = res2.data as { results: unknown[] }
+  assert.equal(data2.results.length, 2)
+
+  // Invalid limit rejected by schema validation
+  const resInvalid = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'test', limit: 0 },
+    caller: CHIEF,
+  })
+  assert.equal(resInvalid.ok, false)
+  assert.equal(resInvalid.error?.code, 'invalid_input')
+
+  setActiveWebSearchClient(null)
+})
+
+test('web.search leaves missing metadata fields as null and does not fabricate data', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({
+    results: [
+      {
+        title: 'Minimal Entry',
+        url: 'https://minimal.test/path',
+        snippet: undefined,
+        publisher: undefined,
+        publishedAt: undefined,
+      },
+    ],
+  })
+  setActiveWebSearchClient(mockClient)
+
+  const result = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'minimal' },
+    caller: CHIEF,
+  })
+
+  assert.equal(result.ok, true)
+  const data = result.data as {
+    results: Array<{
+      title: string
+      url: string
+      snippet: string | null
+      publisher: string | null
+      publishedAt: string | null
+      retrievedAt: string
+    }>
+  }
+
+  assert.equal(data.results.length, 1)
+  const item = data.results[0]
+  assert.equal(item.title, 'Minimal Entry')
+  assert.equal(item.url, 'https://minimal.test/path')
+  assert.equal(item.snippet, null)
+  assert.equal(item.publisher, 'minimal.test') // derived strictly from URL hostname
+  assert.equal(item.publishedAt, null) // not fabricated
+  assert.ok(item.retrievedAt)
+
+  setActiveWebSearchClient(null)
+})
+
+test('web.search discards unsafe URL schemes (javascript, file, data, ftp)', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({
+    results: [
+      { title: 'Safe HTTP', url: 'http://example.com/safe' },
+      { title: 'Safe HTTPS', url: 'https://example.com/safe' },
+      { title: 'Unsafe JS', url: 'javascript:alert(1)' },
+      { title: 'Unsafe File', url: 'file:///etc/passwd' },
+      { title: 'Unsafe Data', url: 'data:text/html,<script>evil()</script>' },
+      { title: 'Unsafe FTP', url: 'ftp://ftp.example.com/file' },
+      { title: 'Malformed URL', url: 'not-a-valid-url' },
+    ],
+  })
+  setActiveWebSearchClient(mockClient)
+
+  const result = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'security test', limit: 10 },
+    caller: CHIEF,
+  })
+
+  assert.equal(result.ok, true)
+  const data = result.data as { results: Array<{ title: string; url: string }> }
+  assert.equal(data.results.length, 2)
+  assert.equal(data.results[0].url, 'http://example.com/safe')
+  assert.equal(data.results[1].url, 'https://example.com/safe')
+
+  setActiveWebSearchClient(null)
+})
+
+test('web.search hides raw provider payloads from tool output', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({
+    results: [
+      {
+        title: 'Result With Extra Props',
+        url: 'https://example.com/res',
+        snippet: 'Snippet here',
+      },
+    ],
+  })
+  setActiveWebSearchClient(mockClient)
+
+  const result = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'test extra' },
+    caller: CHIEF,
+  })
+
+  assert.equal(result.ok, true)
+  const data = result.data as Record<string, unknown>
+  const expectedKeys = new Set(['query', 'provider', 'resultCount', 'results'])
+  assert.deepEqual(new Set(Object.keys(data)), expectedKeys)
+
+  const item = (data.results as Record<string, unknown>[])[0]
+  const expectedItemKeys = new Set([
+    'title',
+    'url',
+    'snippet',
+    'publisher',
+    'publishedAt',
+    'retrievedAt',
+  ])
+  assert.deepEqual(new Set(Object.keys(item)), expectedItemKeys)
+
+  setActiveWebSearchClient(null)
+})
+
+test('web.search prevents secret leakage in execution events and logs', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({
+    results: [{ title: 'Secret Test', url: 'https://secret.example.com' }],
+  })
+  setActiveWebSearchClient(mockClient)
+
+  await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'find private keys' },
+    caller: CHIEF,
+  })
+
+  const events = await listRecentEvents(db, WS_A, 'tool.execution.', 5)
+  assert.ok(events.length >= 1)
+  const payload = events[0]?.payload ?? ''
+  // Query should be redacted in summary
+  assert.match(payload, /"query":\s*"\[redacted\]"/)
+  assert.ok(!payload.includes('X-Subscription-Token'))
+  assert.ok(!payload.includes('BRAVE_API_KEY'))
+  assert.ok(!payload.includes('WEB_SEARCH_API_KEY'))
+
+  setActiveWebSearchClient(null)
+})
+
+test('web.search enforces required capability (read_research)', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({ results: [] })
+  setActiveWebSearchClient(mockClient)
+
+  const noCapabilityCaller = caller(['read_context', 'read_memory']) // missing read_research
+  const result = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'unauthorized search' },
+    caller: noCapabilityCaller,
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.error?.code, 'capability_denied')
+
+  setActiveWebSearchClient(null)
+})
+
+test('web.search approval requirement blocks execution without approval', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({
+    results: [{ title: 'Approved Result', url: 'https://example.com' }],
+  })
+
+  // Create definitions where web.search approval is required
+  const definitions: ToolDefinition[] = listToolDefinitions().map((d) =>
+    d.key === 'web.search' ? { ...d, approval: 'required' as const } : d,
+  )
+  const adapter = createWebSearchAdapter({ client: mockClient })
+  const adapters = new Map<ToolKey, ToolAdapter>([['web.search', adapter]])
+
+  // Without approvalGranted
+  const resDenied = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'approval test' },
+      caller: CHIEF,
+      approvalGranted: false,
+    },
+    { definitions, adapters },
+  )
+  assert.equal(resDenied.ok, false)
+  assert.equal(resDenied.error?.code, 'approval_required')
+
+  // With approvalGranted: true
+  const resApproved = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'approval test' },
+      caller: CHIEF,
+      approvalGranted: true,
+    },
+    { definitions, adapters },
+  )
+  assert.equal(resApproved.ok, true)
+})
+
+test('web.search timeout is handled cleanly', async () => {
+  const db = freshDb()
+  const slowClient = new MockWebSearchClient({
+    results: [{ title: 'Slow', url: 'https://slow.com' }],
+    delayMs: 50,
+  })
+
+  const definitions: ToolDefinition[] = listToolDefinitions().map((d) =>
+    d.key === 'web.search' ? { ...d, timeoutMs: 10 } : d,
+  )
+  const adapter = createWebSearchAdapter({ client: slowClient })
+  const adapters = new Map<ToolKey, ToolAdapter>([['web.search', adapter]])
+
+  const result = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'timeout test' },
+      caller: CHIEF,
+    },
+    { definitions, adapters },
+  )
+
+  assert.equal(result.ok, false)
+  assert.equal(result.error?.code, 'timeout')
+})
+
+test('web.search provider errors are normalized to provider_error', async () => {
+  const db = freshDb()
+  const errorClient = new MockWebSearchClient({
+    error: new ToolError('provider_error', 'Upstream search provider 500 error'),
+  })
+  setActiveWebSearchClient(errorClient)
+
+  const result = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'failing query' },
+    caller: CHIEF,
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.error?.code, 'provider_error')
+
+  setActiveWebSearchClient(null)
+})
+
+test('web.search rate limits are normalized to rate_limited', async () => {
+  const db = freshDb()
+  const rateLimitedClient = new MockWebSearchClient({
+    error: new ToolError('rate_limited', 'Too many search requests'),
+  })
+  setActiveWebSearchClient(rateLimitedClient)
+
+  const result = await executeTool({
+    db,
+    workspaceId: WS_A,
+    toolKey: 'web.search',
+    args: { query: 'rate limited query' },
+    caller: CHIEF,
+  })
+
+  assert.equal(result.ok, false)
+  assert.equal(result.error?.code, 'rate_limited')
+
+  setActiveWebSearchClient(null)
+})
+
+test('MockWebSearchClient records search parameters accurately offline', async () => {
+  const mockClient = new MockWebSearchClient({
+    resultsByQuery: {
+      'custom query': [
+        { title: 'Custom 1', url: 'https://custom.com/1' },
+        { title: 'Custom 2', url: 'https://custom.com/2' },
+      ],
+    },
+  })
+
+  const results = await mockClient.search('custom query', 1, 'month')
+  assert.equal(results.length, 1)
+  assert.equal(results[0].title, 'Custom 1')
+  assert.equal(mockClient.calls.length, 1)
+  assert.equal(mockClient.calls[0].query, 'custom query')
+  assert.equal(mockClient.calls[0].limit, 1)
+  assert.equal(mockClient.calls[0].freshness, 'month')
+})
+
+test('BraveSearchClient parses successful response correctly with mock fetch', async () => {
+  const fakePayload = {
+    web: {
+      results: [
+        {
+          title: 'Brave Search Engine',
+          url: 'https://brave.com/search',
+          description: 'Privacy-first web search.',
+          page_age: '2026-08-01',
+          meta_url: { hostname: 'brave.com' },
+        },
+      ],
+    },
+  }
+
+  const mockFetch = async () =>
+    new Response(JSON.stringify(fakePayload), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+
+  const client = new BraveSearchClient({
+    apiKey: 'test-key-123',
+    fetchFn: mockFetch as unknown as typeof fetch,
+  })
+
+  const results = await client.search('privacy search', 5, 'week')
+  assert.equal(results.length, 1)
+  assert.equal(results[0].title, 'Brave Search Engine')
+  assert.equal(results[0].url, 'https://brave.com/search')
+  assert.equal(results[0].snippet, 'Privacy-first web search.')
+  assert.equal(results[0].publisher, 'brave.com')
+  assert.equal(results[0].publishedAt, '2026-08-01')
+})
+
+test('BraveSearchClient maps HTTP 401/403, 429, 500, and network failure to appropriate ToolErrors', async () => {
+  // 401 Unauthorized
+  const client401 = new BraveSearchClient({
+    apiKey: 'bad-key',
+    fetchFn: (async () => new Response('Unauthorized', { status: 401 })) as unknown as typeof fetch,
+  })
+  await assert.rejects(
+    () => client401.search('query', 5),
+    (err: unknown) => err instanceof ToolError && err.code === 'not_configured',
+  )
+
+  // 429 Rate Limit
+  const client429 = new BraveSearchClient({
+    apiKey: 'key',
+    fetchFn: (async () => new Response('Rate limited', { status: 429 })) as unknown as typeof fetch,
+  })
+  await assert.rejects(
+    () => client429.search('query', 5),
+    (err: unknown) => err instanceof ToolError && err.code === 'rate_limited',
+  )
+
+  // 500 Server Error
+  const client500 = new BraveSearchClient({
+    apiKey: 'key',
+    fetchFn: (async () => new Response('Server error', { status: 500 })) as unknown as typeof fetch,
+  })
+  await assert.rejects(
+    () => client500.search('query', 5),
+    (err: unknown) => err instanceof ToolError && err.code === 'provider_error',
+  )
+
+  // Network Fetch Failure
+  const clientNetErr = new BraveSearchClient({
+    apiKey: 'key',
+    fetchFn: (async () => {
+      throw new Error('DNS failure')
+    }) as unknown as typeof fetch,
+  })
+  await assert.rejects(
+    () => clientNetErr.search('query', 5),
+    (err: unknown) => err instanceof ToolError && err.code === 'execution_failed',
+  )
 })
