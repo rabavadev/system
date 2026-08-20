@@ -6,8 +6,6 @@ import {
   CheckCircle2,
   Compass,
   Edit3,
-  ExternalLink,
-  FlaskConical,
   Globe,
   Info,
   MessageSquare,
@@ -26,8 +24,10 @@ import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
 import { CampaignContentPlan } from '~/features/campaigns/campaign-content-plan'
 import { CampaignFormModal } from '~/features/campaigns/campaign-form-modal'
+import { CampaignResearchSection } from '~/features/campaigns/campaign-research-section'
 import { CampaignStrategyModal } from '~/features/campaigns/campaign-strategy-modal'
 import { CampaignTargetsModal } from '~/features/campaigns/campaign-targets-modal'
+import { CampaignWorkflowsSection } from '~/features/campaigns/campaign-workflows-section'
 import {
   activateCampaignFn,
   archiveCampaignFn,
@@ -45,6 +45,7 @@ interface CampaignDetailPageProps {
   brands: Brand[]
   productsByBrand: Record<string, ProductSummary[]>
   allAccounts: AccountSummary[]
+  activeWorkflows?: Array<{ id: string; name: string; description: string | null }>
 }
 
 function statusTone(status: CampaignStatus): 'success' | 'warning' | 'muted' | 'neutral' {
@@ -129,6 +130,7 @@ export function CampaignDetailPage({
   brands,
   productsByBrand,
   allAccounts,
+  activeWorkflows = [],
 }: CampaignDetailPageProps) {
   const router = useRouter()
   const [showEditModal, setShowEditModal] = useState(false)
@@ -580,47 +582,17 @@ export function CampaignDetailPage({
             )}
           </div>
 
-          {/* Section 4: Relevant Research */}
-          <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-zinc-900 flex items-center gap-2">
-                <FlaskConical className="size-4 text-zinc-500" />
-                Relevant Research ({campaign.researchCount})
-              </h2>
-              <Link
-                to="/research"
-                className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline inline-flex items-center gap-1"
-              >
-                Open Research
-                <ExternalLink className="size-3" />
-              </Link>
-            </div>
+          {/* Section 4: Campaign Research */}
+          <CampaignResearchSection campaign={campaign} />
 
-            {campaign.recentResearch.length === 0 ? (
-              <p className="text-xs text-zinc-400 italic">
-                No linked research records yet. Research conducted under this brand or campaign will
-                appear here.
-              </p>
-            ) : (
-              <div className="divide-y divide-zinc-100">
-                {campaign.recentResearch.map((res) => (
-                  <div key={res.id} className="flex items-center justify-between py-2 text-xs">
-                    <span className="font-medium text-zinc-800 truncate max-w-md">
-                      {res.subject}
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className="rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600 uppercase font-medium">
-                        {res.researchType}
-                      </span>
-                      <Badge tone={res.status === 'completed' ? 'success' : 'muted'}>
-                        {res.status}
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          {/* Section 5: Campaign Workflows & Execution */}
+          <CampaignWorkflowsSection
+            campaign={campaign}
+            activeWorkflows={activeWorkflows}
+            onRefresh={async () => {
+              await router.invalidate()
+            }}
+          />
         </div>
 
         {/* Right Column: Parameters & Summary */}

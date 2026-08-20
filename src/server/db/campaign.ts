@@ -10,12 +10,25 @@ import type {
   CampaignStatus,
   CampaignStrategy,
   CampaignTarget,
+  WorkflowRunStatus,
 } from '../../types/domain.ts'
+import { researchFreshness } from '../context/freshness.ts'
+import {
+  type StartRunResult,
+  startWorkflowRun,
+  type WorkflowEngineDeps,
+} from '../workflows/engine.ts'
 import { writeAuditLog } from './audit.ts'
 import { listCampaignContent } from './content.ts'
 import { emitEventSafe } from './event.ts'
 import { IntegrityError, requireActiveBrand, requireProductForBrand } from './relations.ts'
+import {
+  computeProvenanceSummary,
+  listResearchSources,
+  type ProvenanceSummary,
+} from './research.ts'
 import { execute, newId, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
+import { getWorkflowById } from './workflow.ts'
 
 interface CampaignRow {
   id: string
@@ -158,6 +171,32 @@ export interface CampaignSummary extends Campaign {
   accountHandles: string[]
 }
 
+export interface CampaignResearchItem {
+  id: string
+  subject: string
+  researchType: string
+  status: string
+  freshness: 'current' | 'aging' | 'stale' | 'expired'
+  provenance: ProvenanceSummary
+  scopeType: string | null
+  scopeId: string | null
+  createdAt: string
+}
+
+export interface CampaignWorkflowRunItem {
+  id: string
+  workflowId: string
+  workflowName: string
+  status: WorkflowRunStatus
+  triggerType: string
+  startedAt: string | null
+  finishedAt: string | null
+  createdAt: string
+  error: string | null
+  hasWaitingApproval: boolean
+  pendingApprovalId: string | null
+}
+
 export interface CampaignDetail extends CampaignSummary {
   accounts: CampaignAccountItem[]
   audienceDetails: CampaignAudience
@@ -166,14 +205,10 @@ export interface CampaignDetail extends CampaignSummary {
   primaryTarget: CampaignTarget | null
   supportingTargets: CampaignTarget[]
   researchCount: number
-  recentResearch: Array<{
-    id: string
-    subject: string
-    researchType: string
-    status: string
-  }>
+  recentResearch: CampaignResearchItem[]
   contentCount: number
   contentItems: CampaignContentItem[]
+  recentWorkflowRuns: CampaignWorkflowRunItem[]
 }
 
 export const campaignObjectiveSchema = z.enum([
@@ -1047,9 +1082,15 @@ export async function getCampaignDetail(
     subject: string
     research_type: string
     status: string
+    expires_at: string | null
+    last_verified_at: string | null
+    updated_at: string
+    created_at: string
+    scope_type: string | null
+    scope_id: string | null
   }>(
     db,
-    `SELECT id, subject, research_type, status
+    `SELECT id, subject, research_type, status, expires_at, last_verified_at, updated_at, created_at, scope_type, scope_id
      FROM research
      WHERE workspace_id = ?
        AND deleted_at IS NULL
@@ -1058,7 +1099,7 @@ export async function getCampaignDetail(
          OR (scope_type = 'brand' AND scope_id = ?)
        )
      ORDER BY created_at DESC
-     LIMIT 5`,
+     LIMIT 10`,
     [workspaceId, id, summary.brandId],
   )
 
@@ -1073,6 +1114,38 @@ export async function getCampaignDetail(
          OR (scope_type = 'brand' AND scope_id = ?)
        )`,
     [workspaceId, id, summary.brandId],
+  )
+
+  const now = nowIso()
+  const recentResearch: CampaignResearchItem[] = await Promise.all(
+    researchRows.map(async (r) => {
+      const freshness = researchFreshness(
+        {
+          status: r.status,
+          expiresAt: r.expires_at,
+          lastVerifiedAt: r.last_verified_at,
+          updatedAt: r.updated_at,
+        },
+        now,
+        90,
+      )
+      const sources = await listResearchSources(db, {
+        workspaceId,
+        researchId: r.id,
+      }).catch(() => [])
+      const provenance = computeProvenanceSummary(sources)
+      return {
+        id: r.id,
+        subject: r.subject,
+        researchType: r.research_type,
+        status: r.status,
+        freshness,
+        provenance,
+        scopeType: r.scope_type,
+        scopeId: r.scope_id,
+        createdAt: r.created_at,
+      }
+    }),
   )
 
   const audienceDetails = parseCampaignAudience({
@@ -1099,6 +1172,8 @@ export async function getCampaignDetail(
     campaignId: id,
   })
 
+  const recentWorkflowRuns = await listCampaignWorkflowRuns(db, workspaceId, id, 10)
+
   return {
     ...summary,
     accounts,
@@ -1108,15 +1183,125 @@ export async function getCampaignDetail(
     primaryTarget,
     supportingTargets,
     researchCount: researchCountRow?.count ?? researchRows.length,
-    recentResearch: researchRows.map((r) => ({
-      id: r.id,
-      subject: r.subject,
-      researchType: r.research_type,
-      status: r.status,
-    })),
+    recentResearch,
     contentCount: contentItems.length,
     contentItems,
+    recentWorkflowRuns,
   }
+}
+
+export async function listCampaignWorkflowRuns(
+  db: SqlDatabase,
+  workspaceId: string,
+  campaignId: string,
+  limit = 10,
+): Promise<CampaignWorkflowRunItem[]> {
+  const rows = await queryAll<{
+    id: string
+    workflow_id: string
+    workflow_name: string
+    status: WorkflowRunStatus
+    trigger_type: string
+    started_at: string | null
+    finished_at: string | null
+    created_at: string
+    error: string | null
+  }>(
+    db,
+    `SELECT r.id, r.workflow_id, w.name AS workflow_name, r.status, r.trigger_type,
+            r.started_at, r.finished_at, r.created_at, r.error
+     FROM workflow_run r
+     JOIN workflow w ON w.id = r.workflow_id
+     WHERE w.workspace_id = ?
+       AND (
+         r.context_json LIKE ?
+         OR r.input LIKE ?
+       )
+     ORDER BY r.created_at DESC, r.rowid DESC
+     LIMIT ?`,
+    [workspaceId, `%${campaignId}%`, `%${campaignId}%`, limit],
+  )
+
+  const items: CampaignWorkflowRunItem[] = []
+  for (const r of rows) {
+    let hasWaitingApproval = false
+    let pendingApprovalId: string | null = null
+
+    if (r.status === 'waiting') {
+      const app = await queryFirst<{ id: string }>(
+        db,
+        `SELECT id FROM approval WHERE run_id = ? AND status = 'pending' LIMIT 1`,
+        [r.id],
+      )
+      if (app) {
+        hasWaitingApproval = true
+        pendingApprovalId = app.id
+      }
+    }
+
+    items.push({
+      id: r.id,
+      workflowId: r.workflow_id,
+      workflowName: r.workflow_name,
+      status: r.status,
+      triggerType: r.trigger_type,
+      startedAt: r.started_at,
+      finishedAt: r.finished_at,
+      createdAt: r.created_at,
+      error: r.error,
+      hasWaitingApproval,
+      pendingApprovalId,
+    })
+  }
+
+  return items
+}
+
+export const startCampaignWorkflowRunInput = z.object({
+  workspaceId: z.string().uuid(),
+  campaignId: z.string().uuid(),
+  workflowId: z.string().uuid(),
+  inputs: z.record(z.string(), z.unknown()).default({}),
+})
+export type StartCampaignWorkflowRunInput = z.input<typeof startCampaignWorkflowRunInput>
+
+export async function startCampaignWorkflowRun(
+  db: SqlDatabase,
+  rawInput: unknown,
+  deps: WorkflowEngineDeps,
+  drive = true,
+): Promise<StartRunResult> {
+  const data = startCampaignWorkflowRunInput.parse(rawInput)
+
+  // 1. Validate Campaign
+  const campaign = await getCampaignSummaryById(db, data.campaignId)
+  if (!campaign || campaign.workspaceId !== data.workspaceId || campaign.deletedAt !== null) {
+    return { ok: false, message: 'Campaign not found or is archived in this workspace.' }
+  }
+
+  // 2. Validate Workflow
+  const workflow = await getWorkflowById(db, data.workflowId)
+  if (!workflow || workflow.workspaceId !== data.workspaceId || workflow.deletedAt !== null) {
+    return { ok: false, message: 'Workflow not found in this workspace.' }
+  }
+  if (workflow.status !== 'active') {
+    return {
+      ok: false,
+      message: `Workflow is ${workflow.status}. Only active workflows can be run.`,
+    }
+  }
+
+  // 3. Start workflow run with campaign scope
+  return startWorkflowRun({
+    db,
+    workspaceId: data.workspaceId,
+    workflowId: data.workflowId,
+    inputs: data.inputs,
+    scope: { type: 'campaign', id: data.campaignId },
+    triggerType: 'manual',
+    deps,
+    drive,
+  })
 }
 
 export interface ListCampaignsParams {

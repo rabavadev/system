@@ -133,8 +133,19 @@ function contextRequestFromInputs(
   workspaceId: string,
   declared: readonly WorkflowInputDecl[],
   values: Record<string, JsonValue>,
+  explicitScope?: {
+    type: 'workspace' | 'brand' | 'niche' | 'product' | 'account' | 'campaign'
+    id: string
+  } | null,
 ): ContextRequest {
   const request: ContextRequest = { workspaceId }
+  if (explicitScope) {
+    if (explicitScope.type === 'campaign') request.campaignId = explicitScope.id
+    else if (explicitScope.type === 'brand') request.brandId = explicitScope.id
+    else if (explicitScope.type === 'product') request.productId = explicitScope.id
+    else if (explicitScope.type === 'niche') request.nicheId = explicitScope.id
+    else if (explicitScope.type === 'account') request.accountId = explicitScope.id
+  }
   for (const decl of declared) {
     const value = values[decl.key]
     if (typeof value !== 'string') continue
@@ -205,6 +216,10 @@ export interface StartWorkflowRunInput {
   workspaceId: string
   workflowId: string
   inputs: Record<string, unknown>
+  scope?: {
+    type: 'workspace' | 'brand' | 'niche' | 'product' | 'account' | 'campaign'
+    id: string
+  } | null
   triggerType?: 'manual' | 'schedule' | 'event' | 'agent'
   deps: WorkflowEngineDeps
   /** Drive inline after creation (the default runtime). Tests can skip. */
@@ -261,7 +276,7 @@ export async function startWorkflowRun(input: StartWorkflowRunInput): Promise<St
   try {
     pkg = await buildContext(
       db,
-      contextRequestFromInputs(workspaceId, definition.inputs, inputs.values),
+      contextRequestFromInputs(workspaceId, definition.inputs, inputs.values, input.scope),
     )
   } catch (error) {
     if (error instanceof ContextError) return { ok: false, message: error.message }
@@ -296,6 +311,21 @@ export async function startWorkflowRun(input: StartWorkflowRunInput): Promise<St
     agents: plan.agents,
     limits: plan.limits,
   })
+
+  if (pkg.campaign) {
+    await emitEventSafe(db, {
+      workspaceId,
+      eventType: 'campaign.workflow_started',
+      actorType: 'user',
+      subjectType: 'workflow_run',
+      subjectId: run.id,
+      payloadJson: JSON.stringify({
+        campaignId: pkg.campaign.id,
+        workflowId: workflow.id,
+        runId: run.id,
+      }),
+    })
+  }
 
   if (input.drive !== false) {
     await driveRun(db, run.id, deps)

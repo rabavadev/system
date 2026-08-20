@@ -1,7 +1,8 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
-
+import { resolveAiRuntime } from '~/server/ai/runtime'
 import { type AccountSummary, listAccounts } from '~/server/db/account'
+import { listAgents } from '~/server/db/agent'
 import { listBrands } from '~/server/db/brand'
 import {
   activateCampaign,
@@ -12,10 +13,12 @@ import {
   createCampaign,
   createCampaignInput,
   getCampaignDetail,
+  getCampaignSummaryById,
   listArchivedCampaigns,
   listCampaigns,
   pauseCampaign,
   restoreCampaign,
+  startCampaignWorkflowRun,
   updateCampaign,
   updateCampaignInput,
   updateCampaignStrategy,
@@ -33,8 +36,13 @@ import {
   updateCampaignContent,
   updateCampaignContentInput,
 } from '~/server/db/content'
+import { createConversation } from '~/server/db/conversation'
+import { emitEventSafe } from '~/server/db/event'
 import { listProducts, type ProductSummary } from '~/server/db/product'
+import { getWorkflowById, getWorkflowVersion, listWorkflows } from '~/server/db/workflow'
 import { getDefaultWorkspace } from '~/server/db/workspace'
+import type { WorkflowInputDecl } from '~/server/workflows/definition'
+import { resolveWorkflowRuntime } from '~/server/workflows/runtime'
 import type { Brand, CampaignContentItem, CampaignStatus, ContentStatus } from '~/types/domain'
 
 const idWire = z.object({ id: z.uuid() })
@@ -104,6 +112,7 @@ export const getCampaignDetailData = createServerFn({ method: 'GET' })
       brands: Brand[]
       productsByBrand: Record<string, ProductSummary[]>
       allAccounts: AccountSummary[]
+      activeWorkflows: Array<{ id: string; name: string; description: string | null }>
     } | null> => {
       const db = getDb()
       const workspace = await getDefaultWorkspace()
@@ -112,10 +121,11 @@ export const getCampaignDetailData = createServerFn({ method: 'GET' })
       const campaign = await getCampaignDetail(db, workspace.id, data.id)
       if (!campaign) return null
 
-      const [brands, products, allAccounts] = await Promise.all([
+      const [brands, products, allAccounts, allWorkflows] = await Promise.all([
         listBrands(workspace.id),
         listProducts(workspace.id),
         listAccounts(workspace.id),
+        listWorkflows(db, workspace.id),
       ])
 
       const productsByBrand: Record<string, ProductSummary[]> = {}
@@ -123,11 +133,16 @@ export const getCampaignDetailData = createServerFn({ method: 'GET' })
         productsByBrand[brand.id] = products.filter((p) => p.brandId === brand.id)
       }
 
+      const activeWorkflows = allWorkflows
+        .filter((w) => w.status === 'active')
+        .map((w) => ({ id: w.id, name: w.name, description: w.description }))
+
       return {
         campaign,
         brands,
         productsByBrand,
         allAccounts,
+        activeWorkflows,
       }
     },
   )
@@ -246,4 +261,96 @@ export const archiveCampaignContentFn = createServerFn({ method: 'POST' })
   .handler(async ({ data }): Promise<CampaignContentItem> => {
     const db = getDb()
     return archiveCampaignContent(db, data)
+  })
+
+export const startCampaignResearchChatFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ campaignId: z.uuid() }))
+  .handler(async ({ data }): Promise<{ conversationId: string; agentId: string | null }> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) throw new Error('Workspace not found')
+
+    const campaign = await getCampaignSummaryById(db, data.campaignId)
+    if (!campaign || campaign.workspaceId !== workspace.id || campaign.deletedAt !== null) {
+      throw new Error('Campaign not found or is archived.')
+    }
+
+    const agents = await listAgents(db, workspace.id)
+    const researcher =
+      agents.find((a) => a.role === 'researcher') ??
+      agents.find((a) => a.name.toLowerCase() === 'researcher')
+    const agentId = researcher?.id ?? null
+
+    const conversation = await createConversation(db, {
+      workspaceId: workspace.id,
+      title: `Research: ${campaign.name}`,
+      scopeType: 'campaign',
+      scopeId: campaign.id,
+    })
+
+    await emitEventSafe(db, {
+      workspaceId: workspace.id,
+      eventType: 'campaign.research_started',
+      actorType: 'user',
+      subjectType: 'conversation',
+      subjectId: conversation.id,
+      payloadJson: JSON.stringify({
+        campaignId: campaign.id,
+        conversationId: conversation.id,
+        agentId,
+      }),
+    })
+
+    return {
+      conversationId: conversation.id,
+      agentId,
+    }
+  })
+
+export const startCampaignWorkflowRunFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      campaignId: z.uuid(),
+      workflowId: z.uuid(),
+      inputs: z.record(z.string(), z.unknown()).default({}),
+    }),
+  )
+  .handler(async ({ data }): Promise<{ ok: boolean; runId?: string; message?: string }> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) return { ok: false, message: 'Workspace not found' }
+
+    const { deps } = resolveAiRuntime()
+    const engineDeps = { ai: deps }
+
+    const started = await startCampaignWorkflowRun(
+      db,
+      {
+        workspaceId: workspace.id,
+        campaignId: data.campaignId,
+        workflowId: data.workflowId,
+        inputs: data.inputs,
+      },
+      engineDeps,
+      false,
+    )
+    if (!started.ok || !started.runId) return started
+    await resolveWorkflowRuntime().drive(db, started.runId, engineDeps)
+    return started
+  })
+
+export const getWorkflowInputDeclsFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ workflowId: z.uuid() }))
+  .handler(async ({ data }): Promise<WorkflowInputDecl[]> => {
+    const db = getDb()
+    const workflow = await getWorkflowById(db, data.workflowId)
+    if (!workflow?.currentVersionId) return []
+    const version = await getWorkflowVersion(db, workflow.currentVersionId)
+    if (!version) return []
+    try {
+      const parsed = JSON.parse(version.definitionJson)
+      return Array.isArray(parsed.inputs) ? parsed.inputs : []
+    } catch {
+      return []
+    }
   })

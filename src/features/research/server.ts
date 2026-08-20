@@ -7,6 +7,7 @@ import type { Freshness } from '~/server/context/types'
 import { listAccounts } from '~/server/db/account'
 import { listAgents } from '~/server/db/agent'
 import { listBrands } from '~/server/db/brand'
+import { listCampaigns } from '~/server/db/campaign'
 import { getDb } from '~/server/db/client'
 import { createConversation } from '~/server/db/conversation'
 import { emitEventSafe } from '~/server/db/event'
@@ -162,6 +163,7 @@ function computeScopeLabel(
     niches: Map<string, string>
     products: Map<string, string>
     accounts: Map<string, string>
+    campaigns?: Map<string, string>
   },
 ): string {
   if (!record.scopeType || record.scopeType === 'workspace') {
@@ -187,7 +189,8 @@ function computeScopeLabel(
     return `Platform: ${record.scopeId}`
   }
   if (record.scopeType === 'campaign' && record.scopeId) {
-    return 'Campaign'
+    const name = maps.campaigns?.get(record.scopeId)
+    return name ? `Campaign: ${name}` : 'Campaign'
   }
   return 'Workspace'
 }
@@ -200,6 +203,7 @@ function enrichResearchRecord(
     niches: Map<string, string>
     products: Map<string, string>
     accounts: Map<string, string>
+    campaigns?: Map<string, string>
   },
   now: string,
 ): ResearchListItem {
@@ -242,10 +246,12 @@ function enrichResearchRecord(
 }
 
 async function loadScopeEntities(workspaceId: string) {
-  const [brands, products, accounts] = await Promise.all([
+  const db = getDb()
+  const [brands, products, accounts, campaigns] = await Promise.all([
     listBrands(workspaceId),
     listProducts(workspaceId),
     listAccounts(workspaceId),
+    listCampaigns(db, { workspaceId }),
   ])
 
   const niches: Array<{ id: string; name: string; brandId: string }> = []
@@ -265,6 +271,7 @@ async function loadScopeEntities(workspaceId: string) {
     niches: new Map(niches.map((n) => [n.id, n.name])),
     products: new Map(products.map((p) => [p.id, p.name])),
     accounts: new Map(accounts.map((a) => [a.id, a.displayName ?? a.handle])),
+    campaigns: new Map(campaigns.map((c) => [c.id, c.name])),
   }
 
   return {
@@ -272,6 +279,7 @@ async function loadScopeEntities(workspaceId: string) {
     niches,
     products: products.map((p) => ({ id: p.id, name: p.name, brandId: p.brandId })),
     accounts: accounts.map((a) => ({ id: a.id, name: a.displayName ?? a.handle })),
+    campaigns: campaigns.map((c) => ({ id: c.id, name: c.name, brandId: c.brandId })),
     maps,
   }
 }
@@ -367,16 +375,17 @@ export interface ResearchScopeOptions {
   niches: Array<{ id: string; name: string; brandId: string }>
   products: Array<{ id: string; name: string; brandId: string }>
   accounts: Array<{ id: string; name: string }>
+  campaigns: Array<{ id: string; name: string; brandId: string | null }>
 }
 
 export const getResearchScopeOptionsFn = createServerFn({ method: 'GET' }).handler(
   async (): Promise<ResearchScopeOptions> => {
     const workspace = await getDefaultWorkspace()
     if (!workspace) {
-      return { brands: [], niches: [], products: [], accounts: [] }
+      return { brands: [], niches: [], products: [], accounts: [], campaigns: [] }
     }
-    const { brands, niches, products, accounts } = await loadScopeEntities(workspace.id)
-    return { brands, niches, products, accounts }
+    const { brands, niches, products, accounts, campaigns } = await loadScopeEntities(workspace.id)
+    return { brands, niches, products, accounts, campaigns }
   },
 )
 
@@ -428,6 +437,21 @@ export const startResearcherChatFn = createServerFn({ method: 'POST' })
       scopeType: targetScopeType,
       scopeId: targetScopeId,
     })
+
+    if (targetScopeType === 'campaign' && targetScopeId) {
+      await emitEventSafe(db, {
+        workspaceId: workspace.id,
+        eventType: 'campaign.research_started',
+        actorType: 'user',
+        subjectType: 'conversation',
+        subjectId: conversation.id,
+        payloadJson: JSON.stringify({
+          campaignId: targetScopeId,
+          conversationId: conversation.id,
+          agentId,
+        }),
+      })
+    }
 
     return {
       conversationId: conversation.id,

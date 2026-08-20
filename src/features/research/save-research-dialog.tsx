@@ -59,6 +59,7 @@ export function SaveResearchDialog({
     niches: [],
     products: [],
     accounts: [],
+    campaigns: [],
   })
 
   // Extract available genuine search sources from assistant message metadata
@@ -293,6 +294,7 @@ export function SaveResearchDialog({
                 <option value="niche">Niche</option>
                 <option value="product">Product</option>
                 <option value="account">Account</option>
+                <option value="campaign">Campaign</option>
               </select>
             </div>
 
@@ -330,6 +332,12 @@ export function SaveResearchDialog({
                     scopeOptions.accounts.map((a) => (
                       <option key={a.id} value={a.id}>
                         {a.name}
+                      </option>
+                    ))}
+                  {scopeType === 'campaign' &&
+                    (scopeOptions.campaigns ?? []).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
                       </option>
                     ))}
                 </select>
