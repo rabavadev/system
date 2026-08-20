@@ -1457,7 +1457,12 @@ test('42. STEP 12C.8: Researcher agent configuration has read-only context capab
   assert.ok(researcher, 'Researcher agent definition must exist')
   assert.equal(researcher.name, 'Researcher')
   assert.equal(researcher.executionType, 'direct_model')
-  assert.deepEqual(researcher.capabilities, ['read_context', 'read_memory', 'read_research'])
+  assert.deepEqual(researcher.capabilities, [
+    'read_context',
+    'read_memory',
+    'read_research',
+    'web_search',
+  ])
   // Ensure no write capabilities are granted to researcher
   assert.ok(!researcher.capabilities.includes('write_research' as never))
   assert.ok(!researcher.capabilities.includes('write_memory' as never))

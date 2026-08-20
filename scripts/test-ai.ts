@@ -604,6 +604,7 @@ test('execution request/result stay provider-neutral end to end', async () => {
     'model',
     'provider',
     'status',
+    'toolCalls',
     'usage',
   ])
 })

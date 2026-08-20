@@ -232,6 +232,7 @@ function caller(
 }
 
 const CHIEF = caller(['read_context', 'read_memory', 'read_research', 'request_workflow'])
+const RESEARCHER = caller(['read_context', 'read_memory', 'read_research', 'web_search'])
 
 test('registry loads built-in tools with stable keys and no provider schema leakage', () => {
   const definitions = listToolDefinitions()
@@ -390,7 +391,10 @@ test('available-tool filtering follows capability, status and adapter presence',
   assert.ok(chiefTools.includes('research.list_relevant'))
   assert.ok(!chiefTools.includes('analytics.read'))
   assert.ok(!chiefTools.includes('platform.publish'))
-  assert.ok(chiefTools.includes('web.search'))
+  assert.ok(!chiefTools.includes('web.search'), 'Chief does not have web_search capability')
+
+  const researcherTools = getAvailableTools(RESEARCHER).map((t) => t.key)
+  assert.ok(researcherTools.includes('web.search'), 'Researcher has web_search capability')
 
   const creatorTools = getAvailableTools(
     caller(['read_context', 'read_memory', 'create_draft']),
@@ -607,7 +611,7 @@ test('external tool timeout policy is centralized and controlled', async () => {
     ],
   ])
   const result = await executeTool(
-    { db, workspaceId: WS_A, toolKey: 'web.search', args: { query: 'lamps' }, caller: CHIEF },
+    { db, workspaceId: WS_A, toolKey: 'web.search', args: { query: 'lamps' }, caller: RESEARCHER },
     { definitions, adapters },
   )
   assert.equal(result.error?.code, 'timeout')
@@ -657,7 +661,7 @@ test('web.search tool metadata is registered with correct category, risk, capabi
   assert.equal(webSearch.key, 'web.search')
   assert.equal(webSearch.category, 'web')
   assert.deepEqual(webSearch.risk, ['read', 'external'])
-  assert.equal(webSearch.requiredCapability, 'read_research')
+  assert.equal(webSearch.requiredCapability, 'web_search')
   assert.equal(webSearch.status, 'available')
   assert.equal(webSearch.timeoutMs, 10_000)
   assert.equal(webSearch.cost, 'metered')
@@ -702,7 +706,7 @@ test('web.search tool returns not_configured when no provider client is active',
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'test query' },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
 
   assert.equal(result.ok, false)
@@ -737,7 +741,7 @@ test('web.search executes with MockWebSearchClient and returns normalized result
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'typescript modular architecture', limit: 5 },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
 
   assert.equal(result.ok, true)
@@ -786,7 +790,7 @@ test('web.search rejects empty or whitespace-only query', async () => {
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: '' },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
   assert.equal(resEmpty.ok, false)
   assert.equal(resEmpty.error?.code, 'invalid_input')
@@ -796,7 +800,7 @@ test('web.search rejects empty or whitespace-only query', async () => {
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: '    ' },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
   assert.equal(resWhitespace.ok, false)
   assert.equal(resWhitespace.error?.code, 'invalid_input')
@@ -815,7 +819,7 @@ test('web.search rejects oversized query (> 300 characters)', async () => {
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: longQuery },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
   assert.equal(result.ok, false)
   assert.equal(result.error?.code, 'invalid_input')
@@ -843,7 +847,7 @@ test('web.search enforces limit bounds and defaults', async () => {
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'test' },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
   assert.equal(resDefault.ok, true)
   const defaultData = resDefault.data as { results: unknown[] }
@@ -855,7 +859,7 @@ test('web.search enforces limit bounds and defaults', async () => {
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'test', limit: 2 },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
   assert.equal(res2.ok, true)
   const data2 = res2.data as { results: unknown[] }
@@ -867,7 +871,7 @@ test('web.search enforces limit bounds and defaults', async () => {
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'test', limit: 0 },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
   assert.equal(resInvalid.ok, false)
   assert.equal(resInvalid.error?.code, 'invalid_input')
@@ -895,7 +899,7 @@ test('web.search leaves missing metadata fields as null and does not fabricate d
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'minimal' },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
 
   assert.equal(result.ok, true)
@@ -942,7 +946,7 @@ test('web.search discards unsafe URL schemes (javascript, file, data, ftp)', asy
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'security test', limit: 10 },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
 
   assert.equal(result.ok, true)
@@ -972,7 +976,7 @@ test('web.search hides raw provider payloads from tool output', async () => {
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'test extra' },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
 
   assert.equal(result.ok, true)
@@ -1006,7 +1010,7 @@ test('web.search prevents secret leakage in execution events and logs', async ()
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'find private keys' },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
 
   const events = await listRecentEvents(db, WS_A, 'tool.execution.', 5)
@@ -1021,12 +1025,12 @@ test('web.search prevents secret leakage in execution events and logs', async ()
   setActiveWebSearchClient(null)
 })
 
-test('web.search enforces required capability (read_research)', async () => {
+test('web.search enforces required capability (web_search)', async () => {
   const db = freshDb()
   const mockClient = new MockWebSearchClient({ results: [] })
   setActiveWebSearchClient(mockClient)
 
-  const noCapabilityCaller = caller(['read_context', 'read_memory']) // missing read_research
+  const noCapabilityCaller = caller(['read_context', 'read_memory', 'read_research']) // missing web_search
   const result = await executeTool({
     db,
     workspaceId: WS_A,
@@ -1061,7 +1065,7 @@ test('web.search approval requirement blocks execution without approval', async 
       workspaceId: WS_A,
       toolKey: 'web.search',
       args: { query: 'approval test' },
-      caller: CHIEF,
+      caller: RESEARCHER,
       approvalGranted: false,
     },
     { definitions, adapters },
@@ -1076,7 +1080,7 @@ test('web.search approval requirement blocks execution without approval', async 
       workspaceId: WS_A,
       toolKey: 'web.search',
       args: { query: 'approval test' },
-      caller: CHIEF,
+      caller: RESEARCHER,
       approvalGranted: true,
     },
     { definitions, adapters },
@@ -1103,7 +1107,7 @@ test('web.search timeout is handled cleanly', async () => {
       workspaceId: WS_A,
       toolKey: 'web.search',
       args: { query: 'timeout test' },
-      caller: CHIEF,
+      caller: RESEARCHER,
     },
     { definitions, adapters },
   )
@@ -1124,7 +1128,7 @@ test('web.search provider errors are normalized to provider_error', async () => 
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'failing query' },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
 
   assert.equal(result.ok, false)
@@ -1145,7 +1149,7 @@ test('web.search rate limits are normalized to rate_limited', async () => {
     workspaceId: WS_A,
     toolKey: 'web.search',
     args: { query: 'rate limited query' },
-    caller: CHIEF,
+    caller: RESEARCHER,
   })
 
   assert.equal(result.ok, false)

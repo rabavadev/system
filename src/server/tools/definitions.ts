@@ -318,7 +318,7 @@ export const TOOL_DEFINITIONS = [
       })
       .strict(),
     outputSchema: webSearchOutput,
-    requiredCapability: 'read_research',
+    requiredCapability: 'web_search',
     risk: ['read', 'external'] as const,
     executionMode: 'sync',
     status: 'available',

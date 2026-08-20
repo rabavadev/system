@@ -53,6 +53,7 @@ import {
 import { createConversation, getConversationById } from '../src/server/db/conversation.ts'
 import { appendUserMessage, listMessages } from '../src/server/db/message.ts'
 import type { SqlDatabase } from '../src/server/db/sql.ts'
+import { MockWebSearchClient, setActiveWebSearchClient } from '../src/server/tools/index.ts'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -100,11 +101,21 @@ function freshDb(): SqlDatabase {
 }
 
 /** Adapter that records what it received and returns a scripted response. */
-function recordingAdapter(handler?: () => AIAdapterRawResponse): {
+function recordingAdapter(
+  handler?: (input: {
+    model: string
+    messages: { role: string; content: string }[]
+    tools?: unknown
+  }) => AIAdapterRawResponse,
+): {
   adapter: AIProviderAdapter
-  calls: { model: string; messages: { role: string; content: string }[] }[]
+  calls: { model: string; messages: { role: string; content: string }[]; tools?: unknown }[]
 } {
-  const calls: { model: string; messages: { role: string; content: string }[] }[] = []
+  const calls: {
+    model: string
+    messages: { role: string; content: string }[]
+    tools?: unknown
+  }[] = []
   return {
     calls,
     adapter: {
@@ -112,7 +123,7 @@ function recordingAdapter(handler?: () => AIAdapterRawResponse): {
       async execute(input) {
         calls.push(input)
         return (
-          handler?.() ?? {
+          handler?.(input) ?? {
             content: 'Noted. Here is my take.',
             finishReason: 'stop',
             usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
@@ -575,7 +586,7 @@ test('21/28. replies use the stored version config, never client-supplied text',
 
 /* ---- 34, 35. Honest limitations ---- */
 
-test('34/35. Researcher promises no live research; Publisher cannot publish', async () => {
+test('34/35. Researcher uses web.search responsibly; Publisher cannot publish', async () => {
   const db = freshDb()
   await ensureBuiltinAgents(db, WS)
   const researcher = await builtinByName(db, 'Researcher')
@@ -583,8 +594,9 @@ test('34/35. Researcher promises no live research; Publisher cannot publish', as
     (await getAgentVersion(db, researcher.currentVersionId ?? ''))?.configJson ?? '',
   )
   assert.ok(rConfig)
-  assert.match(rConfig.instructions, /Live web research is not enabled yet/i)
-  assert.match(rConfig.instructions, /[Nn]ever pretend you searched/i)
+  assert.match(rConfig.instructions, /web\.search/i)
+  assert.match(rConfig.instructions, /snippets are summaries/i)
+  assert.match(rConfig.instructions, /[Nn]ever invent sources/i)
 
   const analytics = await builtinByName(db, 'Analytics')
   const aConfig = parseAgentVersionConfig(
@@ -743,4 +755,270 @@ test('provider failure: safe message, no fake assistant reply', async () => {
   assert.match(reply.userMessage, /Strategist/)
   const messages = await listMessages(db, conversation.id)
   assert.ok(messages.every((m) => m.senderType === 'user'))
+})
+
+/* ========================================================================= */
+/* STEP 13B: Researcher Web Search & Generic AI Tool Loop Tests              */
+/* ========================================================================= */
+
+test('STEP 13B: Built-in Researcher has web_search capability, other agents do not', async () => {
+  const db = freshDb()
+  await ensureBuiltinAgents(db, WS)
+  const agents = await listAgents(db, WS)
+
+  for (const agent of agents) {
+    const version = await getAgentVersion(db, agent.currentVersionId ?? '')
+    assert.ok(version, `current version for ${agent.name} should exist`)
+    const parsed = parseAgentVersionConfig(version.configJson)
+
+    if (agent.name === 'Researcher') {
+      assert.ok(
+        parsed.capabilities.includes('web_search'),
+        'Researcher must have web_search capability',
+      )
+      assert.ok(
+        parsed.instructions.includes('web.search'),
+        'Researcher instructions should mention web.search',
+      )
+    } else {
+      assert.ok(
+        !parsed.capabilities.includes('web_search'),
+        `${agent.name} must NOT have web_search capability`,
+      )
+    }
+  }
+})
+
+test('STEP 13B: Researcher executes web.search via generic AI tool calling loop', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({
+    resultsByQuery: {
+      'eco coffee packaging': [
+        {
+          title: 'Eco Coffee Solutions',
+          url: 'https://ecocoffee.example/packaging',
+          snippet: 'Biodegradable packaging for specialty coffee roasters.',
+          publisher: 'ecocoffee.example',
+          publishedAt: '2026-08-10',
+        },
+      ],
+    },
+  })
+  setActiveWebSearchClient(mockClient)
+
+  let turn = 0
+  const { adapter, calls } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      // Turn 1: Model requests web.search tool
+      const tools = input.tools as Array<{ key: string }>
+      assert.ok(tools?.some((t) => t.key === 'web.search'))
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-1',
+            toolKey: 'web.search',
+            args: { query: 'eco coffee packaging', limit: 5 },
+          },
+        ],
+        finishReason: 'tool_calls',
+        usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+      }
+    }
+    // Turn 2: Model receives tool result and produces final answer
+    const toolMsg = input.messages.find((m) => m.role === 'tool')
+    assert.ok(toolMsg, 'Model must receive tool response message')
+    assert.match(toolMsg.content, /Eco Coffee Solutions/)
+    return {
+      content:
+        'Based on recent findings from Eco Coffee Solutions (https://ecocoffee.example/packaging), biodegradable packaging is standard.',
+      finishReason: 'stop',
+      usage: { inputTokens: 40, outputTokens: 25, totalTokens: 65 },
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    researcher.id,
+    'What eco coffee packaging exists?',
+    adapter,
+  )
+
+  assert.ok(reply.ok)
+  assert.equal(calls.length, 2, 'AI loop must run 2 turns (tool call + final reply)')
+  assert.match(reply.message.content, /Eco Coffee Solutions/)
+
+  // Verify trace execution and sources
+  assert.equal(reply.execution.toolCalls?.length, 1)
+  assert.equal(reply.execution.toolCalls[0].toolKey, 'web.search')
+  assert.equal(reply.execution.toolCalls[0].status, 'succeeded')
+  assert.equal(reply.execution.toolCalls[0].resultCount, 1)
+
+  assert.equal(reply.execution.sources?.length, 1)
+  assert.equal(reply.execution.sources[0].title, 'Eco Coffee Solutions')
+  assert.equal(reply.execution.sources[0].url, 'https://ecocoffee.example/packaging')
+  assert.equal(reply.execution.sources[0].publisher, 'ecocoffee.example')
+
+  // Verify metadata persisted on message
+  assert.ok(reply.message.providerMetadataJson)
+  const persistedMeta = JSON.parse(reply.message.providerMetadataJson)
+  assert.equal(persistedMeta.sources?.length, 1)
+  assert.equal(persistedMeta.toolCalls?.length, 1)
+
+  setActiveWebSearchClient(null)
+})
+
+test('STEP 13B: Tool calling loop is bounded to maximum 3 tool calls', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({
+    results: [{ title: 'Generic Result', url: 'https://example.com/res' }],
+  })
+  setActiveWebSearchClient(mockClient)
+
+  let callCount = 0
+  const { adapter } = recordingAdapter((input) => {
+    callCount += 1
+    if (callCount <= 3) {
+      // Model keeps trying to call tools
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: `call-${callCount}`,
+            toolKey: 'web.search',
+            args: { query: `query ${callCount}` },
+          },
+        ],
+        finishReason: 'tool_calls',
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      }
+    }
+    // Final turn after tool limit is reached
+    assert.equal(input.tools, undefined, 'Tools must be disabled after max calls reached')
+    return {
+      content: 'Here is the summary after 3 searches.',
+      finishReason: 'stop',
+      usage: { inputTokens: 30, outputTokens: 10, totalTokens: 40 },
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(db, conversation.id, researcher.id, 'Search repeatedly.', adapter)
+
+  assert.ok(reply.ok)
+  // Max 3 tool calls executed in loop
+  assert.equal(reply.execution.toolCalls?.length, 3)
+  assert.equal(reply.message.content, 'Here is the summary after 3 searches.')
+
+  setActiveWebSearchClient(null)
+})
+
+test('STEP 13B: Non-permitted agent model call to web.search is rejected with capability_denied', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({
+    results: [{ title: 'Secret', url: 'https://secret.com' }],
+  })
+  setActiveWebSearchClient(mockClient)
+
+  let turn = 0
+  const { adapter } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      // Chief model tries to invoke web.search anyway
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-unauthorized',
+            toolKey: 'web.search',
+            args: { query: 'unauthorized search' },
+          },
+        ],
+        finishReason: 'tool_calls',
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      }
+    }
+    // Turn 2: Chief model receives capability_denied error
+    const toolMsg = input.messages.find((m) => m.role === 'tool')
+    assert.ok(toolMsg)
+    assert.match(toolMsg.content, /capability_denied/)
+    return {
+      content: 'I cannot use web search. I will answer from workspace context.',
+      finishReason: 'stop',
+      usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const chief = await builtinByName(db, 'Chief')
+
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    chief.id,
+    'Search the web for competitors.',
+    adapter,
+  )
+
+  assert.ok(reply.ok)
+  assert.match(reply.message.content, /cannot use web search/)
+  // Mock client was never called
+  assert.equal(mockClient.calls.length, 0)
+  assert.equal(reply.execution.toolCalls?.length, 1)
+  assert.equal(reply.execution.toolCalls[0].status, 'failed')
+  assert.equal(reply.execution.toolCalls[0].error, 'capability_denied')
+
+  setActiveWebSearchClient(null)
+})
+
+test('STEP 13B: Search failure (e.g. not_configured) is handled gracefully by model loop', async () => {
+  const db = freshDb()
+  // No active search client
+  setActiveWebSearchClient(null)
+
+  let turn = 0
+  const { adapter } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-not-configured',
+            toolKey: 'web.search',
+            args: { query: 'unconfigured search' },
+          },
+        ],
+        finishReason: 'tool_calls',
+        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+      }
+    }
+    const toolMsg = input.messages.find((m) => m.role === 'tool')
+    assert.ok(toolMsg)
+    assert.match(toolMsg.content, /not_configured/)
+    return {
+      content:
+        'Web search is not configured in this workspace yet. Here is what we have in context.',
+      finishReason: 'stop',
+      usage: { inputTokens: 20, outputTokens: 10, totalTokens: 30 },
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(db, conversation.id, researcher.id, 'Search web.', adapter)
+
+  assert.ok(reply.ok)
+  assert.match(reply.message.content, /not configured/)
+  assert.equal(reply.execution.toolCalls?.length, 1)
+  assert.equal(reply.execution.toolCalls[0].status, 'failed')
+  assert.equal(reply.execution.toolCalls[0].error, 'not_configured')
 })

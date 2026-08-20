@@ -14,6 +14,10 @@ export {
   type AIExecutionTraceSummary,
   type AIMessage,
   type AIProviderAdapter,
+  type AISourceReference,
+  type AIToolCall,
+  type AIToolDefinition,
+  type AIToolTraceSummary,
   type AIUsage,
   type ModelStrategy,
 } from './types.ts'

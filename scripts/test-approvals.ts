@@ -642,7 +642,7 @@ test('22. Agent cannot approve requests (anti-self-approval)', async () => {
         workspaceId: WS_A,
         requestId: created.request.id,
         decision: 'approved',
-        actor: { actorType: 'agent' as any, actorId: AGENT_ID },
+        actor: { actorType: 'agent' as never, actorId: AGENT_ID },
       }),
     /Only human users or system/i,
   )
@@ -665,7 +665,7 @@ test('23. Chief cannot self-approve requests', async () => {
         workspaceId: WS_A,
         requestId: created.request.id,
         decision: 'approved',
-        actor: { actorType: 'chief' as any },
+        actor: { actorType: 'chief' as never },
       }),
     /Only human users or system/i,
   )

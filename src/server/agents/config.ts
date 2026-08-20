@@ -27,6 +27,7 @@ export const AGENT_CAPABILITIES = [
   'request_workflow',
   'publish',
   'modify_account',
+  'web_search',
 ] as const
 export type AgentCapability = (typeof AGENT_CAPABILITIES)[number]
 

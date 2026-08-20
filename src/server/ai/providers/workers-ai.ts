@@ -1,4 +1,4 @@
-import { AIAdapterError, type AIProviderAdapter } from '../types.ts'
+import { AIAdapterError, type AIProviderAdapter, type AIToolCall } from '../types.ts'
 
 /**
  * Workers AI adapter — the first direct-model provider.
@@ -22,6 +22,7 @@ export interface WorkersAiLike {
     model: string,
     input: {
       messages: { role: string; content: string }[]
+      tools?: unknown
       max_tokens?: number
       temperature?: number
     },
@@ -31,6 +32,7 @@ export interface WorkersAiLike {
 
 interface WorkersAiTextResponse {
   response?: unknown
+  tool_calls?: unknown
   usage?: {
     prompt_tokens?: unknown
     completion_tokens?: unknown
@@ -50,10 +52,36 @@ function isUnavailable(message: string): boolean {
   return /unavailable|503|502|500|overloaded|internal/i.test(message)
 }
 
+function parseWorkersAiToolCalls(raw: unknown): AIToolCall[] | undefined {
+  if (!Array.isArray(raw) || raw.length === 0) return undefined
+  const calls: AIToolCall[] = []
+  for (let i = 0; i < raw.length; i++) {
+    const item = raw[i]
+    if (typeof item !== 'object' || item === null) continue
+    const name = Reflect.get(item, 'name') || Reflect.get(item, 'tool')
+    let args = Reflect.get(item, 'arguments') || Reflect.get(item, 'args') || {}
+    if (typeof args === 'string') {
+      try {
+        args = JSON.parse(args)
+      } catch {
+        args = {}
+      }
+    }
+    if (typeof name === 'string' && typeof args === 'object' && args !== null) {
+      calls.push({
+        id: `call-${i + 1}`,
+        toolKey: name,
+        args: args as Record<string, unknown>,
+      })
+    }
+  }
+  return calls.length > 0 ? calls : undefined
+}
+
 export function createWorkersAiAdapter(ai: WorkersAiLike, gatewayId?: string): AIProviderAdapter {
   return {
     key: 'workers-ai',
-    async execute({ model, messages, generation, signal }) {
+    async execute({ model, messages, tools, generation, signal }) {
       if (signal.aborted) {
         throw new AIAdapterError('timeout', 'The model did not respond in time.', false)
       }
@@ -65,6 +93,18 @@ export function createWorkersAiAdapter(ai: WorkersAiLike, gatewayId?: string): A
           model,
           {
             messages: messages.map((m) => ({ role: m.role, content: m.content })),
+            ...(tools && tools.length > 0
+              ? {
+                  tools: tools.map((t) => ({
+                    type: 'function',
+                    function: {
+                      name: t.key,
+                      description: t.description,
+                      parameters: t.inputSchema ?? {},
+                    },
+                  })),
+                }
+              : {}),
             max_tokens: generation.maxTokens,
             temperature: generation.temperature,
           },
@@ -105,17 +145,22 @@ export function createWorkersAiAdapter(ai: WorkersAiLike, gatewayId?: string): A
       }
 
       const body = raw as WorkersAiTextResponse | undefined
-      if (!body || typeof body !== 'object' || typeof body.response !== 'string') {
+      const parsedToolCalls = parseWorkersAiToolCalls(body?.tool_calls)
+      const content = typeof body?.response === 'string' ? body.response : null
+
+      if (!content && !parsedToolCalls) {
         throw new AIAdapterError(
           'malformed_response',
           'The provider returned an unexpected shape.',
           true,
         )
       }
+
       return {
-        content: body.response,
-        finishReason: 'stop',
-        usage: body.usage
+        content,
+        ...(parsedToolCalls ? { toolCalls: parsedToolCalls } : {}),
+        finishReason: parsedToolCalls ? 'tool_calls' : 'stop',
+        usage: body?.usage
           ? {
               inputTokens: asTokenCount(body.usage.prompt_tokens),
               outputTokens: asTokenCount(body.usage.completion_tokens),

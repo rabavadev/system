@@ -1,17 +1,24 @@
 import { composeAgentPrompt, composeTaskPrompt } from '../ai/composer.ts'
 import { type ExecuteAIDeps, executeAI } from '../ai/executor.ts'
-import type { AIExecutionTraceSummary } from '../ai/types.ts'
+import type {
+  AIExecutionTraceSummary,
+  AIMessage,
+  AISourceReference,
+  AIToolDefinition,
+  AIToolTraceSummary,
+} from '../ai/types.ts'
 import type { ContextPackage } from '../context/index.ts'
 import { emitEventSafe } from '../db/event.ts'
 import { newId, type SqlDatabase } from '../db/sql.ts'
+import { executeTool, getAvailableTools, type ToolCaller, type ToolKey } from '../tools/index.ts'
 import type { AgentHandle } from './registry.ts'
 
 /**
- * Generic server-side agent task execution (STEP 10). ONE path runs an
- * agent version against a ContextPackage:
+ * Generic server-side agent task execution (STEP 10 & STEP 13B). ONE path runs an
+ * agent version against a ContextPackage with bounded provider-neutral tool calling:
  *
  *   Agent Version + ContextPackage + task + structured step inputs
- *     → composer → executeAI → structured AgentTaskResult
+ *     → composer → executeAI → (bounded tool-call loop via executeTool) → structured AgentTaskResult
  *
  * Chat (reply.ts) is a WRAPPER around this: it resolves the chat agent,
  * builds chat context, calls executeAgentTask, then persists the assistant
@@ -20,6 +27,8 @@ import type { AgentHandle } from './registry.ts'
  *
  * There is no second agent execution architecture.
  */
+
+export const MAX_AGENT_TOOL_CALLS = 3
 
 export interface AgentTaskInput {
   db: SqlDatabase
@@ -125,46 +134,263 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
     }),
   })
 
-  const result = await executeAI(
-    {
-      executionId,
-      agent: {
-        agentId: agent.id,
-        name: agent.name,
-        versionId: version.id,
-        version: version.version,
-        executionType: agent.executionType,
+  const caller: ToolCaller = {
+    agentId: agent.id,
+    agentVersionId: version.id,
+    agentName: agent.name,
+    agentStatus: agent.status,
+    capabilities: config.capabilities,
+  }
+
+  const availableTools = getAvailableTools(caller)
+  const modelTools: AIToolDefinition[] = availableTools.map((t) => ({
+    key: t.key,
+    name: t.name,
+    description: t.description,
+  }))
+
+  let toolCallCount = 0
+  const toolTraces: AIToolTraceSummary[] = []
+  const searchSources: AISourceReference[] = []
+  const currentMessages: AIMessage[] = [...composed.messages]
+  let lastContent: string | null = null
+  let lastFinishReason: string | null = null
+  let totalAttempts = 0
+  let totalLatencyMs = 0
+  let hasUsage = false
+  let totalInputTokens = 0
+  let totalOutputTokens = 0
+  let totalTokens = 0
+  let lastProvider: string | null = null
+  let lastModel: string | null = null
+
+  while (true) {
+    const aiResult = await executeAI(
+      {
+        executionId: toolCallCount === 0 ? executionId : `${executionId}-step-${toolCallCount}`,
+        agent: {
+          agentId: agent.id,
+          name: agent.name,
+          versionId: version.id,
+          version: version.version,
+          executionType: agent.executionType,
+        },
+        messages: currentMessages,
+        ...(toolCallCount < MAX_AGENT_TOOL_CALLS && modelTools.length > 0
+          ? { tools: modelTools }
+          : {}),
+        model: config.model,
+        generation: config.generation,
+        metadata: {
+          workspaceId,
+          scopeSource: composed.contextSummary.scopeSource,
+          toolCallCount,
+          ...metadata,
+        },
       },
-      messages: composed.messages,
-      model: config.model,
-      generation: config.generation,
-      metadata: {
+      deps,
+    )
+
+    totalAttempts += aiResult.attempts
+    totalLatencyMs += aiResult.latencyMs
+    lastProvider = aiResult.provider
+    lastModel = aiResult.model
+    lastFinishReason = aiResult.finishReason
+
+    if (aiResult.usage) {
+      hasUsage = true
+      totalInputTokens += aiResult.usage.inputTokens ?? 0
+      totalOutputTokens += aiResult.usage.outputTokens ?? 0
+      totalTokens += aiResult.usage.totalTokens ?? 0
+    }
+
+    if (aiResult.status === 'failed') {
+      const code = aiResult.error?.code ?? 'unknown'
+      await emitEventSafe(db, {
         workspaceId,
-        scopeSource: composed.contextSummary.scopeSource,
-        ...metadata,
-      },
-    },
-    deps,
-  )
+        eventType: 'ai.execution.failed',
+        actorType: 'agent',
+        actorId: agent.id,
+        subjectType: eventSubject.subjectType,
+        subjectId: eventSubject.subjectId,
+        payloadJson: JSON.stringify({
+          executionId,
+          agentVersionId: version.id,
+          provider: aiResult.provider,
+          model: aiResult.model,
+          code,
+          retryable: aiResult.error?.retryable ?? false,
+          latencyMs: totalLatencyMs,
+          attempts: totalAttempts,
+        }),
+      })
+      return {
+        ok: false,
+        errorCode: code,
+        message: agentFailureMessage(agent.name, code),
+        retryable: aiResult.error?.retryable ?? false,
+      }
+    }
+
+    lastContent = aiResult.content
+    const requestedCalls = aiResult.toolCalls
+
+    if (!requestedCalls || requestedCalls.length === 0 || toolCallCount >= MAX_AGENT_TOOL_CALLS) {
+      break
+    }
+
+    // Append model assistant turn with tool calls
+    currentMessages.push({
+      role: 'assistant',
+      content: aiResult.content ?? '',
+      ...(requestedCalls ? { toolCalls: requestedCalls } : {}),
+    })
+
+    // Execute requested tools
+    for (const call of requestedCalls) {
+      if (toolCallCount >= MAX_AGENT_TOOL_CALLS) break
+      toolCallCount += 1
+      const toolStart = Date.now()
+
+      const toolDef = availableTools.find((t) => t.key === call.toolKey)
+      if (!toolDef) {
+        currentMessages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolKey: call.toolKey,
+          content: JSON.stringify({
+            error: 'capability_denied',
+            message: `Tool '${call.toolKey}' is not available or permitted for this agent.`,
+          }),
+        })
+        toolTraces.push({
+          toolKey: call.toolKey,
+          callNumber: toolCallCount,
+          args: call.args,
+          resultCount: 0,
+          status: 'failed',
+          durationMs: Math.max(0, Date.now() - toolStart),
+          error: 'capability_denied',
+        })
+        continue
+      }
+
+      const conversationId =
+        typeof metadata?.conversationId === 'string' ? metadata.conversationId : undefined
+
+      const toolExecResult = await executeTool({
+        db,
+        workspaceId,
+        toolKey: call.toolKey as ToolKey,
+        args: call.args,
+        caller,
+        context: {
+          ...(conversationId ? { conversationId } : {}),
+          taskText: task,
+        },
+      })
+
+      const durationMs = Math.max(0, Date.now() - toolStart)
+
+      if (!toolExecResult.ok) {
+        currentMessages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolKey: call.toolKey,
+          content: JSON.stringify({
+            error: toolExecResult.error?.code ?? 'execution_failed',
+            message: toolExecResult.error?.message ?? 'Tool execution failed.',
+          }),
+        })
+        toolTraces.push({
+          toolKey: call.toolKey,
+          callNumber: toolCallCount,
+          args: call.args,
+          resultCount: 0,
+          status: 'failed',
+          durationMs,
+          ...(toolExecResult.error?.code ? { error: toolExecResult.error.code } : {}),
+        })
+      } else {
+        const resultData = toolExecResult.data as { results?: unknown }
+        const rawResults = resultData.results
+        const resultsArray = Array.isArray(rawResults) ? (rawResults as unknown[]) : []
+
+        if (call.toolKey === 'web.search' && Array.isArray(rawResults)) {
+          for (const r of rawResults) {
+            if (typeof r === 'object' && r !== null) {
+              const item = r as {
+                title?: unknown
+                url?: unknown
+                publisher?: unknown
+                publishedAt?: unknown
+                retrievedAt?: unknown
+              }
+              const title = typeof item.title === 'string' ? item.title : ''
+              const url = typeof item.url === 'string' ? item.url : ''
+              if (title && url) {
+                const publisher = typeof item.publisher === 'string' ? item.publisher : null
+                const publishedAt = typeof item.publishedAt === 'string' ? item.publishedAt : null
+                const retrievedAt =
+                  typeof item.retrievedAt === 'string' ? item.retrievedAt : new Date().toISOString()
+                searchSources.push({
+                  title,
+                  url,
+                  publisher,
+                  publishedAt,
+                  retrievedAt,
+                })
+              }
+            }
+          }
+        }
+
+        currentMessages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolKey: call.toolKey,
+          content: JSON.stringify(toolExecResult.data),
+        })
+
+        toolTraces.push({
+          toolKey: call.toolKey,
+          callNumber: toolCallCount,
+          args: call.args,
+          resultCount: resultsArray.length,
+          status: 'succeeded',
+          durationMs,
+        })
+      }
+    }
+  }
 
   const execution: AIExecutionTraceSummary = {
     executionId,
-    provider: result.provider,
-    model: result.model,
+    provider: lastProvider,
+    model: lastModel,
     strategy: config.model.strategy,
     agentId: agent.id,
     agentVersionId: version.id,
     agentVersion: version.version,
-    usage: result.usage,
-    latencyMs: result.latencyMs,
-    attempts: result.attempts,
-    finishReason: result.finishReason,
+    usage: hasUsage
+      ? {
+          inputTokens: totalInputTokens,
+          outputTokens: totalOutputTokens,
+          totalTokens: totalTokens,
+        }
+      : null,
+    latencyMs: totalLatencyMs,
+    attempts: totalAttempts,
+    finishReason: lastFinishReason,
     contextGeneratedAt: pkg.generatedAt,
     scopeSource: composed.contextSummary.scopeSource,
+    ...(toolTraces.length > 0 ? { toolCalls: toolTraces } : {}),
+    ...(searchSources.length > 0 ? { sources: searchSources } : {}),
   }
 
-  if (result.status === 'failed' || result.content === null) {
-    const code = result.error?.code ?? 'unknown'
+  if (lastContent === null || lastContent.trim().length === 0) {
+    // If model ended after tool calls without final content, provide a safe fallback or error
+    const code = 'malformed_response'
     await emitEventSafe(db, {
       workspaceId,
       eventType: 'ai.execution.failed',
@@ -175,19 +401,16 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
       payloadJson: JSON.stringify({
         executionId,
         agentVersionId: version.id,
-        provider: result.provider,
-        model: result.model,
         code,
-        retryable: result.error?.retryable ?? false,
-        latencyMs: result.latencyMs,
-        attempts: result.attempts,
+        latencyMs: totalLatencyMs,
+        attempts: totalAttempts,
       }),
     })
     return {
       ok: false,
       errorCode: code,
       message: agentFailureMessage(agent.name, code),
-      retryable: result.error?.retryable ?? false,
+      retryable: false,
     }
   }
 
@@ -205,5 +428,5 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
     }),
   })
 
-  return { ok: true, content: result.content, execution }
+  return { ok: true, content: lastContent, execution }
 }

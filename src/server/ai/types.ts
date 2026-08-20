@@ -10,11 +10,28 @@ import type { AgentExecutionType, Id, IsoTimestamp } from '~/types/domain'
  */
 
 /** Provider-neutral conversation roles. */
-export type AIMessageRole = 'system' | 'user' | 'assistant'
+export type AIMessageRole = 'system' | 'user' | 'assistant' | 'tool'
+
+export interface AIToolCall {
+  id: string
+  toolKey: string
+  args: Record<string, unknown>
+}
 
 export interface AIMessage {
   role: AIMessageRole
   content: string
+  toolCallId?: string | undefined
+  toolKey?: string | undefined
+  toolCalls?: AIToolCall[] | undefined
+}
+
+/** Provider-neutral tool definition descriptor for models. */
+export interface AIToolDefinition {
+  key: string
+  name: string
+  description: string
+  inputSchema?: unknown
 }
 
 /**
@@ -40,10 +57,10 @@ export interface AIGenerationSettings {
 
 /** Safe, structured metadata for traceability. Never contains secrets. */
 export interface AIExecutionMetadata {
-  conversationId?: Id
-  workspaceId?: Id
+  conversationId?: Id | undefined
+  workspaceId?: Id | undefined
   /** Where the context scope came from (explicit/conversation/ui/workspace). */
-  scopeSource?: string
+  scopeSource?: string | undefined
   [key: string]: string | number | boolean | null | undefined
 }
 
@@ -53,11 +70,13 @@ export interface AIExecutionRequest {
   agent: AIAgentRef
   /** Provider-neutral messages, already composed (instructions + context). */
   messages: AIMessage[]
+  /** Optional tools available to the model for this execution. */
+  tools?: AIToolDefinition[] | undefined
   model: { strategy: ModelStrategy }
   generation: AIGenerationSettings
   /** Hard cap for one provider attempt; config supplies the default. */
-  timeoutMs?: number
-  metadata?: AIExecutionMetadata
+  timeoutMs?: number | undefined
+  metadata?: AIExecutionMetadata | undefined
 }
 
 /** Token usage as reported by the provider, when available. */
@@ -92,6 +111,8 @@ export interface AIExecutionResult {
   status: AIExecutionStatus
   /** Assistant text. Null on failure; a failure NEVER invents content. */
   content: string | null
+  /** Tool calls requested by the model, if any. */
+  toolCalls?: AIToolCall[] | undefined
   finishReason: string | null
   /** Adapter key (e.g. 'workers-ai'), null when nothing ran. */
   provider: string | null
@@ -114,6 +135,7 @@ export interface AIProviderAdapter {
   execute(input: {
     model: string
     messages: AIMessage[]
+    tools?: AIToolDefinition[] | undefined
     generation: AIGenerationSettings
     signal: AbortSignal
   }): Promise<AIAdapterRawResponse>
@@ -121,7 +143,8 @@ export interface AIProviderAdapter {
 
 /** What an adapter returns; the executor normalizes this into a result. */
 export interface AIAdapterRawResponse {
-  content: string
+  content: string | null
+  toolCalls?: AIToolCall[] | undefined
   finishReason: string | null
   usage: AIUsage | null
 }
@@ -139,6 +162,26 @@ export class AIAdapterError extends Error {
   }
 }
 
+/** Safe trace of an executed tool call during agent AI loop. */
+export interface AIToolTraceSummary {
+  toolKey: string
+  callNumber: number
+  args: Record<string, unknown>
+  resultCount: number
+  status: 'succeeded' | 'failed'
+  durationMs: number
+  error?: string | undefined
+}
+
+/** Safe source citation reference from real search results. */
+export interface AISourceReference {
+  title: string
+  url: string
+  publisher?: string | null | undefined
+  publishedAt?: string | null | undefined
+  retrievedAt: string
+}
+
 /** Snapshot persisted on assistant messages / execution events. Safe only. */
 export interface AIExecutionTraceSummary {
   executionId: Id
@@ -154,4 +197,6 @@ export interface AIExecutionTraceSummary {
   finishReason: string | null
   contextGeneratedAt: IsoTimestamp | null
   scopeSource: string | null
+  toolCalls?: AIToolTraceSummary[] | undefined
+  sources?: AISourceReference[] | undefined
 }

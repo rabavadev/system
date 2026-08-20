@@ -138,6 +138,7 @@ export async function executeAI(
         adapter.execute({
           model,
           messages: request.messages,
+          ...(request.tools ? { tools: request.tools } : {}),
           generation: {
             maxTokens: request.generation.maxTokens || AI_GENERATION_DEFAULTS.maxTokens,
             temperature: request.generation.temperature ?? AI_GENERATION_DEFAULTS.temperature,
@@ -151,14 +152,17 @@ export async function executeAI(
           }, timeoutMs)
         }),
       ])
-      const content = typeof raw.content === 'string' ? raw.content.trim() : ''
-      if (!content) {
+      const content = typeof raw.content === 'string' ? raw.content.trim() : null
+      const toolCalls =
+        Array.isArray(raw.toolCalls) && raw.toolCalls.length > 0 ? raw.toolCalls : undefined
+      if (!content && !toolCalls) {
         throw new AIAdapterError('malformed_response', 'The provider returned empty content.', true)
       }
       return {
         executionId: request.executionId,
         status: 'succeeded',
         content,
+        ...(toolCalls ? { toolCalls } : {}),
         finishReason: raw.finishReason ?? null,
         provider: adapter.key,
         model,
