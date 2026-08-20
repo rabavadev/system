@@ -275,8 +275,9 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
         continue
       }
 
+      const metaObj = metadata as { conversationId?: unknown } | undefined
       const conversationId =
-        typeof metadata?.conversationId === 'string' ? metadata.conversationId : undefined
+        typeof metaObj?.conversationId === 'string' ? metaObj.conversationId : undefined
 
       const toolExecResult = await executeTool({
         db,
@@ -325,6 +326,7 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
                 publisher?: unknown
                 publishedAt?: unknown
                 retrievedAt?: unknown
+                snippet?: unknown
               }
               const title = typeof item.title === 'string' ? item.title : ''
               const url = typeof item.url === 'string' ? item.url : ''
@@ -333,12 +335,14 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
                 const publishedAt = typeof item.publishedAt === 'string' ? item.publishedAt : null
                 const retrievedAt =
                   typeof item.retrievedAt === 'string' ? item.retrievedAt : new Date().toISOString()
+                const snippet = typeof item.snippet === 'string' ? item.snippet : null
                 searchSources.push({
                   title,
                   url,
                   publisher,
                   publishedAt,
                   retrievedAt,
+                  ...(snippet ? { snippet } : {}),
                 })
               }
             }

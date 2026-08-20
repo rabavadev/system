@@ -541,6 +541,7 @@ export const createResearchFn = createServerFn({ method: 'POST' })
       lastVerifiedAt: z.string().nullable().optional(),
       expiresAt: z.string().nullable().optional(),
       origin: researchOriginSchema.optional(),
+      selectedSourceIndices: z.array(z.number().int().min(0)).optional(),
     }),
   )
   .handler(async ({ data }) => {
@@ -559,6 +560,9 @@ export const createResearchFn = createServerFn({ method: 'POST' })
       ...(data.lastVerifiedAt !== undefined ? { lastVerifiedAt: data.lastVerifiedAt } : {}),
       ...(data.expiresAt !== undefined ? { expiresAt: data.expiresAt } : {}),
       ...(data.origin !== undefined ? { origin: data.origin } : {}),
+      ...(data.selectedSourceIndices !== undefined
+        ? { selectedSourceIndices: data.selectedSourceIndices }
+        : {}),
       actor: { actorType: 'user' },
     })
 

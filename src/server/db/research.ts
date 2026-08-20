@@ -160,6 +160,24 @@ export function validateSourceUrl(rawUrl?: string | null): string | null {
 }
 
 /**
+ * Normalizes a source URL for safe comparison and deduplication.
+ */
+export function normalizeSourceUrl(rawUrl?: string | null): string | null {
+  const validated = validateSourceUrl(rawUrl)
+  if (!validated) return null
+  try {
+    const parsed = new URL(validated)
+    parsed.hostname = parsed.hostname.toLowerCase()
+    if (parsed.pathname.length > 1 && parsed.pathname.endsWith('/')) {
+      parsed.pathname = parsed.pathname.slice(0, -1)
+    }
+    return parsed.href
+  } catch {
+    return validated
+  }
+}
+
+/**
  * Computes a standardized provenance summary from a list of research sources.
  */
 export function computeProvenanceSummary(sources: ResearchSourceRecord[]): ProvenanceSummary {
@@ -413,6 +431,7 @@ export const researchOriginSchema = z.object({
   conversationId: z.string().uuid().nullable().optional(),
   messageId: z.string().uuid().nullable().optional(),
   derivedFromResearchIds: z.array(z.string().uuid()).optional(),
+  webSearchUsed: z.boolean().optional(),
   createdAt: z.string().nullable().optional(),
 })
 export type ResearchOrigin = z.infer<typeof researchOriginSchema>
@@ -706,6 +725,7 @@ export const createResearchInput = z.object({
   lastVerifiedAt: z.string().nullable().optional(),
   expiresAt: z.string().nullable().optional(),
   origin: researchOriginSchema.optional(),
+  selectedSourceIndices: z.array(z.number().int().min(0)).optional(),
   actor: z
     .object({
       actorType: z.enum(['user', 'agent', 'workflow', 'system']).default('user'),
@@ -837,6 +857,63 @@ export async function createResearch(
   // Validate scope integrity
   await validateResearchScope(db, data.workspaceId, data.scopeType, data.scopeId)
 
+  // Verify genuine search sources from origin message if requested
+  if (data.selectedSourceIndices && data.selectedSourceIndices.length > 0) {
+    if (!data.origin?.messageId) {
+      throw new ResearchSourceValidationError(
+        'Origin messageId is required to import genuine search sources.',
+      )
+    }
+
+    const messageRow = await queryFirst<{
+      id: string
+      conversation_id: string
+      sender_type: string
+      agent_id: string | null
+      provider_metadata: string | null
+    }>(
+      db,
+      `SELECT m.id, m.conversation_id, m.sender_type, m.agent_id, m.provider_metadata
+       FROM message m
+       JOIN conversation c ON c.id = m.conversation_id
+       WHERE m.id = ? AND c.workspace_id = ?`,
+      [data.origin.messageId, data.workspaceId],
+    )
+
+    if (!messageRow) {
+      throw new ResearchSourceValidationError(
+        `Origin message '${data.origin.messageId}' not found or belongs to another workspace.`,
+      )
+    }
+
+    if (data.origin.conversationId && messageRow.conversation_id !== data.origin.conversationId) {
+      throw new ResearchSourceValidationError('Origin message conversation mismatch.')
+    }
+
+    if (messageRow.sender_type !== 'agent') {
+      throw new ResearchSourceValidationError(
+        'Only assistant messages from Researcher can import search sources.',
+      )
+    }
+
+    const agentRow = messageRow.agent_id
+      ? await queryFirst<{ id: string; name: string; role: string }>(
+          db,
+          `SELECT id, name, role FROM agent WHERE id = ? AND workspace_id = ?`,
+          [messageRow.agent_id, data.workspaceId],
+        )
+      : null
+
+    if (
+      !agentRow ||
+      (agentRow.role !== 'researcher' && agentRow.name.toLowerCase() !== 'researcher')
+    ) {
+      throw new ResearchSourceValidationError(
+        'Only Researcher agent messages can provide web search sources.',
+      )
+    }
+  }
+
   const id = newId()
   const deletedAt = data.status === 'archived' ? now : null
 
@@ -864,6 +941,144 @@ export async function createResearch(
     ],
   )
 
+  let importedSourcesCount = 0
+
+  // If selectedSourceIndices provided, resolve genuine sources and insert them
+  if (
+    data.selectedSourceIndices &&
+    data.selectedSourceIndices.length > 0 &&
+    data.origin?.messageId
+  ) {
+    const messageRow = await queryFirst<{
+      provider_metadata: string | null
+    }>(db, `SELECT provider_metadata FROM message WHERE id = ?`, [data.origin.messageId])
+
+    let messageSources: Array<{
+      title?: unknown
+      url?: unknown
+      publisher?: unknown
+      publishedAt?: unknown
+      retrievedAt?: unknown
+      snippet?: unknown
+      note?: unknown
+    }> = []
+
+    if (messageRow?.provider_metadata) {
+      try {
+        const parsedMeta = JSON.parse(messageRow.provider_metadata)
+        if (Array.isArray(parsedMeta?.sources)) {
+          messageSources = parsedMeta.sources
+        }
+      } catch {
+        messageSources = []
+      }
+    }
+
+    const chosenSources: Array<{
+      title: string
+      url: string
+      publisher: string | null
+      publishedAt: string | null
+      retrievedAt: string | null
+      note: string | null
+    }> = []
+
+    for (const idx of data.selectedSourceIndices) {
+      const item = messageSources[idx]
+      if (
+        item &&
+        typeof item === 'object' &&
+        typeof item.url === 'string' &&
+        item.url.trim() !== '' &&
+        typeof item.title === 'string' &&
+        item.title.trim() !== ''
+      ) {
+        const snippet = typeof item.snippet === 'string' ? item.snippet.trim() : null
+        const itemNote = typeof item.note === 'string' ? item.note.trim() : null
+        const note = snippet ? `Search snippet: ${snippet.slice(0, 500)}` : itemNote
+        chosenSources.push({
+          title: item.title.trim(),
+          url: item.url.trim(),
+          publisher: typeof item.publisher === 'string' ? item.publisher.trim() || null : null,
+          publishedAt: typeof item.publishedAt === 'string' ? item.publishedAt : null,
+          retrievedAt: typeof item.retrievedAt === 'string' ? item.retrievedAt : null,
+          note,
+        })
+      }
+    }
+
+    // Deduplicate by normalized URL
+    const seenUrls = new Set<string>()
+    for (const s of chosenSources) {
+      const validUrl = validateSourceUrl(s.url)
+      if (!validUrl) continue
+      const norm = normalizeSourceUrl(validUrl)
+      if (!norm || seenUrls.has(norm)) continue
+      seenUrls.add(norm)
+
+      const sourceId = newId()
+      const metaObj: ResearchSourceMetadata = {
+        sourceType: 'website',
+        publisher: s.publisher || null,
+        publishedAt: s.publishedAt || null,
+        note: s.note || null,
+        confidence: null,
+      }
+
+      await execute(
+        db,
+        `INSERT INTO research_source (
+           id, research_id, source_type, uri, title, metadata, retrieved_at, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          sourceId,
+          id,
+          'url',
+          validUrl,
+          s.title.slice(0, 500),
+          JSON.stringify(metaObj),
+          s.retrievedAt ?? now,
+          now,
+        ],
+      )
+
+      importedSourcesCount++
+
+      await writeAuditLog(db, {
+        workspaceId: data.workspaceId,
+        actorType: data.actor?.actorType ?? 'user',
+        actorId: data.actor?.actorId ?? null,
+        action: 'create',
+        entityType: 'research_source',
+        entityId: sourceId,
+        previousValueJson: null,
+        newValueJson: JSON.stringify({
+          researchId: id,
+          sourceType: 'website',
+          title: s.title.slice(0, 500),
+          url: validUrl,
+          publisher: s.publisher || null,
+        }),
+      })
+
+      await emitEventSafe(db, {
+        workspaceId: data.workspaceId,
+        eventType: 'research.source_added',
+        actorType: data.actor?.actorType ?? 'user',
+        actorId: data.actor?.actorId ?? null,
+        subjectType: 'research_source',
+        subjectId: sourceId,
+        payloadJson: JSON.stringify({
+          researchId: id,
+          sourceType: 'website',
+          title: s.title.slice(0, 500),
+          url: validUrl,
+          publisher: s.publisher || null,
+        }),
+      })
+    }
+  }
+
   const record: ResearchRecord = {
     id,
     workspaceId: data.workspaceId,
@@ -889,6 +1104,7 @@ export async function createResearch(
         conversationId: data.origin.conversationId ?? null,
         messageId: data.origin.messageId ?? null,
         derivedFromResearchIds: data.origin.derivedFromResearchIds ?? null,
+        ...(data.origin.webSearchUsed || importedSourcesCount > 0 ? { webSearchUsed: true } : {}),
       }
     : null
 

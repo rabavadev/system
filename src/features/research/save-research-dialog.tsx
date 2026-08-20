@@ -1,5 +1,5 @@
 import { useRouter } from '@tanstack/react-router'
-import { AlertCircle, FlaskConical, X } from 'lucide-react'
+import { AlertCircle, FlaskConical, Globe, X } from 'lucide-react'
 import { useEffect, useState, useTransition } from 'react'
 import { Button } from '~/components/ui/button'
 import type { Message } from '~/types/domain'
@@ -30,6 +30,14 @@ export interface SaveResearchDialogProps {
   onSaved?: ((researchId: string) => void) | undefined
 }
 
+interface SearchSourceItem {
+  title: string
+  url: string
+  publisher?: string | null | undefined
+  publishedAt?: string | null | undefined
+  retrievedAt?: string | undefined
+}
+
 function deriveSuggestedType(scopeType?: string | null): ResearchType {
   if (scopeType === 'product') return 'product'
   if (scopeType === 'brand') return 'market'
@@ -52,6 +60,31 @@ export function SaveResearchDialog({
     products: [],
     accounts: [],
   })
+
+  // Extract available genuine search sources from assistant message metadata
+  const availableSources: SearchSourceItem[] = (() => {
+    if (!message.providerMetadataJson) return []
+    try {
+      const meta = JSON.parse(message.providerMetadataJson)
+      if (Array.isArray(meta?.sources) && meta.sources.length > 0) {
+        return meta.sources.filter((s: unknown): s is SearchSourceItem =>
+          Boolean(
+            s &&
+              typeof s === 'object' &&
+              typeof (s as { url?: unknown; title?: unknown }).url === 'string' &&
+              typeof (s as { url?: unknown; title?: unknown }).title === 'string',
+          ),
+        )
+      }
+    } catch {
+      return []
+    }
+    return []
+  })()
+
+  const [selectedSourceIndices, setSelectedSourceIndices] = useState<number[]>(() =>
+    availableSources.map((_, i) => i),
+  )
 
   // Prefill state deterministically
   const [subject, setSubject] = useState(() => deriveResearchTitle(message.content))
@@ -106,12 +139,14 @@ export function SaveResearchDialog({
             confidence: confVal,
             scopeType: scopeType === 'workspace' ? null : scopeType,
             scopeId: scopeType === 'workspace' || !scopeId ? null : scopeId,
+            selectedSourceIndices: availableSources.length > 0 ? selectedSourceIndices : undefined,
             origin: {
               originType: 'researcher',
               agentId: message.agentId,
               agentVersionId: message.agentVersionId,
               conversationId: message.conversationId,
               messageId: message.id,
+              webSearchUsed: availableSources.length > 0,
               ...(derivedFromResearchIds && derivedFromResearchIds.length > 0
                 ? { derivedFromResearchIds }
                 : {}),
@@ -333,6 +368,75 @@ export function SaveResearchDialog({
               className="w-full rounded-md border border-zinc-300 p-2 text-xs font-mono text-zinc-900 focus:border-zinc-500 focus:outline-hidden"
             />
           </div>
+
+          {/* Genuine Search Sources Selection (if available) */}
+          {availableSources.length > 0 && (
+            <div className="space-y-2 rounded-lg border border-zinc-200 bg-zinc-50/70 p-3">
+              <div className="flex items-center justify-between">
+                <div className="font-medium text-zinc-900 flex items-center gap-1.5">
+                  <Globe className="size-3.5 text-blue-600" />
+                  <span>Sources found during this research ({availableSources.length})</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSourceIndices(availableSources.map((_, i) => i))}
+                    className="text-[11px] font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                  >
+                    Select all
+                  </button>
+                  <span className="text-zinc-300">|</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedSourceIndices([])}
+                    className="text-[11px] font-medium text-zinc-500 hover:text-zinc-700 hover:underline"
+                  >
+                    Deselect all
+                  </button>
+                </div>
+              </div>
+              <p className="text-[11px] text-zinc-500">
+                Selected findings will be attached as verified website citations on this research
+                record.
+              </p>
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {availableSources.map((s, idx) => {
+                  const isChecked = selectedSourceIndices.includes(idx)
+                  return (
+                    <label
+                      key={`source-${s.url}-${s.title}`}
+                      className="flex items-start gap-2 rounded-md border border-zinc-200/80 bg-white p-2 hover:bg-zinc-50/80 cursor-pointer transition-colors"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedSourceIndices((prev) => [...prev, idx])
+                          } else {
+                            setSelectedSourceIndices((prev) => prev.filter((i) => i !== idx))
+                          }
+                        }}
+                        className="mt-0.5 rounded border-zinc-300 text-blue-600 focus:ring-blue-500"
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium text-zinc-900 truncate">{s.title || s.url}</div>
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-zinc-500 mt-0.5">
+                          {s.publisher && (
+                            <span className="font-medium text-zinc-700">{s.publisher}</span>
+                          )}
+                          {s.publishedAt && <span>• {s.publishedAt}</span>}
+                          <span className="truncate text-zinc-400 font-mono text-[10px] max-w-full">
+                            {s.url}
+                          </span>
+                        </div>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Footer buttons */}
           <div className="flex items-center justify-end gap-2 pt-4 border-t border-zinc-100">

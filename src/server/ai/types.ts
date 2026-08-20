@@ -180,6 +180,7 @@ export interface AISourceReference {
   publisher?: string | null | undefined
   publishedAt?: string | null | undefined
   retrievedAt: string
+  snippet?: string | null | undefined
 }
 
 /** Snapshot persisted on assistant messages / execution events. Safe only. */
