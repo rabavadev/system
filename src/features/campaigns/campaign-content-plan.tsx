@@ -1,4 +1,4 @@
-import { Archive, Calendar, Edit3, FileText, Plus, Radio, Tag } from 'lucide-react'
+import { Archive, Calendar, Edit3, FileText, Plus, Radio, Sparkles, Tag } from 'lucide-react'
 import { useState, useTransition } from 'react'
 
 import { Badge } from '~/components/ui/badge'
@@ -6,6 +6,7 @@ import { Button } from '~/components/ui/button'
 import type { CampaignDetail } from '~/server/db/campaign'
 import type { CampaignContentItem, ContentStatus } from '~/types/domain'
 import { CampaignContentModal } from './campaign-content-modal'
+import { CampaignDraftModal } from './campaign-draft-modal'
 import { archiveCampaignContentFn } from './server'
 
 interface CampaignContentPlanProps {
@@ -63,6 +64,7 @@ export function CampaignContentPlan({ campaign, onRefresh }: CampaignContentPlan
     open: false,
     item: null,
   })
+  const [draftModalItem, setDraftModalItem] = useState<CampaignContentItem | null>(null)
   const [isArchiving, startArchiving] = useTransition()
 
   const items = campaign.contentItems ?? []
@@ -203,96 +205,132 @@ export function CampaignContentPlan({ campaign, onRefresh }: CampaignContentPlan
           </div>
         ) : (
           <div className="divide-y divide-zinc-200">
-            {filteredItems.map((item) => (
-              <div
-                key={item.id}
-                className="p-4 hover:bg-zinc-50/70 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-3"
-              >
-                {/* Main details */}
-                <div className="space-y-1.5 min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-sm font-semibold text-zinc-900 truncate">
-                      {item.title}
-                    </span>
-                    {getStatusBadge(item.status)}
-                    <span className="inline-flex items-center rounded-md bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-700 border border-zinc-200">
-                      {formatContentType(item.contentType)}
-                    </span>
-                    {item.purpose && (
-                      <span className="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 border border-indigo-200">
-                        {item.purpose}
+            {filteredItems.map((item) => {
+              const hasDraftVariant = (item.variantCount ?? 0) > 0 || item.status === 'draft'
+
+              return (
+                <div
+                  key={item.id}
+                  className="p-4 hover:bg-zinc-50/70 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-3"
+                >
+                  {/* Main details */}
+                  <div className="space-y-1.5 min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold text-zinc-900 truncate">
+                        {item.title}
                       </span>
-                    )}
-                  </div>
-
-                  {/* Secondary metadata */}
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500">
-                    {item.theme && (
-                      <div className="flex items-center gap-1">
-                        <Tag className="size-3.5 text-zinc-400" />
-                        <span>Theme: {item.theme}</span>
-                      </div>
-                    )}
-
-                    {item.accountHandle ? (
-                      <div className="flex items-center gap-1 text-zinc-700">
-                        <Radio className="size-3.5 text-zinc-400" />
-                        <span>
-                          @{item.accountHandle.replace(/^@/, '')}
-                          {item.platformName ? ` (${item.platformName})` : ''}
+                      {getStatusBadge(item.status)}
+                      {(item.variantCount ?? 0) > 0 && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 border border-emerald-200">
+                          <Sparkles className="size-3" />
+                          Draft Saved
                         </span>
-                      </div>
-                    ) : (
-                      <span className="text-zinc-400 italic">Unassigned account</span>
-                    )}
+                      )}
+                      <span className="inline-flex items-center rounded-md bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-700 border border-zinc-200">
+                        {formatContentType(item.contentType)}
+                      </span>
+                      {item.purpose && (
+                        <span className="inline-flex items-center rounded-md bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 border border-indigo-200">
+                          {item.purpose}
+                        </span>
+                      )}
+                    </div>
 
-                    {item.plannedAt && (
-                      <div className="flex items-center gap-1 text-zinc-600">
-                        <Calendar className="size-3.5 text-zinc-400" />
-                        <span>Planned: {item.plannedAt.slice(0, 10)}</span>
-                      </div>
+                    {/* Secondary metadata */}
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500">
+                      {item.theme && (
+                        <div className="flex items-center gap-1">
+                          <Tag className="size-3.5 text-zinc-400" />
+                          <span>Theme: {item.theme}</span>
+                        </div>
+                      )}
+
+                      {item.accountHandle ? (
+                        <div className="flex items-center gap-1 text-zinc-700">
+                          <Radio className="size-3.5 text-zinc-400" />
+                          <span>
+                            @{item.accountHandle.replace(/^@/, '')}
+                            {item.platformName ? ` (${item.platformName})` : ''}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-zinc-400 italic">Unassigned account</span>
+                      )}
+
+                      {item.plannedAt && (
+                        <div className="flex items-center gap-1 text-zinc-600">
+                          <Calendar className="size-3.5 text-zinc-400" />
+                          <span>Planned: {item.plannedAt.slice(0, 10)}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {item.brief && (
+                      <p className="text-xs text-zinc-600 line-clamp-2 pt-0.5 bg-zinc-50/80 rounded px-2 py-1 border border-zinc-100">
+                        {item.brief}
+                      </p>
                     )}
                   </div>
 
-                  {item.brief && (
-                    <p className="text-xs text-zinc-600 line-clamp-2 pt-0.5 bg-zinc-50/80 rounded px-2 py-1 border border-zinc-100">
-                      {item.brief}
-                    </p>
-                  )}
-                </div>
+                  {/* Actions */}
+                  <div className="flex items-center gap-1.5 shrink-0 self-end md:self-center">
+                    {/* Draft Action Button */}
+                    <Button
+                      variant={hasDraftVariant ? 'secondary' : 'secondary'}
+                      onClick={() => setDraftModalItem(item)}
+                      className={`h-8 px-2.5 text-xs ${
+                        hasDraftVariant
+                          ? 'text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border-indigo-200'
+                          : 'text-zinc-700 hover:text-zinc-900'
+                      }`}
+                    >
+                      <Sparkles className="size-3.5 mr-1 text-indigo-600" />
+                      {hasDraftVariant ? 'View Draft' : 'Generate Draft'}
+                    </Button>
 
-                {/* Actions */}
-                <div className="flex items-center gap-1.5 shrink-0 self-end md:self-center">
-                  <Button
-                    variant="ghost"
-                    onClick={() => setModalItem({ open: true, item })}
-                    className="h-8 px-2.5 text-xs text-zinc-600 hover:text-zinc-900"
-                  >
-                    <Edit3 className="size-3.5 mr-1" />
-                    Edit
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    onClick={() => handleArchive(item)}
-                    disabled={isArchiving}
-                    className="h-8 px-2.5 text-xs text-zinc-400 hover:text-red-600"
-                    title="Archive Item"
-                  >
-                    <Archive className="size-3.5" />
-                  </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => setModalItem({ open: true, item })}
+                      className="h-8 px-2.5 text-xs text-zinc-600 hover:text-zinc-900"
+                    >
+                      <Edit3 className="size-3.5 mr-1" />
+                      Edit
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => handleArchive(item)}
+                      disabled={isArchiving}
+                      className="h-8 px-2.5 text-xs text-zinc-400 hover:text-red-600"
+                      title="Archive Item"
+                    >
+                      <Archive className="size-3.5" />
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
       </div>
 
-      {/* Modal */}
+      {/* Content Edit/Create Modal */}
       {modalItem.open && (
         <CampaignContentModal
           campaign={campaign}
           contentItem={modalItem.item}
           onClose={() => setModalItem({ open: false, item: null })}
+          onSuccess={async () => {
+            await onRefresh?.()
+          }}
+        />
+      )}
+
+      {/* Creator Draft Generation & Review Modal */}
+      {draftModalItem && (
+        <CampaignDraftModal
+          campaign={campaign}
+          contentItem={draftModalItem}
+          onClose={() => setDraftModalItem(null)}
           onSuccess={async () => {
             await onRefresh?.()
           }}

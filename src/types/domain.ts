@@ -474,6 +474,8 @@ export interface CampaignContentItem extends Content {
   accountDisplayName?: string | null
   platformId?: string | null
   platformName?: string | null
+  variantCount?: number
+  latestVariantId?: string | null
 }
 
 export interface ContentVariant {

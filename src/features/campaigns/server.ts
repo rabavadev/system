@@ -36,6 +36,13 @@ import {
   updateCampaignContent,
   updateCampaignContentInput,
 } from '~/server/db/content'
+import {
+  type ContentVariantDetail,
+  type GenerateContentDraftResult,
+  generateCampaignContentDraft,
+  listContentVariants,
+  saveCampaignContentDraft,
+} from '~/server/db/content-variant'
 import { createConversation } from '~/server/db/conversation'
 import { emitEventSafe } from '~/server/db/event'
 import { listProducts, type ProductSummary } from '~/server/db/product'
@@ -353,4 +360,81 @@ export const getWorkflowInputDeclsFn = createServerFn({ method: 'GET' })
     } catch {
       return []
     }
+  })
+
+export const generateCampaignContentDraftFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      campaignId: z.uuid(),
+      contentId: z.uuid(),
+    }),
+  )
+  .handler(async ({ data }): Promise<GenerateContentDraftResult> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      return { ok: false, errorCode: 'workspace_not_found', message: 'Workspace not found' }
+    }
+    const { deps } = resolveAiRuntime()
+    return generateCampaignContentDraft(
+      db,
+      {
+        workspaceId: workspace.id,
+        campaignId: data.campaignId,
+        contentId: data.contentId,
+      },
+      deps,
+    )
+  })
+
+export const saveCampaignContentDraftFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      campaignId: z.uuid(),
+      contentId: z.uuid(),
+      draft: z.object({
+        headline: z.string().nullable().optional(),
+        body: z.string().min(1, 'Draft body cannot be empty'),
+        callToAction: z.string().nullable().optional(),
+        creativeDirection: z.string().nullable().optional(),
+        notes: z.string().nullable().optional(),
+      }),
+      provenance: z
+        .object({
+          agentId: z.string().uuid(),
+          agentName: z.string(),
+          agentVersionId: z.string().uuid(),
+          versionNumber: z.number(),
+          executionId: z.string().uuid(),
+          model: z.string(),
+          createdAt: z.string(),
+        })
+        .nullable()
+        .optional(),
+    }),
+  )
+  .handler(
+    async ({
+      data,
+    }): Promise<{ variant: ContentVariantDetail; contentItem: CampaignContentItem }> => {
+      const db = getDb()
+      const workspace = await getDefaultWorkspace()
+      if (!workspace) throw new Error('Workspace not found')
+      return saveCampaignContentDraft(db, {
+        workspaceId: workspace.id,
+        campaignId: data.campaignId,
+        contentId: data.contentId,
+        draft: data.draft,
+        provenance: data.provenance,
+      })
+    },
+  )
+
+export const listContentVariantsFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ contentId: z.uuid() }))
+  .handler(async ({ data }): Promise<ContentVariantDetail[]> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) return []
+    return listContentVariants(db, workspace.id, data.contentId)
   })

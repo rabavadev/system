@@ -64,6 +64,8 @@ export interface ContentRow {
   account_display_name?: string | null
   platform_id?: string | null
   platform_name?: string | null
+  variant_count?: number | null
+  latest_variant_id?: string | null
 }
 
 export function toCampaignContentItem(row: ContentRow): CampaignContentItem {
@@ -88,6 +90,8 @@ export function toCampaignContentItem(row: ContentRow): CampaignContentItem {
     accountDisplayName: row.account_display_name ?? null,
     platformId: row.platform_id ?? null,
     platformName: row.platform_name ?? null,
+    variantCount: typeof row.variant_count === 'number' ? row.variant_count : 0,
+    latestVariantId: row.latest_variant_id ?? null,
   }
 }
 
@@ -446,7 +450,9 @@ export async function archiveCampaignContent(
   const updatedRow = await queryFirst<ContentRow>(
     db,
     `SELECT c.*, a.handle AS account_handle, a.display_name AS account_display_name,
-            a.platform_id, p.name AS platform_name
+            a.platform_id, p.name AS platform_name,
+            (SELECT COUNT(*) FROM content_variant cv WHERE cv.content_id = c.id AND cv.deleted_at IS NULL) AS variant_count,
+            (SELECT cv.id FROM content_variant cv WHERE cv.content_id = c.id AND cv.deleted_at IS NULL ORDER BY cv.created_at DESC LIMIT 1) AS latest_variant_id
      FROM content c
      LEFT JOIN account a ON a.id = c.target_account_id
      LEFT JOIN platform p ON p.id = a.platform_id
@@ -470,7 +476,9 @@ export async function getCampaignContentDetail(
   const row = await queryFirst<ContentRow>(
     db,
     `SELECT c.*, a.handle AS account_handle, a.display_name AS account_display_name,
-            a.platform_id, p.name AS platform_name
+            a.platform_id, p.name AS platform_name,
+            (SELECT COUNT(*) FROM content_variant cv WHERE cv.content_id = c.id AND cv.deleted_at IS NULL) AS variant_count,
+            (SELECT cv.id FROM content_variant cv WHERE cv.content_id = c.id AND cv.deleted_at IS NULL ORDER BY cv.created_at DESC LIMIT 1) AS latest_variant_id
      FROM content c
      LEFT JOIN account a ON a.id = c.target_account_id
      LEFT JOIN platform p ON p.id = a.platform_id
@@ -509,7 +517,9 @@ export async function listCampaignContent(
   const rows = await queryAll<ContentRow>(
     db,
     `SELECT c.*, a.handle AS account_handle, a.display_name AS account_display_name,
-            a.platform_id, p.name AS platform_name
+            a.platform_id, p.name AS platform_name,
+            (SELECT COUNT(*) FROM content_variant cv WHERE cv.content_id = c.id AND cv.deleted_at IS NULL) AS variant_count,
+            (SELECT cv.id FROM content_variant cv WHERE cv.content_id = c.id AND cv.deleted_at IS NULL ORDER BY cv.created_at DESC LIMIT 1) AS latest_variant_id
      FROM content c
      LEFT JOIN account a ON a.id = c.target_account_id
      LEFT JOIN platform p ON p.id = a.platform_id
