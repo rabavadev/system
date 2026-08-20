@@ -9,6 +9,7 @@ import { Loading } from '~/components/ui/loading'
 import { Modal } from '~/components/ui/modal'
 import { MemoryEditorDialog } from '~/features/memory/memory-editor'
 import { getMemoryScopeOptions, type MemoryScopeOptions } from '~/features/memory/server'
+import { SaveResearchDialog } from '~/features/research/save-research-dialog'
 import type { Message } from '~/types/domain'
 
 import { AgentSelector, resolveSelectedAgent } from './agent-selector'
@@ -33,6 +34,7 @@ export function ConversationView({ data }: ConversationViewProps) {
     [agents, search.agent],
   )
   const agentNames = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.name])), [agents])
+  const agentRoles = useMemo(() => new Map(agents.map((agent) => [agent.id, agent.role])), [agents])
 
   function selectAgent(agentId: string) {
     const chief = agents.find((agent) => agent.name === 'Chief' && agent.origin === 'builtin')
@@ -45,6 +47,8 @@ export function ConversationView({ data }: ConversationViewProps) {
   }
   const [showRename, setShowRename] = useState(false)
   const [saveMessage, setSaveMessage] = useState<Message | null>(null)
+  const [saveResearchMessage, setSaveResearchMessage] = useState<Message | null>(null)
+  const [savedResearchMessageIds, setSavedResearchMessageIds] = useState<Set<string>>(new Set())
   const [memoryOptions, setMemoryOptions] = useState<MemoryScopeOptions | null>(null)
   const [memoryOptionsError, setMemoryOptionsError] = useState<string | null>(null)
   const [savedMessageIds, setSavedMessageIds] = useState<Set<string>>(new Set())
@@ -140,8 +144,11 @@ export function ConversationView({ data }: ConversationViewProps) {
         <MessageList
           messages={messages}
           agentNames={agentNames}
+          agentRoles={agentRoles}
           savedMessageIds={savedMessageIds}
+          savedResearchMessageIds={savedResearchMessageIds}
           onSaveToMemory={openSaveToMemory}
+          onSaveToResearch={(message) => setSaveResearchMessage(message)}
         />
       )}
 
@@ -162,6 +169,21 @@ export function ConversationView({ data }: ConversationViewProps) {
           conversationId={conversation.id}
           currentTitle={conversation.title ?? ''}
           onClose={() => setShowRename(false)}
+        />
+      )}
+
+      {saveResearchMessage && (
+        <SaveResearchDialog
+          message={saveResearchMessage}
+          conversationScope={
+            conversation.scopeType && conversation.scopeId
+              ? { scopeType: conversation.scopeType, scopeId: conversation.scopeId }
+              : undefined
+          }
+          onClose={() => setSaveResearchMessage(null)}
+          onSaved={() =>
+            setSavedResearchMessageIds((current) => new Set(current).add(saveResearchMessage.id))
+          }
         />
       )}
 

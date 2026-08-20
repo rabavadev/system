@@ -13,18 +13,16 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 
-const ROOT = new URL('..', import.meta.url).pathname
-const TMP = join(ROOT, 'node_modules/.cache/test-db.sqlite')
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 function freshDb() {
-  rmSync(TMP, { force: true })
-  mkdirSync(join(ROOT, 'node_modules/.cache'), { recursive: true })
-  const db = new Database(TMP)
+  const db = new Database(':memory:')
   // D1 enforces foreign keys; match that locally.
   db.pragma('foreign_keys = ON')
   return db
@@ -47,7 +45,7 @@ const id = () => crypto.randomUUID()
 test('clean database migrates from zero; all tables exist', () => {
   const db = freshDb()
   const files = migrate(db)
-  assert.equal(files.length, 9, `expected 9 migrations, got: ${files.join(', ')}`)
+  assert.equal(files.length, 12, `expected 12 migrations, got: ${files.join(', ')}`)
 
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -61,6 +59,7 @@ test('clean database migrates from zero; all tables exist', () => {
     'agent',
     'agent_version',
     'approval',
+    'approval_policy',
     'audit_log',
     'brand',
     'campaign',
@@ -460,5 +459,186 @@ test('product status transitions archive without touching the row history', () =
   const row = db.prepare(`SELECT status, deleted_at FROM product WHERE id = ?`).get(productId)
   assert.equal(row.status, 'archived')
   assert.equal(row.deleted_at, null, 'archiving a product is a status change, not a soft delete')
+  db.close()
+})
+
+test('approval_policy enforces scope_type, mode enums and (workspace, scope, action) uniqueness', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const ws = id()
+  db.prepare(`INSERT INTO workspace (id, name, created_at, updated_at) VALUES (?, 'ws', ?, ?)`).run(
+    ws,
+    NOW,
+    NOW,
+  )
+
+  const insert = db.prepare(
+    `INSERT INTO approval_policy (id, workspace_id, scope_type, scope_id, action_key, mode, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  // Valid workspace policy
+  insert.run(id(), ws, 'workspace', ws, 'content.publish', 'review', NOW, NOW)
+
+  // Duplicate (workspace_id, scope_type, scope_id, action_key) must fail
+  assert.throws(
+    () => insert.run(id(), ws, 'workspace', ws, 'content.publish', 'auto', NOW, NOW),
+    /UNIQUE/i,
+    'duplicate policy on same scope and action must fail',
+  )
+
+  // Invalid mode enum must fail
+  assert.throws(
+    () => insert.run(id(), ws, 'workspace', ws, 'workflow.run', 'invalid_mode', NOW, NOW),
+    /CHECK/i,
+    'invalid mode must fail',
+  )
+
+  // Invalid scope_type enum must fail
+  assert.throws(
+    () => insert.run(id(), ws, 'invalid_scope', ws, 'workflow.run', 'auto', NOW, NOW),
+    /CHECK/i,
+    'invalid scope_type must fail',
+  )
+
+  db.close()
+})
+
+test('approval table enforces status, origin, resolved_mode, and decision enums', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const ws = id()
+  db.prepare(`INSERT INTO workspace (id, name, created_at, updated_at) VALUES (?, 'ws', ?, ?)`).run(
+    ws,
+    NOW,
+    NOW,
+  )
+
+  const insert = db.prepare(
+    `INSERT INTO approval (
+       id, workspace_id, action_key, origin, requested_by_type, requested_by_id,
+       summary, reason, resolved_mode, policy_source, risk, snapshot_json, fingerprint,
+       status, expires_at, created_at, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+
+  const approvalId = id()
+  insert.run(
+    approvalId,
+    ws,
+    'content.publish',
+    'agent',
+    'agent',
+    id(),
+    'Publish post to Pinterest',
+    'Policy requires review for content publishing',
+    'review',
+    'workspace_policy',
+    'external',
+    JSON.stringify({ title: 'Test Post' }),
+    'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+    'pending',
+    null,
+    NOW,
+    NOW,
+  )
+
+  // Status check: invalid status must fail
+  assert.throws(
+    () =>
+      insert.run(
+        id(),
+        ws,
+        'content.publish',
+        'agent',
+        'agent',
+        null,
+        's',
+        'r',
+        'review',
+        'workspace_policy',
+        null,
+        '{}',
+        'f',
+        'invalid_status',
+        null,
+        NOW,
+        NOW,
+      ),
+    /CHECK/i,
+  )
+
+  // Origin check: invalid origin must fail
+  assert.throws(
+    () =>
+      insert.run(
+        id(),
+        ws,
+        'content.publish',
+        'invalid_origin',
+        'agent',
+        null,
+        's',
+        'r',
+        'review',
+        'workspace_policy',
+        null,
+        '{}',
+        'f',
+        'pending',
+        null,
+        NOW,
+        NOW,
+      ),
+    /CHECK/i,
+  )
+
+  // Decided by check: user decision
+  db.prepare(
+    `UPDATE approval SET status = 'approved', decision = 'approved', decided_by_type = 'user', decided_by_id = ?, decided_at = ? WHERE id = ?`,
+  ).run(id(), NOW, approvalId)
+
+  const updated = db
+    .prepare(`SELECT status, decision, decided_by_type FROM approval WHERE id = ?`)
+    .get(approvalId)
+  assert.equal(updated.status, 'approved')
+  assert.equal(updated.decision, 'approved')
+  assert.equal(updated.decided_by_type, 'user')
+
+  db.close()
+})
+
+test('research table enforces research_type enum and defaults to general', () => {
+  const db = freshDb()
+  migrate(db)
+  const wsId = id()
+  db.prepare(
+    `INSERT INTO workspace (id, name, slug, created_at, updated_at) VALUES (?, 'WS', 'ws', ?, ?)`,
+  ).run(wsId, NOW, NOW)
+
+  const researchId = id()
+  // Default research_type is 'general'
+  db.prepare(
+    `INSERT INTO research (id, workspace_id, subject, status, created_at, updated_at)
+     VALUES (?, ?, 'Market Analysis', 'draft', ?, ?)`,
+  ).run(researchId, wsId, NOW, NOW)
+
+  const row = db.prepare(`SELECT research_type FROM research WHERE id = ?`).get(researchId)
+  assert.equal(row.research_type, 'general')
+
+  // Explicit valid research_type
+  db.prepare(`UPDATE research SET research_type = 'competitor' WHERE id = ?`).run(researchId)
+  const updated = db.prepare(`SELECT research_type FROM research WHERE id = ?`).get(researchId)
+  assert.equal(updated.research_type, 'competitor')
+
+  // Invalid research_type rejected by CHECK constraint
+  assert.throws(
+    () =>
+      db.prepare(`UPDATE research SET research_type = 'invalid_type' WHERE id = ?`).run(researchId),
+    /CHECK/i,
+  )
+
   db.close()
 })

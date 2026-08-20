@@ -1,13 +1,21 @@
 import { executeAgentTask } from '../agents/task.ts'
 import type { ExecuteAIDeps } from '../ai/executor.ts'
+import { createApprovalRequest, getApprovalWithExpiryCheck } from '../approval/service.ts'
+import {
+  computeSnapshotFingerprint,
+  createSafeActionSnapshot,
+  verifySnapshotIntegrity,
+} from '../approval/snapshot.ts'
 import {
   buildContext,
   ContextError,
   type ContextPackage,
   type ContextRequest,
 } from '../context/index.ts'
+import { getAgentById } from '../db/agent.ts'
+import { updateApprovalDecision } from '../db/approval.ts'
 import { emitEventSafe } from '../db/event.ts'
-import { nowIso, type SqlDatabase } from '../db/sql.ts'
+import { nowIso, queryAll, type SqlDatabase } from '../db/sql.ts'
 import {
   createWorkflowRun,
   createWorkflowStepRun,
@@ -34,20 +42,21 @@ import {
 } from './definition.ts'
 import { boundedSnapshot, WORKFLOW_LIMITS } from './limits.ts'
 import { frozenAgentHandle, type ResolvedAgent, type RunPlan, resolveRunPlan } from './plan.ts'
+import { resolveActionKeyForTool } from './policy.ts'
 import { validateWorkflowDefinition } from './validate.ts'
 
 /**
- * The Workflow Engine (STEP 10). Owns the run lifecycle:
+ * The Workflow Engine (STEP 10 & 11C). Owns the run lifecycle:
  *
- *   startWorkflowRun  — validate everything, freeze the plan, snapshot
- *                       context, persist the run, then drive it.
- *   driveRun          — the step loop. State is persisted after EVERY
- *                       transition, so a run never depends on one request
- *                       staying alive.
- *   resumeWorkflowRun — continue a queued/running/waiting run exactly where
- *                       its persisted state says; completed steps never
- *                       re-execute.
- *   cancelWorkflowRun — stop a pending/active run; history is kept.
+ *   startWorkflowRun           — validate everything, freeze the plan, snapshot
+ *                                context, persist the run, then drive it.
+ *   driveRun                   — the step loop. State is persisted after EVERY
+ *                                transition, so a run never depends on one request
+ *                                staying alive.
+ *   resumeWorkflowRun          — continue a queued/running/waiting run.
+ *   resumeWorkflowAfterApproval— continue a waiting run following a human approval decision.
+ *   cancelWorkflowRun          — stop a pending/active run; history is kept and
+ *                                pending approvals are cancelled.
  *
  * The engine is provider-neutral (agents run via executeAgentTask) and
  * platform-neutral (tools run via executeTool only). It never writes chat
@@ -59,11 +68,22 @@ import { validateWorkflowDefinition } from './validate.ts'
 const RETRYABLE_TOOL_CODES = new Set(['timeout'])
 
 /** Persisted engine state. Small by design; history lives in step runs. */
-interface EngineState {
+export interface EngineState {
   nextStepId: string | null
   visits: Record<string, number>
   counts: { steps: number; agents: number; tools: number }
   startedAtMs: number
+  waitingApprovalId?: string | null
+}
+
+export interface AuthorizedApproval {
+  approvalRequestId: string
+  stepId: string
+  fingerprint: string
+}
+
+export interface DriveRunOptions {
+  authorizedApproval?: AuthorizedApproval
 }
 
 export interface WorkflowEngineDeps {
@@ -297,7 +317,7 @@ interface StepOutcome {
 type StepFailure =
   | { kind: 'retryable'; message: string }
   | { kind: 'fatal'; message: string }
-  | { kind: 'waiting'; message: string; toolExecutionId: string }
+  | { kind: 'waiting'; message: string; toolExecutionId: string; approvalRequestId?: string }
 
 async function executeStep(
   db: SqlDatabase,
@@ -309,6 +329,7 @@ async function executeStep(
   step: WorkflowStepDef,
   attempt: number,
   deps: WorkflowEngineDeps,
+  options?: DriveRunOptions,
 ): Promise<StepOutcome | StepFailure> {
   if (step.type === 'end') {
     return { next: null, output: { kind: 'end' } }
@@ -395,6 +416,65 @@ async function executeStep(
   // Tool step — ALWAYS through executeTool with the resolved agent version
   // as caller. The workflow is never a super-user.
   const args = resolveBindings(step.inputs, scope)
+  const toolDefinition = (deps.tools?.definitions ?? []).find((d) => d.key === step.toolKey) ?? null
+  const actionKey = resolveActionKeyForTool(step.toolKey, toolDefinition)
+  const brandId =
+    pkg.activeScope?.type === 'brand' ? (pkg.activeScope.id ?? null) : (pkg.brand?.id ?? null)
+
+  const authorized = options?.authorizedApproval
+  const isAuthorizedForStep = authorized && authorized.stepId === step.id
+
+  if (isAuthorizedForStep) {
+    // Re-verify snapshot fingerprint matching
+    const { snapshotJson } = createSafeActionSnapshot({
+      toolKey: step.toolKey,
+      args,
+      stepId: step.id,
+    })
+    const currentFingerprint = computeSnapshotFingerprint(actionKey, snapshotJson)
+    if (currentFingerprint !== authorized.fingerprint) {
+      return {
+        kind: 'fatal',
+        message: `Action parameters changed since approval: snapshot mismatch (expected ${authorized.fingerprint}, got ${currentFingerprint}).`,
+      }
+    }
+  } else {
+    // Check approval policy via central Approval Request service
+    const approvalResult = await createApprovalRequest(db, {
+      workspaceId,
+      actionKey,
+      origin: 'workflow',
+      requestedByType: 'workflow',
+      requestedById: plan.workflowVersionId,
+      brandId,
+      runId,
+      stepId: step.id,
+      executionId: `${runId}:${step.id}:${attempt}`,
+      summary: `Execute ${step.toolKey} in workflow step "${step.id}"`,
+      payload: {
+        toolKey: step.toolKey,
+        args,
+        stepId: step.id,
+      },
+    })
+
+    if (approvalResult.status === 'blocked') {
+      return {
+        kind: 'fatal',
+        message: `Step "${step.id}" is blocked by policy: ${approvalResult.reason}`,
+      }
+    }
+
+    if (approvalResult.status === 'pending' && approvalResult.request) {
+      return {
+        kind: 'waiting',
+        approvalRequestId: approvalResult.request.id,
+        message: approvalResult.reason ?? 'This step needs approval.',
+        toolExecutionId: `${runId}:${step.id}:${attempt}`,
+      }
+    }
+  }
+
   const toolResult = await executeTool(
     {
       db,
@@ -412,6 +492,7 @@ async function executeStep(
       // Idempotency foundation: stable per run+step+attempt, so a retried
       // attempt gets a new key but a replayed one never does.
       idempotencyKey: `${runId}:${step.id}:${attempt}`,
+      approvalGranted: true,
     },
     deps.tools ?? {},
   )
@@ -452,8 +533,10 @@ export async function driveRun(
   db: SqlDatabase,
   runId: string,
   deps: WorkflowEngineDeps,
+  options?: DriveRunOptions,
 ): Promise<void> {
   const now = deps.now ?? Date.now
+  let currentOptions = options
 
   for (;;) {
     const run = await getWorkflowRunById(db, runId)
@@ -567,23 +650,39 @@ export async function driveRun(
       attempt,
     })
 
-    const outcome = await executeStep(db, workspaceId, runId, plan, pkg, scope, step, attempt, deps)
+    const outcome = await executeStep(
+      db,
+      workspaceId,
+      runId,
+      plan,
+      pkg,
+      scope,
+      step,
+      attempt,
+      deps,
+      currentOptions,
+    )
 
     /* Waiting: an approval-gated tool paused the run (§47/§48). */
     if ('kind' in outcome && outcome.kind === 'waiting') {
+      currentOptions = undefined
       await finishWorkflowStepRun(db, stepRun.id, {
         status: 'waiting',
         error: outcome.message,
         toolExecutionId: outcome.toolExecutionId,
       })
+      const waitingState: EngineState = {
+        ...state,
+        waitingApprovalId: outcome.approvalRequestId ?? null,
+      }
       await updateWorkflowRun(db, runId, {
         status: 'waiting',
-        stateJson: JSON.stringify(state),
+        stateJson: JSON.stringify(waitingState),
       })
-      await workflowEvent(db, run, workspaceId, 'workflow.step_failed', {
+      await workflowEvent(db, run, workspaceId, 'workflow.waiting_for_approval', {
         stepId: step.id,
-        code: 'approval_required',
-        waiting: true,
+        approvalRequestId: outcome.approvalRequestId ?? null,
+        message: outcome.message,
       })
       return
     }
@@ -602,9 +701,10 @@ export async function driveRun(
         message: outcome.message,
       })
       if (canRetry) {
-        // nextStepId stays the same; the loop re-executes as attempt+1.
+        // nextStepId stays the same; the loop re-executes as attempt+1, reusing currentOptions.
         continue
       }
+      currentOptions = undefined
       const onFailure = 'onFailure' in step ? step.onFailure : undefined
       if (onFailure?.action === 'goto') {
         state.nextStepId = onFailure.stepId
@@ -617,6 +717,7 @@ export async function driveRun(
     }
 
     /* Success. */
+    currentOptions = undefined
     await finishWorkflowStepRun(db, stepRun.id, {
       status: 'succeeded',
       outputJson: boundedSnapshot(outcome.output, WORKFLOW_LIMITS.maxStepSnapshotChars),
@@ -671,13 +772,263 @@ export async function resumeWorkflowRun(
   const run = await getWorkflowRunById(db, runId)
   if (!run) return { ok: false, message: 'That run could not be found.' }
   if (run.status === 'waiting' || run.status === 'queued') {
-    // No approval system yet (STEP 11): resuming a waiting run retries the
-    // waiting step, which pauses again while the approval gate stands.
     await updateWorkflowRun(db, runId, { status: 'running' })
   } else if (run.status !== 'running') {
     return { ok: false, message: `This run is ${run.status}; it cannot be resumed.` }
   }
   await driveRun(db, runId, deps)
+  return { ok: true }
+}
+
+/**
+ * Resumes a waiting workflow run after an Approval Request has been decided.
+ *
+ * Verifications:
+ * 1. Request status must be 'approved' and not expired.
+ * 2. If 'rejected', 'cancelled', or 'expired': resolves the waiting workflow safely.
+ * 3. Validates snapshot integrity.
+ * 4. Verifies linked workflow run is in 'waiting' state.
+ * 5. Re-evaluates snapshot fingerprint against current step inputs (mismatch prevention).
+ * 6. Re-verifies Agent status, Tool status, and capability grant.
+ * 7. Completed steps NEVER re-execute.
+ * 8. Resumes execution via driveRun with authorized approval.
+ */
+export async function resumeWorkflowAfterApproval(
+  db: SqlDatabase,
+  approvalRequestId: string,
+  deps: WorkflowEngineDeps,
+): Promise<{ ok: boolean; code?: string; message?: string }> {
+  const request = await getApprovalWithExpiryCheck(db, { id: approvalRequestId })
+  if (!request) {
+    return { ok: false, message: 'Approval request not found.' }
+  }
+
+  // Find linked run
+  if (!request.runId) {
+    return { ok: false, message: 'Approval request is not linked to any workflow run.' }
+  }
+
+  const run = await getWorkflowRunById(db, request.runId)
+  if (!run) {
+    return { ok: false, message: 'Linked workflow run could not be found.' }
+  }
+
+  const workflow = await getWorkflowById(db, run.workflowId)
+  const workspaceId = workflow?.workspaceId
+  if (!workflow || !workspaceId) {
+    return { ok: false, message: 'The workflow disappeared.' }
+  }
+
+  // Handle terminal/non-approved request states
+  if (request.status === 'rejected') {
+    if (run.status === 'waiting') {
+      const stepRuns = await listWorkflowStepRuns(db, run.id)
+      const waitingStep = stepRuns.find(
+        (s) => s.status === 'waiting' && s.stepKey === request.stepId,
+      )
+      if (waitingStep) {
+        await finishWorkflowStepRun(db, waitingStep.id, {
+          status: 'failed',
+          error: 'Approval was rejected.',
+          decisionJson: JSON.stringify({ decision: 'rejected' }),
+        })
+      }
+      await updateWorkflowRun(db, run.id, {
+        status: 'failed',
+        error: 'Approval was rejected.',
+        finishedAt: nowIso(),
+      })
+      await workflowEvent(db, run, workspaceId, 'workflow.approval_rejected', {
+        approvalRequestId: request.id,
+        stepId: request.stepId,
+        decisionNote: request.decisionNote,
+      })
+    }
+    return { ok: false, code: 'approval_rejected', message: 'Approval request was rejected.' }
+  }
+
+  if (request.status === 'cancelled') {
+    if (run.status === 'waiting') {
+      const stepRuns = await listWorkflowStepRuns(db, run.id)
+      const waitingStep = stepRuns.find(
+        (s) => s.status === 'waiting' && s.stepKey === request.stepId,
+      )
+      if (waitingStep) {
+        await finishWorkflowStepRun(db, waitingStep.id, {
+          status: 'cancelled',
+          error: 'Approval request was cancelled.',
+        })
+      }
+      await updateWorkflowRun(db, run.id, {
+        status: 'cancelled',
+        finishedAt: nowIso(),
+      })
+      await workflowEvent(db, run, workspaceId, 'workflow.run_cancelled', {
+        approvalRequestId: request.id,
+        stepId: request.stepId,
+      })
+    }
+    return { ok: false, code: 'approval_cancelled', message: 'Approval request was cancelled.' }
+  }
+
+  if (request.status === 'expired') {
+    if (run.status === 'waiting') {
+      const stepRuns = await listWorkflowStepRuns(db, run.id)
+      const waitingStep = stepRuns.find(
+        (s) => s.status === 'waiting' && s.stepKey === request.stepId,
+      )
+      if (waitingStep) {
+        await finishWorkflowStepRun(db, waitingStep.id, {
+          status: 'failed',
+          error: 'Approval request expired.',
+          decisionJson: JSON.stringify({ decision: 'expired' }),
+        })
+      }
+      await updateWorkflowRun(db, run.id, {
+        status: 'failed',
+        error: 'Approval request expired.',
+        finishedAt: nowIso(),
+      })
+      await workflowEvent(db, run, workspaceId, 'workflow.approval_expired', {
+        approvalRequestId: request.id,
+        stepId: request.stepId,
+      })
+    }
+    return { ok: false, code: 'approval_expired', message: 'Approval request expired.' }
+  }
+
+  if (request.status === 'pending') {
+    return { ok: false, message: 'Approval request is still pending.' }
+  }
+
+  if (request.status !== 'approved') {
+    return { ok: false, message: `Approval request is ${request.status}.` }
+  }
+
+  if (!request.stepId) {
+    return { ok: false, message: 'Approval request is missing step identifier.' }
+  }
+
+  // Request is approved!
+  // Verify snapshot integrity
+  const isIntact = verifySnapshotIntegrity(
+    request.actionKey,
+    request.snapshotJson,
+    request.fingerprint,
+  )
+  if (!isIntact) {
+    return {
+      ok: false,
+      code: 'integrity_violation',
+      message: 'Approval request snapshot integrity violation.',
+    }
+  }
+
+  // Idempotency: if run is already succeeded, return ok
+  if (run.status === 'succeeded') {
+    return { ok: true, message: 'Workflow run is already completed.' }
+  }
+  if (run.status === 'failed') {
+    return { ok: false, message: 'Workflow run has failed.' }
+  }
+  if (run.status === 'cancelled') {
+    return { ok: false, message: 'Workflow run was cancelled and cannot be resumed.' }
+  }
+  if (run.status !== 'waiting' && run.status !== 'running') {
+    return { ok: false, message: `Workflow run is ${run.status}; cannot resume.` }
+  }
+
+  // Check waiting step matching
+  const plan = JSON.parse(run.planJson ?? '{}') as RunPlan
+  const state = parseState(run.stateJson, plan.entryStepId)
+  if (state.nextStepId !== request.stepId) {
+    // If the step already completed (e.g. concurrent/duplicate resume call)
+    const stepRuns = await listWorkflowStepRuns(db, run.id)
+    const stepCompleted = stepRuns.some(
+      (s) => s.stepKey === request.stepId && s.status === 'succeeded',
+    )
+    if (stepCompleted) {
+      return { ok: true, message: 'Step already completed.' }
+    }
+    return { ok: false, message: 'Waiting step does not match approval request.' }
+  }
+
+  // Re-verify snapshot matching: reconstruct inputs and check fingerprint
+  const version = await getWorkflowVersion(db, run.workflowVersionId)
+  if (!version) {
+    return { ok: false, message: 'Workflow version disappeared.' }
+  }
+  const definition = parseWorkflowDefinition(version.definitionJson)
+  const step = definition.steps.find((s) => s.id === request.stepId)
+  if (step?.type !== 'tool') {
+    return { ok: false, message: 'Waiting step is not a valid tool step.' }
+  }
+
+  const scope = await buildBindingScope(db, run)
+  const currentArgs = resolveBindings(step.inputs, scope)
+  const toolDefinition = (deps.tools?.definitions ?? []).find((d) => d.key === step.toolKey) ?? null
+  const actionKey = resolveActionKeyForTool(step.toolKey, toolDefinition)
+  const { snapshotJson } = createSafeActionSnapshot({
+    toolKey: step.toolKey,
+    args: currentArgs,
+    stepId: step.id,
+  })
+  const currentFingerprint = computeSnapshotFingerprint(actionKey, snapshotJson)
+  if (currentFingerprint !== request.fingerprint) {
+    const stepRuns = await listWorkflowStepRuns(db, run.id)
+    const waitingStep = stepRuns.find((s) => s.status === 'waiting' && s.stepKey === request.stepId)
+    if (waitingStep) {
+      await finishWorkflowStepRun(db, waitingStep.id, {
+        status: 'failed',
+        error: `Action parameters changed since approval: snapshot mismatch (expected ${request.fingerprint}, got ${currentFingerprint}).`,
+      })
+    }
+    await updateWorkflowRun(db, run.id, {
+      status: 'failed',
+      error: `Step "${step.id}" inputs changed after approval: snapshot mismatch.`,
+      finishedAt: nowIso(),
+    })
+    await workflowEvent(db, run, workspaceId, 'workflow.step_failed', {
+      stepId: step.id,
+      code: 'approval_snapshot_mismatch',
+    })
+    return {
+      ok: false,
+      code: 'approval_snapshot_mismatch',
+      message: 'Action parameters changed since approval: snapshot mismatch.',
+    }
+  }
+
+  // Re-verify Agent and Tool capabilities and status
+  const agentHandle = plan.agents[step.id]
+  if (agentHandle) {
+    const agent = await getAgentById(db, agentHandle.agentId)
+    if (!agent || agent.status === 'disabled' || agent.workspaceId !== workspaceId) {
+      await updateWorkflowRun(db, run.id, {
+        status: 'failed',
+        error: `Agent '${agentHandle.agentId}' is disabled or unavailable.`,
+        finishedAt: nowIso(),
+      })
+      return { ok: false, message: 'Agent is disabled or unavailable.' }
+    }
+  }
+
+  // Update run status to running
+  await updateWorkflowRun(db, run.id, { status: 'running' })
+  await workflowEvent(db, run, workspaceId, 'workflow.resumed_after_approval', {
+    approvalRequestId: request.id,
+    stepId: request.stepId,
+  })
+
+  // Drive the run forward with authorized approval
+  await driveRun(db, run.id, deps, {
+    authorizedApproval: {
+      approvalRequestId: request.id,
+      stepId: request.stepId,
+      fingerprint: request.fingerprint,
+    },
+  })
+
   return { ok: true }
 }
 
@@ -698,6 +1049,34 @@ export async function cancelWorkflowRun(
     }
   }
   await updateWorkflowRun(db, runId, { status: 'cancelled', finishedAt: nowIso() })
+
+  // Cancel any pending approval requests linked to this run
+  const pendingApprovals = await queryAll<{ id: string; workspace_id: string }>(
+    db,
+    `SELECT id, workspace_id FROM approval WHERE run_id = ? AND status = 'pending'`,
+    [runId],
+  )
+  for (const pa of pendingApprovals) {
+    await updateApprovalDecision(db, {
+      id: pa.id,
+      workspaceId: pa.workspace_id,
+      status: 'cancelled',
+      decision: 'cancelled',
+      decidedByType: 'system',
+      decidedById: null,
+      decisionNote: 'Workflow run was cancelled.',
+      decidedAt: nowIso(),
+    })
+    await emitEventSafe(db, {
+      workspaceId: pa.workspace_id,
+      eventType: 'approval.cancelled',
+      actorType: 'system',
+      subjectType: 'approval',
+      subjectId: pa.id,
+      payloadJson: JSON.stringify({ reason: 'Workflow run was cancelled.' }),
+    })
+  }
+
   const workflow = await getWorkflowById(db, run.workflowId)
   if (workflow) {
     await workflowEvent(db, run, workflow.workspaceId, 'workflow.run_cancelled', {})

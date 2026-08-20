@@ -42,6 +42,8 @@ import type { Message } from '~/types/domain'
 const idWire = z.object({ id: z.uuid() })
 const createConversationWire = z.object({
   title: z.string().trim().min(1).max(120).optional(),
+  scopeType: z.enum(['brand', 'product', 'account', 'campaign']).nullable().optional(),
+  scopeId: z.string().uuid().nullable().optional(),
 })
 const renameConversationWire = z.object({
   id: z.uuid(),
@@ -71,6 +73,7 @@ export interface ChatSidebarData {
 export interface ChatAgentOption {
   id: string
   name: string
+  role: string | null
   status: 'active' | 'disabled' | 'archived'
   origin: 'builtin' | 'custom'
   executionType: 'direct_model' | 'external_agent' | 'router'
@@ -94,11 +97,34 @@ export async function listChatAgents(
   return agents.map((agent) => ({
     id: agent.id,
     name: agent.name,
+    role: agent.role,
     status: agent.status,
     origin: agent.origin,
     executionType: agent.executionType,
     selectable: agent.status === 'active' && agent.executionType === 'direct_model',
   }))
+}
+
+/**
+ * Resolve the selected agent from URL state. Unknown, disabled or otherwise
+ * unselectable values fall back cleanly to Chief (then any selectable).
+ */
+export function resolveSelectedAgent(
+  agents: ChatAgentOption[],
+  requestedId: string | undefined,
+): ChatAgentOption | null {
+  const selectable = agents.filter((agent) => agent.selectable)
+  if (requestedId) {
+    const requested = selectable.find((agent) => agent.id === requestedId)
+    if (requested) {
+      return requested
+    }
+  }
+  return (
+    selectable.find((agent) => agent.name === 'Chief' && agent.origin === 'builtin') ??
+    selectable[0] ??
+    null
+  )
 }
 
 async function requireWorkspace() {
@@ -152,9 +178,9 @@ export const getConversationPageData = createServerFn({ method: 'GET' })
   })
 
 /**
- * Create a conversation. When a brand is currently selected (cookie), the
- * conversation is associated with that brand; otherwise it is a general
- * workspace conversation.
+ * Create a conversation. When explicit scope is provided, it uses that;
+ * when a brand is currently selected (cookie), the conversation is associated
+ * with that brand; otherwise it is a general workspace conversation.
  */
 export const createConversationFn = createServerFn({ method: 'POST' })
   .validator(createConversationWire)
@@ -162,14 +188,16 @@ export const createConversationFn = createServerFn({ method: 'POST' })
     const workspace = await requireWorkspace()
     const db = getDb()
 
-    let scopeType: 'brand' | null = null
-    let scopeId: string | null = null
-    const activeBrandId = getCookie(ACTIVE_BRAND_COOKIE)
-    if (activeBrandId) {
-      const brand = await getBrandById(activeBrandId)
-      if (brand && !brand.deletedAt && brand.workspaceId === workspace.id) {
-        scopeType = 'brand'
-        scopeId = brand.id
+    let scopeType: 'brand' | 'product' | 'account' | 'campaign' | null = data.scopeType ?? null
+    let scopeId: string | null = data.scopeId ?? null
+    if (!scopeType || !scopeId) {
+      const activeBrandId = getCookie(ACTIVE_BRAND_COOKIE)
+      if (activeBrandId) {
+        const brand = await getBrandById(activeBrandId)
+        if (brand && !brand.deletedAt && brand.workspaceId === workspace.id) {
+          scopeType = 'brand'
+          scopeId = brand.id
+        }
       }
     }
 

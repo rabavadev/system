@@ -2,7 +2,9 @@ import { createServerFn } from '@tanstack/react-start'
 import { deleteCookie, getCookie, setCookie } from '@tanstack/react-start/server'
 import { z } from 'zod'
 
+import { countPendingApprovals } from '~/server/db/approval'
 import { getBrandById, listBrands } from '~/server/db/brand'
+import { getDb } from '~/server/db/client'
 import { getDefaultWorkspace } from '~/server/db/workspace'
 
 /**
@@ -27,6 +29,8 @@ export interface ShellData {
   brands: ShellBrand[]
   /** The selected brand, or null when nothing/nothing valid is selected. */
   activeBrand: ShellBrand | null
+  /** Real-time pending approvals count. */
+  pendingApprovalsCount: number
 }
 
 /**
@@ -39,18 +43,23 @@ export const getShellData = createServerFn({ method: 'GET' }).handler(
     try {
       const workspace = await getDefaultWorkspace()
       if (!workspace) {
-        return { workspaceName: null, brands: [], activeBrand: null }
+        return { workspaceName: null, brands: [], activeBrand: null, pendingApprovalsCount: 0 }
       }
-      const brands = (await listBrands(workspace.id)).map((brand) => ({
+      const db = getDb()
+      const [brandsList, pendingApprovalsCount] = await Promise.all([
+        listBrands(workspace.id),
+        countPendingApprovals(db, workspace.id).catch(() => 0),
+      ])
+      const brands = brandsList.map((brand) => ({
         id: brand.id,
         name: brand.name,
       }))
       const selectedId = getCookie(ACTIVE_BRAND_COOKIE)
       const activeBrand = brands.find((brand) => brand.id === selectedId) ?? null
-      return { workspaceName: workspace.name, brands, activeBrand }
+      return { workspaceName: workspace.name, brands, activeBrand, pendingApprovalsCount }
     } catch (error) {
       console.warn('shell data unavailable (is D1 migrated?):', error)
-      return { workspaceName: null, brands: [], activeBrand: null }
+      return { workspaceName: null, brands: [], activeBrand: null, pendingApprovalsCount: 0 }
     }
   },
 )

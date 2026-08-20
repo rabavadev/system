@@ -1,5 +1,5 @@
 import { Link, useRouter } from '@tanstack/react-router'
-import { Bell } from 'lucide-react'
+import { Bell, CircleCheck } from 'lucide-react'
 import { useTransition } from 'react'
 
 import { type ShellData, setActiveBrand } from '~/features/workspace/server'
@@ -13,6 +13,7 @@ import { clientEnv } from '~/lib/env'
 export function Topbar({ shell }: { shell: ShellData }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
+  const pendingCount = shell.pendingApprovalsCount ?? 0
 
   function onSelectBrand(brandId: string) {
     startTransition(async () => {
@@ -58,6 +59,17 @@ export function Topbar({ shell }: { shell: ShellData }) {
         ) : null}
       </div>
       <div className="flex items-center gap-3">
+        {pendingCount > 0 && (
+          <Link
+            to="/approvals"
+            className="flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 transition-colors hover:bg-amber-100 border border-amber-200"
+          >
+            <CircleCheck className="size-3.5 text-amber-600" />
+            <span>
+              {pendingCount} {pendingCount === 1 ? 'approval pending' : 'approvals pending'}
+            </span>
+          </Link>
+        )}
         <div className="flex items-center gap-1.5 text-xs text-zinc-500">
           <span className="size-1.5 rounded-full bg-zinc-300" aria-hidden />
           Chief idle

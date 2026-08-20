@@ -4,9 +4,9 @@ import { Ban, RotateCcw } from 'lucide-react'
 import { PageHeader } from '~/components/layout/page-header'
 import { Badge } from '~/components/ui/badge'
 import { Button } from '~/components/ui/button'
+import { RUN_STATUS_LABEL, runStatusTone, STEP_STATUS_LABEL, STEP_TYPE_LABEL } from './labels.ts'
 
-import { RUN_STATUS_LABEL, runStatusTone, STEP_STATUS_LABEL, STEP_TYPE_LABEL } from './labels'
-import { cancelWorkflowRunFn, resumeWorkflowRunFn } from './server'
+import { cancelWorkflowRunFn, resumeWorkflowAfterApprovalFn, resumeWorkflowRunFn } from './server'
 
 const routeApi = getRouteApi('/workflows_/$workflowId_/runs/$runId')
 
@@ -92,6 +92,50 @@ export function RunDetailPage() {
                   )}
                 </div>
                 {step.summary && <p className="text-xs text-zinc-600">{step.summary}</p>}
+                {step.approval && (
+                  <div className="flex flex-wrap items-center gap-2 rounded bg-zinc-50 px-2.5 py-1.5 text-xs text-zinc-600">
+                    <span className="font-medium text-zinc-700">Approval:</span>
+                    <Badge
+                      tone={
+                        step.approval.status === 'approved'
+                          ? 'success'
+                          : step.approval.status === 'rejected' ||
+                              step.approval.status === 'expired'
+                            ? 'muted'
+                            : 'warning'
+                      }
+                    >
+                      {step.approval.status}
+                    </Badge>
+                    <span className="text-[11px] text-zinc-400">
+                      ID: {step.approval.id.slice(0, 8)}…
+                    </span>
+                    <span className="text-[11px] text-zinc-400">
+                      Fingerprint: {step.approval.fingerprint.slice(0, 12)}…
+                    </span>
+                    {step.approval.decisionNote && (
+                      <span className="text-[11px] text-zinc-500 italic">
+                        "{step.approval.decisionNote}"
+                      </span>
+                    )}
+                    {step.status === 'waiting' && step.approval.status === 'approved' && (
+                      <Button
+                        variant="secondary"
+                        className="h-6 px-2 text-[11px]"
+                        onClick={async () => {
+                          if (step.approval?.id) {
+                            await resumeWorkflowAfterApprovalFn({
+                              data: { approvalRequestId: step.approval.id },
+                            })
+                            await router.invalidate()
+                          }
+                        }}
+                      >
+                        Resume step
+                      </Button>
+                    )}
+                  </div>
+                )}
                 {step.error && step.status === 'failed' && (
                   <p className="text-xs text-red-600">{step.error}</p>
                 )}
@@ -104,6 +148,7 @@ export function RunDetailPage() {
                           input: step.input ?? null,
                           output: step.output ?? null,
                           decision: step.decision ?? null,
+                          approval: step.approval ?? null,
                         },
                         null,
                         2,

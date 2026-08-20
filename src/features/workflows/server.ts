@@ -7,6 +7,7 @@ import { listAgents, listAgentVersions } from '~/server/db/agent'
 import { listBrands } from '~/server/db/brand'
 import { getDb } from '~/server/db/client'
 import { listProducts } from '~/server/db/product'
+import { queryAll } from '~/server/db/sql'
 import {
   getWorkflowById,
   getWorkflowRunById,
@@ -26,6 +27,7 @@ import {
   checkWorkflowDefinition,
   definitionOf,
   resolveWorkflowRuntime,
+  resumeWorkflowAfterApproval,
   resumeWorkflowRun,
   saveWorkflowVersion,
   startWorkflowRun,
@@ -368,6 +370,16 @@ export const resumeWorkflowRunFn = createServerFn({ method: 'POST' })
     return resumeWorkflowRun(db, data.runId, { ai: deps })
   })
 
+export const resumeWorkflowAfterApprovalFn = createServerFn({ method: 'POST' })
+  .inputValidator(z.object({ approvalRequestId: z.uuid() }))
+  .handler(async ({ data }) => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) throw new Error('No workspace exists yet.')
+    const { deps } = resolveAiRuntime()
+    return resumeWorkflowAfterApproval(db, data.approvalRequestId, { ai: deps })
+  })
+
 export const cancelWorkflowRunFn = createServerFn({ method: 'POST' })
   .inputValidator(runIdWire)
   .handler(async ({ data }) => {
@@ -397,6 +409,14 @@ export interface RunStepItem {
   error: string | null
   startedAt: string | null
   finishedAt: string | null
+  approval?: {
+    id: string
+    actionKey: string
+    status: string
+    fingerprint: string
+    decision: string | null
+    decisionNote: string | null
+  } | null
   /** Dev trace only (import.meta.env.DEV). */
   input?: JsonData
   output?: JsonData
@@ -435,7 +455,36 @@ export const getRunDetailData = createServerFn({ method: 'GET' })
     const version = await getWorkflowVersion(db, run.workflowVersionId)
 
     const stepRuns = await listWorkflowStepRuns(db, run.id)
-    const steps: RunStepItem[] = stepRuns.map((stepRun) => summarizeStep(stepRun))
+    const approvals = await queryAll<{
+      id: string
+      action_key: string
+      status: string
+      fingerprint: string
+      decision: string | null
+      decision_note: string | null
+      step_id: string | null
+      created_at: string
+    }>(
+      db,
+      `SELECT id, action_key, status, fingerprint, decision, decision_note, step_id, created_at FROM approval WHERE run_id = ?`,
+      [run.id],
+    )
+
+    const steps: RunStepItem[] = stepRuns.map((stepRun) => {
+      const item = summarizeStep(stepRun)
+      const app = approvals.find((a) => a.step_id === stepRun.stepKey)
+      if (app) {
+        item.approval = {
+          id: app.id,
+          actionKey: app.action_key,
+          status: app.status,
+          fingerprint: app.fingerprint,
+          decision: app.decision,
+          decisionNote: app.decision_note,
+        }
+      }
+      return item
+    })
 
     let scope: RunDetailData['scope'] = null
     let devTrace: JsonData = null

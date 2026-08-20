@@ -47,24 +47,4 @@ export function AgentSelector({
   )
 }
 
-/**
- * Resolve the selected agent from URL state. Unknown, disabled or otherwise
- * unselectable values fall back cleanly to Chief (then any selectable).
- */
-export function resolveSelectedAgent(
-  agents: ChatAgentOption[],
-  requestedId: string | undefined,
-): ChatAgentOption | null {
-  const selectable = agents.filter((agent) => agent.selectable)
-  if (requestedId) {
-    const requested = selectable.find((agent) => agent.id === requestedId)
-    if (requested) {
-      return requested
-    }
-  }
-  return (
-    selectable.find((agent) => agent.name === 'Chief' && agent.origin === 'builtin') ??
-    selectable[0] ??
-    null
-  )
-}
+export { resolveSelectedAgent } from './server'

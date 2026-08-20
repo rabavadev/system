@@ -1,10 +1,25 @@
 import { createServerFn } from '@tanstack/react-start'
+import { z } from 'zod'
 import { type AgentCapability, parseAgentVersionConfig } from '~/server/agents/config'
 import { ensureBuiltinAgents } from '~/server/agents/registry'
 import { resolveAiRuntime } from '~/server/ai/runtime'
 import { getCurrentAgentVersion, listAgents } from '~/server/db/agent'
+import { listBrands } from '~/server/db/brand'
 import { getDb } from '~/server/db/client'
+import {
+  clearApprovalPolicyOverride,
+  listApprovalPolicies,
+  setApprovalPolicy,
+} from '~/server/db/policy'
 import { getDefaultWorkspace } from '~/server/db/workspace'
+import {
+  ACTION_DEFINITIONS,
+  ACTION_KEYS,
+  type ActionKey,
+  type PolicyMode,
+  type PolicyResolutionResult,
+  resolveApprovalPolicy,
+} from '~/server/policy'
 import { listToolDescriptors, type ToolDescriptor } from '~/server/tools'
 
 /**
@@ -65,3 +80,154 @@ export const getToolsOverview = createServerFn({ method: 'GET' }).handler(
     }
   },
 )
+
+export interface AutonomyOverviewItem {
+  key: ActionKey
+  label: string
+  description: string
+  category: string
+  defaultMode: PolicyMode
+  workspaceMode: PolicyMode
+  isWorkspaceCustom: boolean
+  brandOverrideMode: PolicyMode | null
+  effectiveMode: PolicyMode
+}
+
+export interface AutonomyOverview {
+  workspaceId: string
+  selectedBrandId: string | null
+  brands: Array<{ id: string; name: string }>
+  items: AutonomyOverviewItem[]
+}
+
+const getAutonomyOverviewWire = z.object({
+  brandId: z.uuid().nullable().optional(),
+})
+
+export const getAutonomyOverview = createServerFn({ method: 'GET' })
+  .validator((data?: { brandId?: string | null }) => getAutonomyOverviewWire.parse(data ?? {}))
+  .handler(async ({ data }): Promise<AutonomyOverview> => {
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      return {
+        workspaceId: '',
+        selectedBrandId: null,
+        brands: [],
+        items: [],
+      }
+    }
+    const db = getDb()
+    const brands = await listBrands(workspace.id)
+    const activeBrands = brands.map((b) => ({ id: b.id, name: b.name }))
+
+    const workspacePolicies = await listApprovalPolicies(db, {
+      workspaceId: workspace.id,
+      scopeType: 'workspace',
+      scopeId: workspace.id,
+    })
+    const wsMap = new Map(workspacePolicies.map((p) => [p.actionKey, p.mode]))
+
+    let brandMap = new Map<ActionKey, PolicyMode>()
+    if (data.brandId) {
+      const brandPolicies = await listApprovalPolicies(db, {
+        workspaceId: workspace.id,
+        scopeType: 'brand',
+        scopeId: data.brandId,
+      })
+      brandMap = new Map(brandPolicies.map((p) => [p.actionKey, p.mode]))
+    }
+
+    const items: AutonomyOverviewItem[] = ACTION_KEYS.map((key) => {
+      const def = ACTION_DEFINITIONS[key]
+      const defaultMode = def.defaultMode
+      const customWsMode = wsMap.get(key)
+      const workspaceMode = customWsMode ?? defaultMode
+      const brandOverrideMode = data.brandId ? (brandMap.get(key) ?? null) : null
+      const effectiveMode = brandOverrideMode ?? workspaceMode
+
+      return {
+        key,
+        label: def.label,
+        description: def.description,
+        category: def.category,
+        defaultMode,
+        workspaceMode,
+        isWorkspaceCustom: customWsMode !== undefined,
+        brandOverrideMode,
+        effectiveMode,
+      }
+    })
+
+    return {
+      workspaceId: workspace.id,
+      selectedBrandId: data.brandId ?? null,
+      brands: activeBrands,
+      items,
+    }
+  })
+
+const setPolicyWire = z.object({
+  scopeType: z.enum(['workspace', 'brand']),
+  scopeId: z.uuid(),
+  actionKey: z.enum(ACTION_KEYS),
+  mode: z.enum(['auto', 'review', 'blocked']),
+})
+
+export const setPolicyFn = createServerFn({ method: 'POST' })
+  .validator((d: z.infer<typeof setPolicyWire>) => setPolicyWire.parse(d))
+  .handler(async ({ data }) => {
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      throw new Error('No workspace found')
+    }
+    const db = getDb()
+    return setApprovalPolicy(db, {
+      workspaceId: workspace.id,
+      scopeType: data.scopeType,
+      scopeId: data.scopeId,
+      actionKey: data.actionKey,
+      mode: data.mode,
+    })
+  })
+
+const clearPolicyOverrideWire = z.object({
+  scopeId: z.uuid(),
+  actionKey: z.enum(ACTION_KEYS),
+})
+
+export const clearPolicyOverrideFn = createServerFn({ method: 'POST' })
+  .validator((d: z.infer<typeof clearPolicyOverrideWire>) => clearPolicyOverrideWire.parse(d))
+  .handler(async ({ data }) => {
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      throw new Error('No workspace found')
+    }
+    const db = getDb()
+    return clearApprovalPolicyOverride(db, {
+      workspaceId: workspace.id,
+      scopeType: 'brand',
+      scopeId: data.scopeId,
+      actionKey: data.actionKey,
+    })
+  })
+
+const getPolicyTraceWire = z.object({
+  actionKey: z.enum(ACTION_KEYS),
+  brandId: z.uuid().nullable().optional(),
+})
+
+export const getPolicyTraceFn = createServerFn({ method: 'GET' })
+  .validator((d: z.infer<typeof getPolicyTraceWire>) => getPolicyTraceWire.parse(d))
+  .handler(async ({ data }): Promise<PolicyResolutionResult> => {
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      throw new Error('No workspace found')
+    }
+    const db = getDb()
+    return resolveApprovalPolicy(db, {
+      action: data.actionKey,
+      workspaceId: workspace.id,
+      brandId: data.brandId ?? null,
+      origin: 'user',
+    })
+  })

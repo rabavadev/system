@@ -11,7 +11,7 @@ Navigation: src/components/layout/nav-items.ts + topbar.tsx (shows active brand)
 Auth: none yet — single seeded workspace
 Current user: n/a; active brand via cookie (src/features/workspace/server.ts)
 API client: per-feature server functions (src/features/*/server.ts)
-Schema: migrations/0001–0007 + docs/database.md
+Schema: migrations/0001–0012 + docs/database.md
 Design system: Tailwind v4 + src/components/ui/
 Shared components: src/components/ui/*, src/components/layout/*
 ```
@@ -31,7 +31,13 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Context Engine | src/server/context/ + src/server/db/context.ts | central buildContext(request); precedence explicit>conversation>ui>workspace; /dev-context inspector (dev only) |
 | AI execution | src/server/ai/ | provider-neutral executeAI; Workers AI adapter (+ optional AI Gateway); echo stub for offline dev; docs/ai-execution.md |
 | Workspace Chief | src/server/agents/chief.ts + src/server/db/agent.ts | built-in versioned agent; answers in Chat via Context Engine; no tools/autonomy yet |
-| AI traceability | src/server/db/event.ts + message.provider_metadata | ai.execution.* events; per-message execution trace summary |
+| Tool Registry | src/server/tools/ + docs/tools.md | registered tool contracts, risk and capability enforcement |
+| Workflows | src/server/workflows/ + docs/workflows.md | declarative, versioned, resumable workflow engine |
+| Approval Policy | src/server/policy/ + src/server/db/policy.ts + docs/approval-policy.md | central resolver (auto/review/blocked), brand overrides, safe defaults, hard security invariants |
+| Approval Requests | src/server/approval/ + src/server/db/approval.ts + docs/approval-requests.md | concrete action requests, safe snapshots, SHA-256 fingerprinting, deduplication, human authorization |
+| Workflow Approvals Integration | src/server/workflows/engine.ts + policy.ts + docs/approval-requests.md | waiting flow on REVIEW policy, snapshot validation on resume, anti-loop authorization, cascade cancellation |
+| Approval Center & Autonomy UX | src/features/approvals/ + src/features/settings/ | production UI for pending approvals, audit history, and policy management |
+| Research Workspace & Lifecycle | src/features/research/ + src/server/db/research.ts | research storage, taxonomy (market, audience, competitor, etc.), derived freshness, scope validation |
 
 ## Legacy / Deprecated
 
@@ -58,6 +64,15 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Workers AI binding (not REST) as first provider | zero credentials in code/D1; AI Gateway via binding option | STEP 6 |
 | clientRequestId idempotency on send | browser retries/double-submit never double-execute or double-persist | STEP 6 |
 | Relative value imports in testable server modules | `~` alias only survives type-only imports under node --experimental-strip-types | STEP 6 |
+| Policy model distinct from Approval Requests | Policy answers "what should happen for this action type", requests are individual pending rows | STEP 11A, migration 0010 |
+| Deterministic policy precedence: Brand > Workspace > Risk > Safe Default | clear hierarchy with zero ambiguity or duplicate systems | STEP 11A, docs/approval-policy.md |
+| Hard security invariants above user policy | "Auto" must never permit secret leakage or isolation bypass | STEP 11A, src/server/policy/security.ts |
+| Immutable action snapshots + SHA-256 fingerprinting | guarantees that approved action parameters match proposed action exactly with zero secret leakage | STEP 11B, migration 0011 |
+| Anti-self-approval gate | AI agents, Chief, and Tools cannot authorize requests; authority resides strictly with human user/system | STEP 11B, src/server/approval/service.ts |
+| Pending request deduplication | prevents repeated duplicate approval rows for the same pending action and execution context | STEP 11B, src/server/approval/service.ts |
+| Authorized approval authorization token on resume | indicates exact tool action approved by request ID + fingerprint to prevent re-entry loops without a global bypass flag | STEP 11C, src/server/workflows/engine.ts |
+| Snapshot fingerprint verification before resume tool execution | protects against workflow input drift or tampering between request creation and resume | STEP 11C, src/server/workflows/engine.ts |
+| Cascade cancellation of pending approvals on workflow cancel | prevents orphaned approval requests from resurrecting cancelled workflow runs | STEP 11C, src/server/workflows/engine.ts |
 
 ## Rejected Approaches
 

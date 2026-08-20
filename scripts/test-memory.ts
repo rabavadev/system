@@ -7,9 +7,10 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 
 import { memoriesForTab } from '../src/features/memory/memory-view.ts'
@@ -35,8 +36,7 @@ import { appendMessage, appendUserMessage } from '../src/server/db/message.ts'
 import type { SqlDatabase } from '../src/server/db/sql.ts'
 import { evidenceTextToJson, parseEvidence } from '../src/server/memory/rules.ts'
 
-const ROOT = new URL('..', import.meta.url).pathname
-const TMP = join(ROOT, 'node_modules/.cache/test-memory.sqlite')
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 function shim(db: Database.Database): SqlDatabase {
   return {
@@ -78,9 +78,7 @@ function pastIso(hours = 24): string {
 }
 
 function freshDb(): SqlDatabase {
-  rmSync(TMP, { force: true })
-  mkdirSync(join(ROOT, 'node_modules/.cache'), { recursive: true })
-  const sqlite = new Database(TMP)
+  const sqlite = new Database(':memory:')
   sqlite.pragma('foreign_keys = ON')
   const dir = join(ROOT, 'migrations')
   for (const file of readdirSync(dir)

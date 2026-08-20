@@ -8,9 +8,10 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 
 import type { AgentCapability } from '../src/server/agents/config.ts'
@@ -27,8 +28,7 @@ import {
   type ToolKey,
 } from '../src/server/tools/index.ts'
 
-const ROOT = new URL('..', import.meta.url).pathname
-const TMP = join(ROOT, 'node_modules/.cache/test-tools.sqlite')
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 const WS_A = crypto.randomUUID()
 const WS_B = crypto.randomUUID()
@@ -62,9 +62,7 @@ function shim(db: Database.Database): SqlDatabase {
 }
 
 function freshDb(): SqlDatabase {
-  rmSync(TMP, { force: true })
-  mkdirSync(join(ROOT, 'node_modules/.cache'), { recursive: true })
-  const sqlite = new Database(TMP)
+  const sqlite = new Database(':memory:')
   sqlite.pragma('foreign_keys = ON')
   const dir = join(ROOT, 'migrations')
   for (const file of readdirSync(dir)

@@ -15,16 +15,16 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import type { ContextPackage, ContextRequest } from '../src/server/context/index.ts'
 import { buildContext, ContextError } from '../src/server/context/index.ts'
 import type { SqlDatabase } from '../src/server/db/sql.ts'
 
-const ROOT = new URL('..', import.meta.url).pathname
-const TMP = join(ROOT, 'node_modules/.cache/test-context.sqlite')
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 function shim(db: Database.Database): SqlDatabase {
   return {
@@ -44,9 +44,7 @@ function shim(db: Database.Database): SqlDatabase {
 }
 
 function freshDb(): Database.Database {
-  rmSync(TMP, { force: true })
-  mkdirSync(join(ROOT, 'node_modules/.cache'), { recursive: true })
-  const db = new Database(TMP)
+  const db = new Database(':memory:')
   db.pragma('foreign_keys = ON')
   const dir = join(ROOT, 'migrations')
   for (const file of readdirSync(dir)

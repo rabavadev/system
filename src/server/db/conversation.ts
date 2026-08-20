@@ -80,6 +80,21 @@ async function requireScopeTarget(
   scopeType: ConversationScopeType,
   scopeId: string,
 ): Promise<void> {
+  if (scopeType === 'product') {
+    const row = await queryFirst<{ id: string; workspace_id: string; deleted_at: string | null }>(
+      db,
+      `SELECT p.id, b.workspace_id, p.deleted_at FROM product p JOIN brand b ON b.id = p.brand_id WHERE p.id = ?`,
+      [scopeId],
+    )
+    if (!row || row.workspace_id !== workspaceId) {
+      throw new Error('That item is not available in this workspace.')
+    }
+    if (row.deleted_at) {
+      throw new Error('That item is archived.')
+    }
+    return
+  }
+
   const { table } = SCOPE_LABEL[scopeType]
   const row = await queryFirst<{ id: string; workspace_id: string; deleted_at: string | null }>(
     db,

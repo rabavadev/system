@@ -12,9 +12,10 @@
  */
 
 import assert from 'node:assert/strict'
-import { mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 
 import {
@@ -36,8 +37,7 @@ import {
 } from '../src/server/db/message.ts'
 import type { SqlDatabase } from '../src/server/db/sql.ts'
 
-const ROOT = new URL('..', import.meta.url).pathname
-const TMP = join(ROOT, 'node_modules/.cache/test-chat.sqlite')
+const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
 /** better-sqlite3 → structural SqlDatabase (D1 prepared-statement shape). */
 function shim(db: Database.Database): SqlDatabase {
@@ -64,9 +64,7 @@ const BRAND_WS2 = crypto.randomUUID()
 const NOW = '2026-08-19T00:00:00.000Z'
 
 function freshDb(): SqlDatabase {
-  rmSync(TMP, { force: true })
-  mkdirSync(join(ROOT, 'node_modules/.cache'), { recursive: true })
-  const sqlite = new Database(TMP)
+  const sqlite = new Database(':memory:')
   sqlite.pragma('foreign_keys = ON')
   const dir = join(ROOT, 'migrations')
   for (const file of readdirSync(dir)

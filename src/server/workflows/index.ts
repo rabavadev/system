@@ -21,16 +21,23 @@ export {
   parseWorkflowDefinition,
   workflowDefinitionSchema,
 } from './definition.ts'
-export type { StartRunResult, WorkflowEngineDeps } from './engine.ts'
+export type {
+  AuthorizedApproval,
+  DriveRunOptions,
+  StartRunResult,
+  WorkflowEngineDeps,
+} from './engine.ts'
 export {
   cancelWorkflowRun,
   driveRun,
+  resumeWorkflowAfterApproval,
   resumeWorkflowRun,
   startWorkflowRun,
 } from './engine.ts'
 export type { RunLimits } from './limits.ts'
 export { boundedSnapshot, resolveRunLimits, WORKFLOW_LIMITS } from './limits.ts'
 export type { ResolvedAgent, RunPlan } from './plan.ts'
+export { resolveActionKeyForTool } from './policy.ts'
 export type { WorkflowRuntime } from './runtime.ts'
 export { resolveWorkflowRuntime } from './runtime.ts'
 export {
