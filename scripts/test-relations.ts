@@ -14,7 +14,9 @@ import {
   IntegrityError,
   type NicheRef,
   requireActiveBrand,
+  requireActiveProduct,
   requireNicheForBrand,
+  requireProductForBrand,
   resolveAccountNiches,
 } from '../src/server/db/relations.ts'
 
@@ -98,4 +100,31 @@ test('resolveAccountNiches rejects a primary niche outside the associations', ()
 test('resolveAccountNiches collapses duplicates and allows no primary', () => {
   const result = resolveAccountNiches([niche({ id: 'n-1' }), niche({ id: 'n-1' })], WS, null)
   assert.deepEqual(result, { nicheIds: ['n-1'], primaryNicheId: null })
+})
+
+test('requireProductForBrand rejects cross-brand and archived products', () => {
+  const prod = {
+    id: 'p-1',
+    brandId: BRAND,
+    nicheId: null,
+    name: 'Product 1',
+    description: null,
+    url: null,
+    status: 'active' as const,
+    createdAt: 't',
+    updatedAt: 't',
+    deletedAt: null,
+  }
+  assert.equal(requireActiveProduct(prod).id, 'p-1')
+  assert.equal(requireProductForBrand(prod, BRAND).id, 'p-1')
+  assert.throws(() => requireProductForBrand(null, BRAND), IntegrityError)
+  assert.throws(
+    () => requireProductForBrand({ ...prod, brandId: 'other-brand' }, BRAND),
+    /different brand/,
+  )
+  assert.throws(
+    () => requireProductForBrand({ ...prod, deletedAt: '2026-01-01T00:00:00Z' }, BRAND),
+    /archived/,
+  )
+  assert.throws(() => requireProductForBrand({ ...prod, status: 'archived' }, BRAND), /archived/)
 })

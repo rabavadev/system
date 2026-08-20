@@ -1,4 +1,4 @@
-import type { Brand, Niche } from '~/types/domain'
+import type { Brand, Niche, Product } from '~/types/domain'
 
 /**
  * Pure relationship-integrity checks shared by the repositories.
@@ -53,6 +53,26 @@ export function requireNicheForBrand(niche: Niche | null, brandId: string): Nich
   const found = requireActiveNiche(niche)
   if (found.brandId !== brandId) {
     throw new IntegrityError('That niche belongs to a different brand.')
+  }
+  return found
+}
+
+/** A product must exist and not be archived before campaigns or content link to it. */
+export function requireActiveProduct(product: Product | null): Product {
+  if (!product) {
+    throw new IntegrityError('Product not found.')
+  }
+  if (product.deletedAt || product.status === 'archived') {
+    throw new IntegrityError('This product is archived. Restore it before making changes.')
+  }
+  return product
+}
+
+/** A campaign's product must exist, be active, and belong to the campaign's brand. */
+export function requireProductForBrand(product: Product | null, brandId: string): Product {
+  const found = requireActiveProduct(product)
+  if (found.brandId !== brandId) {
+    throw new IntegrityError('That product belongs to a different brand.')
   }
   return found
 }

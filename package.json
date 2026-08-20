@@ -31,7 +31,8 @@
     "test:approvals": "node --experimental-strip-types scripts/test-approvals.ts",
     "test:workflow-approvals": "node --experimental-strip-types scripts/test-workflow-approvals.ts",
     "test:approvals-ux": "node --experimental-strip-types scripts/test-approvals-ux.ts",
-    "test:research": "node --experimental-strip-types scripts/test-research.ts"
+    "test:research": "node --experimental-strip-types scripts/test-research.ts",
+    "test:campaigns": "node --experimental-strip-types scripts/test-campaigns.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",

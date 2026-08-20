@@ -150,11 +150,12 @@ async function provenanceFromMessage(
 }
 
 async function loadScopeOptions(workspaceId: string): Promise<MemoryScopeOptions> {
+  const db = getDb()
   const [brands, accounts, platforms, campaigns] = await Promise.all([
     listBrands(workspaceId),
     listAccounts(workspaceId),
     listPlatforms(),
-    listCampaigns(workspaceId),
+    listCampaigns(db, { workspaceId }),
   ])
   const niches: MemoryScopeOptions['niches'] = []
   for (const brand of brands) {
