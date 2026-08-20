@@ -1,5 +1,5 @@
 import { useNavigate, useRouter, useSearch } from '@tanstack/react-router'
-import { Archive, ArchiveRestore, MessageSquare, Pencil } from 'lucide-react'
+import { Archive, ArchiveRestore, Globe, MessageSquare, Pencil } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 
 import { Badge } from '~/components/ui/badge'
@@ -17,6 +17,14 @@ import { Composer } from './composer'
 import { MessageList } from './message-list'
 import type { ConversationPageData } from './server'
 import { archiveConversationFn, renameConversationFn, restoreConversationFn } from './server'
+
+const RESEARCHER_SUGGESTIONS = [
+  'Research this market',
+  'Find competitors',
+  'Understand this audience',
+  'Look for current trends',
+  'Research this product opportunity',
+]
 
 interface ConversationViewProps {
   data: ConversationPageData
@@ -52,6 +60,7 @@ export function ConversationView({ data }: ConversationViewProps) {
   const [memoryOptions, setMemoryOptions] = useState<MemoryScopeOptions | null>(null)
   const [memoryOptionsError, setMemoryOptionsError] = useState<string | null>(null)
   const [savedMessageIds, setSavedMessageIds] = useState<Set<string>>(new Set())
+  const [composerPrefill, setComposerPrefill] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const isArchived = conversation.deletedAt !== null
 
@@ -82,6 +91,9 @@ export function ConversationView({ data }: ConversationViewProps) {
         ),
       )
   }
+
+  const isResearcherSelected =
+    selectedAgent?.role === 'researcher' || selectedAgent?.name === 'Researcher'
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-zinc-50">
@@ -129,16 +141,43 @@ export function ConversationView({ data }: ConversationViewProps) {
 
       {messages.length === 0 ? (
         <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
-          <div className="flex max-w-sm flex-col items-center gap-2 text-center">
-            <div className="flex size-9 items-center justify-center rounded-md bg-zinc-100 text-zinc-500">
-              <MessageSquare className="size-4.5" strokeWidth={1.75} />
+          {isResearcherSelected ? (
+            <div className="flex max-w-md flex-col items-center gap-4 text-center">
+              <div className="flex size-11 items-center justify-center rounded-full bg-blue-50 text-blue-600 border border-blue-100 shadow-2xs">
+                <Globe className="size-5.5" strokeWidth={1.75} />
+              </div>
+              <div className="space-y-1">
+                <h2 className="text-sm font-semibold text-zinc-900">Start web & market research</h2>
+                <p className="text-xs text-zinc-500 max-w-sm">
+                  Ask Researcher to investigate market data, competitors, audience trends, or
+                  product opportunities.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center justify-center gap-1.5 pt-1">
+                {RESEARCHER_SUGGESTIONS.map((suggestion) => (
+                  <button
+                    key={suggestion}
+                    type="button"
+                    onClick={() => setComposerPrefill(suggestion)}
+                    className="rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-xs text-zinc-700 hover:border-blue-300 hover:bg-blue-50/60 hover:text-blue-700 transition-colors shadow-2xs cursor-pointer"
+                  >
+                    {suggestion}
+                  </button>
+                ))}
+              </div>
             </div>
-            <h2 className="text-sm font-medium text-zinc-900">No messages yet</h2>
-            <p className="text-sm text-zinc-500">
-              Write the first message below. {selectedAgent?.name ?? 'Chief'} answers with the
-              context of this conversation.
-            </p>
-          </div>
+          ) : (
+            <div className="flex max-w-sm flex-col items-center gap-2 text-center">
+              <div className="flex size-9 items-center justify-center rounded-md bg-zinc-100 text-zinc-500">
+                <MessageSquare className="size-4.5" strokeWidth={1.75} />
+              </div>
+              <h2 className="text-sm font-medium text-zinc-900">No messages yet</h2>
+              <p className="text-sm text-zinc-500">
+                Write the first message below. {selectedAgent?.name ?? 'Chief'} answers with the
+                context of this conversation.
+              </p>
+            </div>
+          )}
         </div>
       ) : (
         <MessageList
@@ -161,6 +200,8 @@ export function ConversationView({ data }: ConversationViewProps) {
           conversationId={conversation.id}
           agentId={selectedAgent?.id ?? null}
           agentName={selectedAgent?.name ?? 'Chief'}
+          prefill={composerPrefill}
+          onPrefillHandled={() => setComposerPrefill(null)}
         />
       )}
 

@@ -49,6 +49,7 @@ import {
   validateResearchSelection,
 } from '~/server/db/research'
 import { getDefaultWorkspace } from '~/server/db/workspace'
+import { resolveWebSearchRuntime } from '~/server/tools/adapters/web/runtime'
 
 export {
   composeResearchAnalysisTask,
@@ -148,6 +149,10 @@ export interface ResearchOverviewData {
   niches: Array<{ id: string; name: string; brandId: string }>
   products: Array<{ id: string; name: string; brandId: string }>
   accounts: Array<{ id: string; name: string }>
+  webSearchStatus?: {
+    configured: boolean
+    provider: string
+  }
 }
 
 function computeScopeLabel(
@@ -320,6 +325,8 @@ export const listResearchOverview = createServerFn({ method: 'GET' })
       enrichResearchRecord(r, sourcesResults[index] ?? [], maps, now),
     )
 
+    const webSearch = resolveWebSearchRuntime()
+
     return {
       workspaceId: workspace.id,
       items,
@@ -327,6 +334,10 @@ export const listResearchOverview = createServerFn({ method: 'GET' })
       niches,
       products,
       accounts,
+      webSearchStatus: {
+        configured: webSearch.status.configured,
+        provider: webSearch.status.provider,
+      },
     }
   })
 
@@ -377,6 +388,7 @@ export const startResearcherChatFn = createServerFn({ method: 'POST' })
         .nullable()
         .optional(),
       scopeId: z.string().nullable().optional(),
+      title: z.string().trim().min(1).max(200).optional(),
     }),
   )
   .handler(async ({ data }) => {
@@ -412,7 +424,7 @@ export const startResearcherChatFn = createServerFn({ method: 'POST' })
 
     const conversation = await createConversation(db, {
       workspaceId: workspace.id,
-      title: 'Research Analysis',
+      title: data.title ?? 'Live Research',
       scopeType: targetScopeType,
       scopeId: targetScopeId,
     })

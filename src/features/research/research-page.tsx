@@ -1,11 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from '@tanstack/react-router'
+import { Link, useNavigate } from '@tanstack/react-router'
 import {
   AlertTriangle,
   Archive,
   ArrowRight,
   BookOpen,
-  Bot,
   Edit3,
   ExternalLink,
   FileText,
@@ -1447,27 +1446,47 @@ export function ResearchPage() {
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-6 pb-24">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <PageHeader
-          title="Research"
-          description="Store and manage workspace intelligence, market findings, and strategic knowledge."
-        />
+        <div>
+          <PageHeader
+            title="Research"
+            description="Store and manage workspace intelligence, market findings, and strategic knowledge."
+          />
+          {overview.data?.webSearchStatus && (
+            <div className="mt-1.5 flex items-center gap-1.5 text-xs">
+              {overview.data.webSearchStatus.configured ? (
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700 border border-emerald-200/60">
+                  <span className="size-1.5 rounded-full bg-emerald-500" />
+                  Web research ready
+                </span>
+              ) : (
+                <Link
+                  to="/settings"
+                  className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-[11px] font-medium text-amber-700 border border-amber-200/60 hover:bg-amber-100 transition-colors"
+                >
+                  <span className="size-1.5 rounded-full bg-amber-500" />
+                  Web research needs setup
+                </Link>
+              )}
+            </div>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           <Button
-            variant="secondary"
+            variant="primary"
             onClick={handleAskResearcher}
             disabled={isAskingResearcher}
-            className="shrink-0 flex items-center gap-1.5 text-blue-600 hover:text-blue-700"
+            className="shrink-0 flex items-center gap-1.5"
           >
-            <Bot className="size-4" />
-            {isAskingResearcher ? 'Opening Chat…' : 'Ask Researcher'}
+            <Globe className="size-4" />
+            {isAskingResearcher ? 'Opening Chat…' : 'Research the web'}
           </Button>
           <Button
-            variant="primary"
+            variant="secondary"
             onClick={() => setIsCreating(true)}
             className="shrink-0 flex items-center gap-1.5"
           >
             <Plus className="size-4" />
-            Add Research
+            Add manually
           </Button>
         </div>
       </div>
@@ -1564,18 +1583,33 @@ export function ResearchPage() {
       {filteredItems.length === 0 ? (
         <EmptyState
           icon={FlaskConical}
-          title="No research found"
+          title={allItems.length === 0 ? 'No research yet' : 'No research found'}
           description={
             allItems.length === 0
-              ? 'Add your first research finding to provide strategic intelligence for your workspace.'
+              ? 'Create research manually or ask Researcher to investigate something.'
               : 'No research findings matched your search and filter criteria.'
           }
           action={
             allItems.length === 0 ? (
-              <Button variant="primary" onClick={() => setIsCreating(true)} className="text-xs">
-                <Plus className="size-3.5 mr-1" />
-                Add first research
-              </Button>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  variant="primary"
+                  onClick={handleAskResearcher}
+                  disabled={isAskingResearcher}
+                  className="text-xs flex items-center gap-1.5"
+                >
+                  <Globe className="size-3.5" />
+                  {isAskingResearcher ? 'Opening Chat…' : 'Research the web'}
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => setIsCreating(true)}
+                  className="text-xs flex items-center gap-1.5"
+                >
+                  <Plus className="size-3.5" />
+                  Add manually
+                </Button>
+              </div>
             ) : undefined
           }
         />

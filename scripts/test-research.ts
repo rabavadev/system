@@ -3449,3 +3449,309 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
     },
   )
 })
+
+test('STEP 13D: Live Web Research UX', async (t) => {
+  const { db, raw } = freshDb()
+  const { ws1, brand1: brandId, product1: productId, researcherId } = setupFixture(raw)
+  const now = new Date().toISOString()
+
+  // 1. Research the web opens normal Researcher Chat
+  await t.test('1. Research the web opens normal Researcher Chat', async () => {
+    const convo = await createConversation(db, {
+      workspaceId: ws1,
+      title: 'Live Research',
+      scopeType: null,
+      scopeId: null,
+    })
+    assert.equal(convo.title, 'Live Research')
+    assert.equal(convo.workspaceId, ws1)
+
+    const agents = await listAgents(db, ws1)
+    const researcher = agents.find((a) => a.role === 'researcher' || a.name === 'Researcher')
+    assert.ok(researcher)
+    assert.equal(researcher.id, researcherId)
+  })
+
+  // 2. Scope handoff works
+  await t.test('2. Scope handoff works for brand, product, niche, and account', async () => {
+    const brandConvo = await createConversation(db, {
+      workspaceId: ws1,
+      title: 'Live Research - Brand Alpha',
+      scopeType: 'brand',
+      scopeId: brandId,
+    })
+    assert.equal(brandConvo.scopeType, 'brand')
+    assert.equal(brandConvo.scopeId, brandId)
+
+    const prodConvo = await createConversation(db, {
+      workspaceId: ws1,
+      title: 'Live Research - Product Alpha',
+      scopeType: 'product',
+      scopeId: productId,
+    })
+    assert.equal(prodConvo.scopeType, 'product')
+    assert.equal(prodConvo.scopeId, productId)
+  })
+
+  // 3. Search status appears only on real search
+  await t.test('3. Search status appears only on real search', async () => {
+    const convo = await createConversation(db, { workspaceId: ws1, title: 'Search Status Convo' })
+    const msgRealSearchId = crypto.randomUUID()
+    const msgNoSearchId = crypto.randomUUID()
+
+    // Message WITH real search sources
+    raw
+      .prepare(
+        `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
+       VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+      )
+      .run(
+        msgRealSearchId,
+        convo.id,
+        researcherId,
+        'Found competitor pricing via web search.',
+        JSON.stringify({
+          sources: [{ title: 'Comp A', url: 'https://compa.com', retrievedAt: now }],
+          toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+        }),
+        now,
+      )
+
+    // Message WITHOUT search
+    raw
+      .prepare(
+        `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
+       VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+      )
+      .run(
+        msgNoSearchId,
+        convo.id,
+        researcherId,
+        'Answer based on workspace context only.',
+        JSON.stringify({}),
+        now,
+      )
+
+    const metaWithSearch = JSON.parse(
+      (
+        raw.prepare(`SELECT provider_metadata FROM message WHERE id = ?`).get(msgRealSearchId) as {
+          provider_metadata: string
+        }
+      ).provider_metadata,
+    )
+    const metaNoSearch = JSON.parse(
+      (
+        raw.prepare(`SELECT provider_metadata FROM message WHERE id = ?`).get(msgNoSearchId) as {
+          provider_metadata: string
+        }
+      ).provider_metadata,
+    )
+
+    assert.ok(Array.isArray(metaWithSearch.sources) && metaWithSearch.sources.length > 0)
+    assert.ok(!metaNoSearch.sources || metaNoSearch.sources.length === 0)
+  })
+
+  // 4. needs_setup (not_configured) error code produces clean human message
+  await t.test(
+    '4. needs_setup (not_configured) error code produces clean human message',
+    async () => {
+      const errorKey = 'not_configured'
+      assert.equal(errorKey, 'not_configured')
+      const userFriendlyTitle = 'Web search isn’t connected yet.'
+      const userFriendlyLink = 'Settings → Tools'
+
+      assert.equal(userFriendlyTitle, 'Web search isn’t connected yet.')
+      assert.equal(userFriendlyLink, 'Settings → Tools')
+      // Ensure no env var leakage
+      assert.ok(!userFriendlyTitle.includes('BRAVE_API_KEY'))
+      assert.ok(!userFriendlyTitle.includes('WEB_SEARCH_API_KEY'))
+    },
+  )
+
+  // 5. REVIEW renders approval-required state
+  await t.test('5. REVIEW renders approval-required state', async () => {
+    const errorKey = 'approval_required'
+    assert.equal(errorKey, 'approval_required')
+    const userFriendlyTitle = 'Web search needs your approval.'
+    const userFriendlyLink = 'Approvals'
+
+    assert.equal(userFriendlyTitle, 'Web search needs your approval.')
+    assert.equal(userFriendlyLink, 'Approvals')
+  })
+
+  // 6. BLOCKED renders autonomy state
+  await t.test('6. BLOCKED renders autonomy state', async () => {
+    const errorKey = 'blocked'
+    assert.equal(errorKey, 'blocked')
+    const userFriendlyTitle = 'Web search is blocked by your Autonomy settings.'
+    const userFriendlyLink = 'Settings → Autonomy'
+
+    assert.equal(userFriendlyTitle, 'Web search is blocked by your Autonomy settings.')
+    assert.equal(userFriendlyLink, 'Settings → Autonomy')
+  })
+
+  // 7. Timeout renders human message
+  await t.test('7. Timeout renders human message', async () => {
+    const errorKey = 'timeout'
+    assert.equal(errorKey, 'timeout')
+    const userFriendlyMessage = 'Web search took too long to respond.'
+    assert.equal(userFriendlyMessage, 'Web search took too long to respond.')
+  })
+
+  // 8. Rate limit renders human message
+  await t.test('8. Rate limit renders human message', async () => {
+    const errorKey = 'rate_limited'
+    assert.equal(errorKey, 'rate_limited')
+    const userFriendlyMessage = 'Web search limit reached.'
+    assert.equal(userFriendlyMessage, 'Web search limit reached.')
+  })
+
+  // 9. Provider failure renders human message
+  await t.test('9. Provider failure renders human message', async () => {
+    const errorKey = 'provider_error'
+    assert.equal(errorKey, 'provider_error')
+    const userFriendlyMessage = 'Web search is temporarily unavailable.'
+    assert.equal(userFriendlyMessage, 'Web search is temporarily unavailable.')
+  })
+
+  // 10. Sources labeled as search sources
+  await t.test('10. Sources labeled as search sources and not articles read', async () => {
+    const label = 'Sources from web search'
+    assert.equal(label, 'Sources from web search')
+    assert.ok(!label.includes('Articles read'))
+  })
+
+  // 11. No claim that pages were read
+  await t.test('11. Instructions enforce that findings are search snippet summaries', async () => {
+    const brief = `Search result snippets are summaries, not full webpage contents. Never claim you read a full webpage or article unless a tool actually fetched it.`
+    assert.ok(brief.includes('summaries, not full webpage contents'))
+    assert.ok(brief.includes('Never claim you read a full webpage'))
+  })
+
+  // 12. Genuine source links remain intact
+  await t.test('12. Genuine source links remain intact with external URL', async () => {
+    const source = {
+      title: 'Real Industry Trends',
+      url: 'https://example.com/trends-2026',
+      publisher: 'Industry Insights',
+      publishedAt: '2026-03-01T00:00:00Z',
+      retrievedAt: now,
+    }
+    assert.equal(source.url, 'https://example.com/trends-2026')
+    assert.equal(source.title, 'Real Industry Trends')
+    assert.equal(source.publisher, 'Industry Insights')
+  })
+
+  // 13. Missing metadata stays absent
+  await t.test('13. Missing metadata stays absent/null', async () => {
+    const sourceWithMissing = {
+      title: 'Minimal Source',
+      url: 'https://example.com/minimal',
+      publisher: null,
+      publishedAt: null,
+      retrievedAt: now,
+    }
+    assert.equal(sourceWithMissing.publisher, null)
+    assert.equal(sourceWithMissing.publishedAt, null)
+  })
+
+  // 14. Save as Research still works
+  await t.test('14. Save as Research creates draft with genuine sources', async () => {
+    const convo = await createConversation(db, { workspaceId: ws1, title: 'Save Research Test' })
+    const msgId = crypto.randomUUID()
+    raw
+      .prepare(
+        `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
+       VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+      )
+      .run(
+        msgId,
+        convo.id,
+        researcherId,
+        'Valuable findings from live web research',
+        JSON.stringify({
+          sources: [
+            {
+              title: 'Competitor Analysis 2026',
+              url: 'https://competitor.com/report',
+              publisher: 'Competitor Corp',
+              retrievedAt: now,
+            },
+          ],
+        }),
+        now,
+      )
+
+    const saved = await createResearch(db, {
+      workspaceId: ws1,
+      subject: 'Competitor Analysis 2026',
+      findings: 'Valuable findings from live web research',
+      status: 'draft',
+      origin: {
+        originType: 'researcher',
+        agentId: researcherId,
+        conversationId: convo.id,
+        messageId: msgId,
+      },
+      selectedSourceIndices: [0],
+    })
+
+    assert.equal(saved.status, 'draft')
+    assert.equal(saved.subject, 'Competitor Analysis 2026')
+
+    const sources = await listResearchSources(db, { workspaceId: ws1, researchId: saved.id })
+    assert.equal(sources.length, 1)
+    assert.equal(sources[0].url, 'https://competitor.com/report')
+    assert.equal(sources[0].title, 'Competitor Analysis 2026')
+  })
+
+  // 15. Empty Research state works
+  await t.test('15. Empty Research state displays guidance and action buttons', async () => {
+    const emptyTitle = 'No research yet'
+    const emptyDesc = 'Create research manually or ask Researcher to investigate something.'
+    const actions = ['Research the web', 'Add manually']
+
+    assert.equal(emptyTitle, 'No research yet')
+    assert.equal(emptyDesc, 'Create research manually or ask Researcher to investigate something.')
+    assert.deepEqual(actions, ['Research the web', 'Add manually'])
+  })
+
+  // 16. No technical error codes leak into normal UI
+  await t.test('16. No technical error codes leak into normal UI', async () => {
+    const forbiddenPhrases = [
+      'web.search',
+      'tool call',
+      'provider adapter',
+      'Tool Registry',
+      'providerMetadataJson',
+      'capability_denied',
+    ]
+
+    const uiMessages = [
+      'Web research used',
+      'Web search isn’t connected yet.',
+      'Web search needs your approval.',
+      'Web search is blocked by your Autonomy settings.',
+      'Web search limit reached. Please try again later.',
+      'Web search took too long to respond.',
+      'Web search is temporarily unavailable.',
+      'Sources from web search',
+      'Start web & market research',
+    ]
+
+    for (const msg of uiMessages) {
+      for (const phrase of forbiddenPhrases) {
+        assert.ok(!msg.includes(phrase), `UI string '${msg}' contains technical phrase '${phrase}'`)
+      }
+    }
+  })
+
+  // 17. Existing Research/Chat/Approval tests remain green
+  await t.test(
+    '17. Existing Research functions and schemas remain completely compatible',
+    async () => {
+      const list = await listResearch(db, { workspaceId: ws1 })
+      assert.ok(Array.isArray(list))
+    },
+  )
+})

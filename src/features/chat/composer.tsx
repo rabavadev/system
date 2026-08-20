@@ -19,13 +19,21 @@ interface ComposerProps {
   /** Who answers. Null = Chief (server default); config stays server-side. */
   agentId: string | null
   agentName: string
+  prefill?: string | null
+  onPrefillHandled?: () => void
 }
 
 /**
  * Message composer. The agent selector lives in the conversation header;
  * this component just tags each send with the selected agent id.
  */
-export function Composer({ conversationId, agentId, agentName }: ComposerProps) {
+export function Composer({
+  conversationId,
+  agentId,
+  agentName,
+  prefill,
+  onPrefillHandled,
+}: ComposerProps) {
   const router = useRouter()
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const [value, setValue] = useState('')
@@ -40,6 +48,19 @@ export function Composer({ conversationId, agentId, agentName }: ComposerProps) 
   useEffect(() => {
     textareaRef.current?.focus()
   }, [])
+
+  // Populate suggestion if provided
+  // biome-ignore lint/correctness/useExhaustiveDependencies: only sync when prefill prop changes
+  useEffect(() => {
+    if (prefill) {
+      setValue(prefill)
+      onPrefillHandled?.()
+      if (textareaRef.current) {
+        textareaRef.current.focus()
+        autoGrow()
+      }
+    }
+  }, [prefill, onPrefillHandled])
 
   function autoGrow() {
     const textarea = textareaRef.current
