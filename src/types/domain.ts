@@ -556,7 +556,7 @@ export type PostStatus = 'draft' | 'scheduled' | 'publishing' | 'published' | 'f
 
 export interface Post {
   id: Id
-  workspaceId: Id | null
+  workspaceId: Id
   contentVariantId: Id
   accountId: Id
   contentApprovalId: Id | null
@@ -590,16 +590,18 @@ export interface PostDetail extends Post {
 
 export interface PublicationEligibilityResult {
   eligible: boolean
-  reason?: string
-  contentId?: string
-  contentVariantId?: string
-  accountId?: string
-  platformId?: string
-  approvalId?: string
-  isReady?: boolean
-  hasApproval?: boolean
-  accountActive?: boolean
-  platformMatched?: boolean
+  reason?: string | undefined
+  postId?: string | undefined
+  contentId?: string | undefined
+  contentVariantId?: string | undefined
+  accountId?: string | undefined
+  platformId?: string | undefined
+  approvalId?: string | undefined
+  isReady?: boolean | undefined
+  hasApproval?: boolean | undefined
+  accountActive?: boolean | undefined
+  platformMatched?: boolean | undefined
+  postStatus?: PostStatus | undefined
 }
 
 /* ---- Analytics ---- */

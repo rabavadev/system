@@ -11,7 +11,7 @@ Navigation: src/components/layout/nav-items.ts + topbar.tsx (shows active brand)
 Auth: none yet — single seeded workspace
 Current user: n/a; active brand via cookie (src/features/workspace/server.ts)
 API client: per-feature server functions (src/features/*/server.ts)
-Schema: migrations/0001–0022 + docs/database.md
+Schema: migrations/0001–0023 + docs/database.md
 Design system: Tailwind v4 + src/components/ui/
 Shared components: src/components/ui/*, src/components/layout/*
 ```
@@ -24,7 +24,7 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Brands | src/features/brands/ + src/server/db/brand.ts | active brand selection cookie in topbar |
 | Niches | src/features/niches/ + src/server/db/niche.ts | belong to brand; primary-niche rules; first-class conversation scope (H3B.1) |
 | Products | src/features/products/ + src/server/db/product.ts | owned by brand, grouped by niche |
-| Accounts | src/features/accounts/ + src/server/db/account.ts | multi-niche via account_niche; platform derivation for content |
+| Accounts | src/features/accounts/ + src/server/db/account.ts | multi-niche via account_niche; platform derivation for content; active status lifecycle enforcement |
 | Platforms | src/server/db/platform.ts | reference data |
 | Relationship integrity | src/server/db/relations.ts | pure module, cross-brand/archived rules |
 | Chat / conversations | src/features/chat/ + src/server/db/conversation.ts, message.ts | real workspace UI; /chat + /chat/:id; brand/niche/product/account/campaign scoped |
@@ -42,7 +42,7 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Critic Editorial Reviews (Step 15B) | src/server/db/content-review.ts + src/features/campaigns/ | human-triggered AI critique on saved immutable variants; server-authoritative `content_review_candidate` lifecycle; structured `pass`/`revise` verdicts; immutable `content_review` (migrations 0015, 0021) |
 | Creator Revisions (Step 15C) | src/server/db/content-variant.ts + src/server/agents/content-draft.ts | human-controlled revisions from Critic feedback; `source_variant_id` & `source_review_id` candidate lineage; immutable variant chains (migration 0019) |
 | Content Editorial Approval (Step 15D) | src/server/db/content-approval.ts + src/features/campaigns/ | explicit human editorial gate; `content.status = 'ready'`; `content.selected_variant_id`; immutable `content_approval` audit history; strict server-side Critic override enforcement; zero auto-publishing (migration 0020) |
-| Publication Foundation & Readiness (Step 15E.1) | src/server/db/post.ts + src/features/campaigns/ | server-authoritative publication intent (`post` table); binds exact approved `content_variant_id` to exact active `account_id` and `content_approval_id`; full pre-dispatch eligibility validation; zero external network calls; platform publish tool remains `unavailable` and Publisher agent remains `disabled` (migration 0022) |
+| Publication Foundation & Readiness (Step 15E.1 / 15E.1.1) | src/server/db/post.ts + src/features/campaigns/ | server-authoritative publication intent (`post` table); binds exact approved `content_variant_id` to exact active `account_id` and `content_approval_id`; `workspace_id NOT NULL`; active intent unique index; request-bound idempotency; full pre-dispatch eligibility validation; zero external network calls; platform publish tool remains `unavailable` and Publisher agent remains `disabled` (migrations 0022, 0023) |
 
 ## Completed Steps & Hardening Sequence
 
@@ -77,6 +77,7 @@ Shared components: src/components/ui/*, src/components/layout/*
 - **HARDENING H4B / H4B.1**: Real runtime verification and interactive UI flows checked; automated browser E2E session suite not configured.
 - **HARDENING P1 / P1.1**: Server-authoritative Critic review candidate architecture (`content_review_candidate`, migration 0021), strict Zod parsing with zero fallback fabrication, deterministic sorting on timestamp ties, and strict server-side Critic editorial override enforcement.
 - **STEP 15E.1 — Publication Foundation & Server-Authoritative Dispatch Readiness**: Server-authoritative `post` record creation, eligibility verification, idempotency handling, safe event emission (`publication.prepared`), and audit logging (migration 0022).
+- **HARDENING 15E.1.1 — Publication Integrity Closure Before External Adapters**: Rebuilt `post` table with `workspace_id NOT NULL REFERENCES workspace(id) ON DELETE RESTRICT` (migration 0023), backfilled legacy posts, removed all NULL-workspace query wildcards, enforced `account.status === 'active'` (rejecting paused/archived/deleted accounts), derived Campaign identity strictly from Content, hardened pre-dispatch eligibility to verify current approval lineage and post status (`draft`/`scheduled` only), enforced request-bound idempotency conflict rejection, and established database partial unique index `idx_post_active_intent`.
 - **STEP 15E.2**: Platform connectors / external publishing execution (FUTURE PHASE).
 
 ## Content Lifecycle & Publishing Boundary
@@ -119,7 +120,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Capability / Runtime Area | Verification Status | Notes |
 |---|---|---|
 | Unit & Integration Tests (22 suites) | **VERIFIED** | All automated tests run and pass in local Node / SQLite environment |
-| Database Migrations (0001–0022) | **VERIFIED** | Verified through `npm run db:test` (22/22 tests pass) |
+| Database Migrations (0001–0023) | **VERIFIED** | Verified through `npm run db:test` (23/23 tests pass) |
 | Context Engine & Ranking | **VERIFIED** | Verified through `npm run test:context` |
 | Policy & Approval Engine | **VERIFIED** | Verified through `npm run test:policy`, `test:approvals`, `test:approvals-ux` |
 | Campaign Strategy & Metrics | **VERIFIED** | Verified through `npm run test:campaign-strategy`, `test:campaigns` |
@@ -127,7 +128,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Critic Editorial Review System | **VERIFIED** | Verified through `npm run test:critic-review` (candidate architecture, strict Zod parsing, server-authoritative save) |
 | Creator Revision Lineage System | **VERIFIED** | Verified through `npm run test:creator-revision` |
 | Human Content Approval Gate | **VERIFIED** | Verified through `npm run test:content-approval` (strict server-side override enforcement) |
-| Publication Foundation & Readiness | **VERIFIED** | Verified through `npm run test:publication` (exact approved variant binding, account/platform match, idempotency, zero external calls) |
+| Publication Foundation & Integrity | **VERIFIED** | Verified through `npm run test:publication` (exact approved variant binding, account/platform match, request-bound idempotency, post status guard, reapproval lineage isolation, zero external calls) |
 | Research Source Provenance | **VERIFIED** | Verified through `npm run test:research` |
 | Workflow Run Scope Integrity | **VERIFIED** | Verified through `npm run test:workflows` |
 | Local Workers Runtime & Vite Build | **VERIFIED** | Verified through `npm run build` and local development server |
@@ -135,7 +136,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Workers AI Live Tool Calling | **NOT CONFIGURED** | Protocol implemented & unit tested; live remote tool execution requires Cloudflare deployment |
 | Brave Live Web Search | **NOT CONFIGURED** | Adapter implemented & mock-tested; live remote API calls require `BRAVE_SEARCH_API_KEY` |
 | Real Model → Search → Model | **NOT CONFIGURED** | Protocol implemented & offline tested; requires live Workers AI and Brave API keys |
-| Browser End-to-End Sessions | **NOT TESTED** | browser automation could not run successfully in local agent environment |
+| Browser End-to-End Sessions | **NOT TESTED** | automated browser E2E session suite not configured in local agent environment |
 
 ## Architecture Decisions
 
@@ -159,6 +160,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Human editorial gate for publish readiness | explicit human sign-off on exact variant ID; separates readiness from automated publishing | STEP 15D, migration 0020 |
 | Server-authoritative Critic review candidates & override enforcement | Critic reviews derive verdict, review JSON, provenance strictly from database candidates (`content_review_candidate`); server strictly enforces `overrideCritic: true` for revise reviews | HARDENING P1, migration 0021 |
 | Server-authoritative publication intent with post table | binds exact immutable approved variant to account & approval; enforces ready eligibility pre-dispatch; prevents client forgery of status/urls/ids | STEP 15E.1, migration 0022 |
+| Post table rebuild with NOT NULL workspace_id, active intent unique index, and lineage integrity | eliminates NULL-workspace security hazards, enforces active account state, server campaign derivation, post status guards, and approval lineage tracking | HARDENING 15E.1.1, migration 0023 |
 
 ## Known Technical Debt & Limitations
 

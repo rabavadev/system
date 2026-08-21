@@ -410,6 +410,14 @@ export function CampaignDraftModal({
         setShowOverrideConfirm(false)
         setOverrideNote('')
         setSuccessMessage('Variant approved! Content is now Ready for publishing.')
+        try {
+          const updatedPosts = await listPostsForContentFn({
+            data: { contentId: activeItem.id },
+          })
+          setPosts(updatedPosts)
+        } catch {
+          // ignore
+        }
         await onSuccess?.()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to approve variant.')
@@ -432,6 +440,14 @@ export function CampaignDraftModal({
 
         setActiveItem(result)
         setSuccessMessage('Approval revoked. Content status returned to Draft.')
+        try {
+          const updatedPosts = await listPostsForContentFn({
+            data: { contentId: activeItem.id },
+          })
+          setPosts(updatedPosts)
+        } catch {
+          // ignore
+        }
         await onSuccess?.()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to revoke approval.')
@@ -456,7 +472,6 @@ export function CampaignDraftModal({
       try {
         const newPost = await createPublicationIntentFn({
           data: {
-            campaignId: campaign.id,
             contentId: activeItem.id,
             contentVariantId: savedVariantId,
             accountId: targetAccountId,
@@ -1214,7 +1229,8 @@ export function CampaignDraftModal({
                     {posts.some(
                       (p) =>
                         p.contentVariantId === savedVariantId &&
-                        (p.status === 'draft' || p.status === 'scheduled'),
+                        (p.status === 'draft' || p.status === 'scheduled') &&
+                        p.approvalStatus === 'approved',
                     ) ? (
                       <Badge tone="success">Prepared for Dispatch</Badge>
                     ) : (
@@ -1227,7 +1243,8 @@ export function CampaignDraftModal({
                   {posts.some(
                     (p) =>
                       p.contentVariantId === savedVariantId &&
-                      (p.status === 'draft' || p.status === 'scheduled'),
+                      (p.status === 'draft' || p.status === 'scheduled') &&
+                      p.approvalStatus === 'approved',
                   )
                     ? 'A server-authoritative publication intent record exists for this approved variant. Internal foundation active; zero external network calls are made until external dispatch is triggered.'
                     : 'This approved variant is ready to be prepared for publication. Preparing creates an internal Post record linked to the target account.'}
@@ -1258,12 +1275,26 @@ export function CampaignDraftModal({
                             <div className="flex items-center gap-2">
                               <Badge
                                 tone={
-                                  post.status === 'draft' || post.status === 'scheduled'
+                                  (post.status === 'draft' || post.status === 'scheduled') &&
+                                  post.approvalStatus === 'approved'
                                     ? 'success'
-                                    : 'neutral'
+                                    : post.approvalStatus === 'revoked'
+                                      ? 'warning'
+                                      : post.status === 'published'
+                                        ? 'success'
+                                        : post.status === 'failed'
+                                          ? 'warning'
+                                          : 'neutral'
                                 }
                               >
-                                {post.status === 'draft' ? 'Prepared (Draft)' : post.status}
+                                {(post.status === 'draft' || post.status === 'scheduled') &&
+                                post.approvalStatus === 'approved'
+                                  ? post.status === 'draft'
+                                    ? 'Prepared (Draft)'
+                                    : 'Prepared (Scheduled)'
+                                  : post.approvalStatus === 'revoked'
+                                    ? 'Needs Re-prepare (Revoked)'
+                                    : post.status}
                               </Badge>
                               <span className="text-[11px] text-zinc-400">
                                 {new Date(post.createdAt).toLocaleTimeString([], {
@@ -1290,7 +1321,8 @@ export function CampaignDraftModal({
                   {!posts.some(
                     (p) =>
                       p.contentVariantId === savedVariantId &&
-                      (p.status === 'draft' || p.status === 'scheduled'),
+                      (p.status === 'draft' || p.status === 'scheduled') &&
+                      p.approvalStatus === 'approved',
                   ) && (
                     <Button
                       variant="primary"

@@ -45,7 +45,7 @@ const id = () => crypto.randomUUID()
 test('clean database migrates from zero; all tables exist', () => {
   const db = freshDb()
   const files = migrate(db)
-  assert.equal(files.length, 22, `expected 22 migrations, got: ${files.join(', ')}`)
+  assert.equal(files.length, 23, `expected 23 migrations, got: ${files.join(', ')}`)
 
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -302,10 +302,10 @@ test('CHECK constraints reject invalid enums and ranges', () => {
     () =>
       db
         .prepare(
-          `INSERT INTO post (id, content_variant_id, account_id, status, created_at, updated_at)
-           VALUES (?, ?, ?, 'bogus', ?, ?)`,
+          `INSERT INTO post (id, workspace_id, content_variant_id, account_id, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'bogus', ?, ?)`,
         )
-        .run(id(), id(), id(), NOW, NOW),
+        .run(id(), ws, id(), id(), NOW, NOW),
     /CHECK|FOREIGN KEY/i,
     'invalid post status must fail',
   )
@@ -1074,6 +1074,97 @@ test('migration 0022 adds workspace_id, content_approval_id, and idempotency_key
     postIndexes.includes('idx_post_idempotency'),
     `expected idx_post_idempotency index, got: ${postIndexes.join(', ')}`,
   )
+
+  db.close()
+})
+
+test('migration 0023 enforces NOT NULL workspace_id, active intent unique index, and backfills legacy posts', () => {
+  const db = freshDb()
+  const dir = join(ROOT, 'migrations')
+
+  // Apply migrations 0001 through 0022
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+
+  for (const file of files) {
+    if (file.startsWith('0023_')) break
+    db.exec(readFileSync(join(dir, file), 'utf8'))
+  }
+
+  // Create Workspace A and Workspace B
+  const wsA = id()
+  const wsB = id()
+  db.prepare(
+    `INSERT INTO workspace (id, name, created_at, updated_at) VALUES (?, 'WS A', ?, ?)`,
+  ).run(wsA, NOW, NOW)
+  db.prepare(
+    `INSERT INTO workspace (id, name, created_at, updated_at) VALUES (?, 'WS B', ?, ?)`,
+  ).run(wsB, NOW, NOW)
+
+  const brandB = id()
+  db.prepare(
+    `INSERT INTO brand (id, workspace_id, name, created_at, updated_at) VALUES (?, ?, 'Brand B', ?, ?)`,
+  ).run(brandB, wsB, NOW, NOW)
+
+  const platform = id()
+  db.prepare(
+    `INSERT INTO platform (id, adapter_key, name, created_at) VALUES (?, 'linkedin', 'LinkedIn', ?)`,
+  ).run(platform, NOW)
+
+  const accountB = id()
+  db.prepare(
+    `INSERT INTO account (id, workspace_id, platform_id, handle, status, created_at, updated_at) VALUES (?, ?, ?, 'b_handle', 'active', ?, ?)`,
+  ).run(accountB, wsB, platform, NOW, NOW)
+
+  const contentB = id()
+  db.prepare(
+    `INSERT INTO content (id, workspace_id, title, status, created_at, updated_at) VALUES (?, ?, 'Content B', 'ready', ?, ?)`,
+  ).run(contentB, wsB, NOW, NOW)
+
+  const variantB = id()
+  db.prepare(
+    `INSERT INTO content_variant (id, content_id, platform_id, body, status, created_at, updated_at) VALUES (?, ?, ?, 'Variant B body', 'approved', ?, ?)`,
+  ).run(variantB, contentB, platform, NOW, NOW)
+
+  // Insert a pre-0023 style post with workspace_id NULL
+  const legacyPostId = id()
+  db.prepare(`
+    INSERT INTO post (id, workspace_id, content_variant_id, account_id, status, created_at, updated_at)
+    VALUES (?, NULL, ?, ?, 'draft', ?, ?)
+  `).run(legacyPostId, variantB, accountB, NOW, NOW)
+
+  // Now apply migration 0023
+  db.exec(readFileSync(join(dir, '0023_post_publication_guard_integrity.sql'), 'utf8'))
+
+  // 1. Verify table info: workspace_id is NOT NULL
+  const postTableInfo = db.prepare(`PRAGMA table_info(post)`).all()
+  const wsCol = postTableInfo.find((r) => r.name === 'workspace_id')
+  assert.ok(wsCol, 'workspace_id column must exist')
+  assert.equal(wsCol.notnull, 1, 'workspace_id must be NOT NULL (notnull = 1)')
+
+  // 2. Verify deterministic backfill: post.workspace_id became wsB
+  const postRow = db.prepare(`SELECT * FROM post WHERE id = ?`).get(legacyPostId)
+  assert.ok(postRow, 'legacy post must exist')
+  assert.equal(
+    postRow.workspace_id,
+    wsB,
+    'legacy post workspace_id must be deterministically backfilled to wsB',
+  )
+
+  // 3. Verify active intent unique index
+  const indexes = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'post'`)
+    .all()
+    .map((r) => r.name)
+  assert.ok(
+    indexes.includes('idx_post_active_intent'),
+    `expected idx_post_active_intent, got: ${indexes.join(', ')}`,
+  )
+
+  // 4. Verify foreign key check passes
+  const fkCheck = db.prepare(`PRAGMA foreign_key_check`).all()
+  assert.equal(fkCheck.length, 0, `foreign key check failed: ${JSON.stringify(fkCheck)}`)
 
   db.close()
 })

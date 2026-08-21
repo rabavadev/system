@@ -617,7 +617,6 @@ export const listContentApprovalsFn = createServerFn({ method: 'GET' })
 export const createPublicationIntentFn = createServerFn({ method: 'POST' })
   .validator(
     z.object({
-      campaignId: z.uuid().optional(),
       contentId: z.uuid(),
       contentVariantId: z.uuid(),
       accountId: z.uuid(),
@@ -631,7 +630,6 @@ export const createPublicationIntentFn = createServerFn({ method: 'POST' })
     if (!workspace) throw new Error('Workspace not found')
     return createPublicationIntent(db, {
       workspaceId: workspace.id,
-      campaignId: data.campaignId,
       contentId: data.contentId,
       contentVariantId: data.contentVariantId,
       accountId: data.accountId,
@@ -651,17 +649,28 @@ export const listPostsForContentFn = createServerFn({ method: 'GET' })
 
 export const validatePublicationEligibilityFn = createServerFn({ method: 'GET' })
   .validator(
-    z.object({
-      contentId: z.uuid(),
-      contentVariantId: z.uuid(),
-      accountId: z.uuid(),
-    }),
+    z.union([
+      z.object({
+        postId: z.uuid(),
+      }),
+      z.object({
+        contentId: z.uuid(),
+        contentVariantId: z.uuid(),
+        accountId: z.uuid(),
+      }),
+    ]),
   )
   .handler(async ({ data }): Promise<PublicationEligibilityResult> => {
     const db = getDb()
     const workspace = await getDefaultWorkspace()
     if (!workspace) {
       return { eligible: false, reason: 'Workspace not found' }
+    }
+    if ('postId' in data) {
+      return validatePublicationEligibility(db, {
+        workspaceId: workspace.id,
+        postId: data.postId,
+      })
     }
     return validatePublicationEligibility(db, {
       workspaceId: workspace.id,

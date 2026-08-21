@@ -801,12 +801,37 @@ test('17-23. Post fields and initial truthful statuses', async () => {
   assert.equal(draftPost.error, null)
 
   // 2. Planned / scheduled intent -> status = 'scheduled'
+  const item2 = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Scheduled Post',
+    contentType: 'post',
+  })
+
+  const { variant: variant2 } = await seedDraftVariant(
+    db,
+    base.workspaceId,
+    campaign.id,
+    item2.id,
+    {
+      body: 'Scheduled check body.',
+    },
+  )
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item2.id,
+    contentVariantId: variant2.id,
+  })
+
   const scheduledTime = '2026-08-25T15:00:00.000Z'
   const scheduledPost = await createPublicationIntent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
-    contentId: item.id,
-    contentVariantId: variant.id,
+    contentId: item2.id,
+    contentVariantId: variant2.id,
     accountId: base.accountId,
     scheduledAt: scheduledTime,
     idempotencyKey: 'sched-key-1',
@@ -1299,4 +1324,592 @@ test('35. getApprovedPublicationVariant returns null when approval was revoked',
 
   const res3 = await getApprovedPublicationVariant(db, base.workspaceId, item.id)
   assert.equal(res3, null)
+})
+
+test('36. cross-workspace isolation & non-null workspace ownership (no UUID secrecy)', async () => {
+  const { db, raw } = freshDb()
+  const baseA = seedBaseline(raw)
+
+  // Create Workspace B
+  const wsB = crypto.randomUUID()
+  const brandB = crypto.randomUUID()
+  const accountB = crypto.randomUUID()
+
+  raw
+    .prepare(
+      `INSERT INTO workspace (id, name, slug, created_at, updated_at) VALUES (?, 'WS B', 'ws-b', ?, ?)`,
+    )
+    .run(wsB, NOW, NOW)
+  raw
+    .prepare(
+      `INSERT INTO brand (id, workspace_id, name, description, created_at, updated_at) VALUES (?, ?, 'Brand B', 'brand b', ?, ?)`,
+    )
+    .run(brandB, wsB, NOW, NOW)
+  raw
+    .prepare(
+      `INSERT INTO account (id, workspace_id, platform_id, handle, display_name, status, created_at, updated_at)
+       VALUES (?, ?, ?, '@wsb_handle', 'WS B Handle', 'active', ?, ?)`,
+    )
+    .run(accountB, wsB, baseA.platformId, NOW, NOW)
+
+  const campaignB = await createCampaign(db, {
+    workspaceId: wsB,
+    brandId: brandB,
+    accountIds: [accountB],
+    name: 'Campaign B',
+  })
+
+  const itemB = await createCampaignContent(db, {
+    workspaceId: wsB,
+    campaignId: campaignB.id,
+    targetAccountId: accountB,
+    title: 'Post B',
+    contentType: 'post',
+  })
+
+  const { variant: variantB } = await seedDraftVariant(db, wsB, campaignB.id, itemB.id, {
+    body: 'WS B body',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: wsB,
+    campaignId: campaignB.id,
+    contentId: itemB.id,
+    contentVariantId: variantB.id,
+  })
+
+  const postB = await createPublicationIntent(db, {
+    workspaceId: wsB,
+    contentId: itemB.id,
+    contentVariantId: variantB.id,
+    accountId: accountB,
+  })
+
+  assert.equal(postB.workspaceId, wsB)
+
+  // 1. Workspace A cannot read Post B by postId
+  const readByA = await getPostDetail(db, baseA.workspaceId, postB.id)
+  assert.equal(readByA, null)
+
+  // 2. Workspace A cannot read Post B by contentId
+  const listByContentA = await listPostsForContent(db, baseA.workspaceId, itemB.id)
+  assert.equal(listByContentA.length, 0)
+
+  // 3. Workspace A cannot read Post B by campaignId
+  const listByCampaignA = await listPostsForCampaign(db, baseA.workspaceId, campaignB.id)
+  assert.equal(listByCampaignA.length, 0)
+
+  // 4. Workspace A cannot validate eligibility for Post B
+  const eligA = await validatePublicationEligibility(db, {
+    workspaceId: baseA.workspaceId,
+    postId: postB.id,
+  })
+  assert.equal(eligA.eligible, false)
+  assert.match(eligA.reason ?? '', /not found in this workspace/i)
+
+  // 5. Workspace B can read Post B
+  const readByB = await getPostDetail(db, wsB, postB.id)
+  assert.ok(readByB)
+  assert.equal(readByB.id, postB.id)
+  assert.equal(readByB.workspaceId, wsB)
+})
+
+test('37. account lifecycle: active accepted, paused/archived/deleted rejected, live dynamic eligibility check', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Account Lifecycle Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Account Lifecycle Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Lifecycle body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  // 1. Paused account cannot create publication intent
+  raw.prepare(`UPDATE account SET status = 'paused' WHERE id = ?`).run(base.accountId)
+
+  await assert.rejects(
+    () =>
+      createPublicationIntent(db, {
+        workspaceId: base.workspaceId,
+        contentId: item.id,
+        contentVariantId: variant.id,
+        accountId: base.accountId,
+      }),
+    /must be active/i,
+  )
+
+  // 2. Reactivate account -> publication intent succeeds
+  raw.prepare(`UPDATE account SET status = 'active' WHERE id = ?`).run(base.accountId)
+
+  const post = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+  assert.ok(post.id)
+
+  // Live eligibility check: active account -> eligible
+  const elig1 = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(elig1.eligible, true)
+  assert.equal(elig1.accountActive, true)
+
+  // 3. Pause account AFTER post preparation -> eligibility becomes false
+  raw.prepare(`UPDATE account SET status = 'paused' WHERE id = ?`).run(base.accountId)
+
+  const elig2 = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(elig2.eligible, false)
+  assert.equal(elig2.accountActive, false)
+  assert.match(elig2.reason ?? '', /paused/i)
+
+  // 4. Soft-delete account -> eligibility remains false
+  raw
+    .prepare(`UPDATE account SET status = 'active', deleted_at = ? WHERE id = ?`)
+    .run(NOW, base.accountId)
+
+  const elig3 = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(elig3.eligible, false)
+  assert.equal(elig3.accountActive, false)
+  assert.match(elig3.reason ?? '', /deleted/i)
+
+  // 5. Restore account -> eligibility becomes true again
+  raw
+    .prepare(`UPDATE account SET status = 'active', deleted_at = NULL WHERE id = ?`)
+    .run(base.accountId)
+
+  const elig4 = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(elig4.eligible, true)
+  assert.equal(elig4.accountActive, true)
+})
+
+test('38. campaign identity: server derived from content, client forgery rejected', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  // Create Campaign A and Campaign B
+  const campaignA = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Campaign Alpha',
+  })
+
+  const campaignB = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Campaign Beta',
+  })
+
+  // Content belongs to Campaign A
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaignA.id,
+    targetAccountId: base.accountId,
+    title: 'Campaign Auth Post',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaignA.id, item.id, {
+    body: 'Campaign auth body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaignA.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  // 1. Attempt to pass Campaign B when content belongs to Campaign A -> Rejected
+  await assert.rejects(
+    () =>
+      createPublicationIntent(db, {
+        workspaceId: base.workspaceId,
+        campaignId: campaignB.id,
+        contentId: item.id,
+        contentVariantId: variant.id,
+        accountId: base.accountId,
+      }),
+    /Campaign ID does not match persisted content campaign lineage/i,
+  )
+
+  // 2. Prepare without passing campaignId -> Server derives Campaign A
+  const post = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+
+  assert.equal(post.campaignId, campaignA.id)
+  assert.equal(post.campaignName, 'Campaign Alpha')
+
+  // 3. Verify audit log & events recorded Campaign A
+  const auditRow = raw
+    .prepare(`SELECT * FROM audit_log WHERE entity_id = ? AND entity_type = 'post'`)
+    .get(post.id) as { new_value: string }
+  const auditJson = JSON.parse(auditRow.new_value)
+  assert.equal(auditJson.campaignId, campaignA.id)
+
+  const events = await listRecentEvents(db, base.workspaceId, 'publication', 5)
+  const event = events.find((e) => e.subject_id === post.id)
+  assert.ok(event)
+  const eventJson = JSON.parse(event.payload)
+  assert.equal(eventJson.campaignId, campaignA.id)
+})
+
+test('39. pre-dispatch status guard: draft & scheduled eligible; published, publishing, removed, failed ineligible', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Status Guard Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Status Guard Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Status guard body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  const post = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+
+  // 1. draft -> eligible
+  const eligDraft = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(eligDraft.eligible, true)
+  assert.equal(eligDraft.postStatus, 'draft')
+
+  // 2. scheduled -> eligible
+  raw
+    .prepare(`UPDATE post SET status = 'scheduled', scheduled_at = ? WHERE id = ?`)
+    .run(NOW, post.id)
+  const eligSched = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(eligSched.eligible, true)
+  assert.equal(eligSched.postStatus, 'scheduled')
+
+  // 3. publishing -> ineligible
+  raw.prepare(`UPDATE post SET status = 'publishing' WHERE id = ?`).run(post.id)
+  const eligPubing = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(eligPubing.eligible, false)
+  assert.match(eligPubing.reason ?? '', /currently publishing/i)
+  assert.equal(eligPubing.postStatus, 'publishing')
+
+  // 4. published -> ineligible
+  raw.prepare(`UPDATE post SET status = 'published' WHERE id = ?`).run(post.id)
+  const eligPubed = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(eligPubed.eligible, false)
+  assert.match(eligPubed.reason ?? '', /already published/i)
+  assert.equal(eligPubed.postStatus, 'published')
+
+  // 5. failed -> ineligible
+  raw.prepare(`UPDATE post SET status = 'failed' WHERE id = ?`).run(post.id)
+  const eligFailed = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(eligFailed.eligible, false)
+  assert.match(eligFailed.reason ?? '', /failed.*retry/i)
+  assert.equal(eligFailed.postStatus, 'failed')
+
+  // 6. removed -> ineligible
+  raw.prepare(`UPDATE post SET status = 'removed' WHERE id = ?`).run(post.id)
+  const eligRemoved = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(eligRemoved.eligible, false)
+  assert.match(eligRemoved.reason ?? '', /removed/i)
+  assert.equal(eligRemoved.postStatus, 'removed')
+})
+
+test('40. revoke -> reapprove same variant creates new approval B and invalidates old post P1', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Reapproval Lineage Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Reapproval Lineage Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Reapproval body text.',
+  })
+
+  // 1. Approve Variant V1 -> Approval A
+  const appA = await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+  const approvalAId = appA.approval.id
+
+  // 2. Prepare Post P1 -> P1.content_approval_id = Approval A
+  const p1 = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+  assert.equal(p1.contentApprovalId, approvalAId)
+
+  // 3. Revoke Approval A
+  await revokeCampaignContentApproval(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+  })
+
+  // 4. Reapprove SAME Variant V1 -> Approval B
+  const appB = await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+  const approvalBId = appB.approval.id
+  assert.notEqual(approvalBId, approvalAId)
+
+  // 5. P1 is NOT mutated in DB and still points to Approval A
+  const p1Db = await getPostDetail(db, base.workspaceId, p1.id)
+  assert.equal(p1Db?.contentApprovalId, approvalAId)
+
+  // 6. Pre-dispatch validation for P1 fails due to stale approval lineage
+  const p1Elig = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: p1.id,
+  })
+  assert.equal(p1Elig.eligible, false)
+  assert.match(p1Elig.reason ?? '', /stale or revoked approval/i)
+
+  // 7. A fresh publication intent P2 is created for Approval B
+  const p2 = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+
+  assert.notEqual(p2.id, p1.id)
+  assert.equal(p2.contentApprovalId, approvalBId)
+
+  // 8. P2 is eligible for dispatch
+  const p2Elig = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: p2.id,
+  })
+  assert.equal(p2Elig.eligible, true)
+  assert.equal(p2Elig.approvalId, approvalBId)
+})
+
+test('41. request-bound idempotency and duplicate active intent protection', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Request Bound Idempotency Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Idempotency Item',
+    contentType: 'post',
+  })
+
+  const { variant: v1 } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'V1 body.',
+  })
+  const { variant: v2 } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'V2 body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: v1.id,
+  })
+
+  const idempotencyKey = 'shared-idempotency-key-xyz'
+
+  // 1. Initial request with idempotency key
+  const post1 = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: v1.id,
+    accountId: base.accountId,
+    idempotencyKey,
+  })
+
+  // 2. Exact same request with same key -> Returns existing post1
+  const post1Retry = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: v1.id,
+    accountId: base.accountId,
+    idempotencyKey,
+  })
+  assert.equal(post1Retry.id, post1.id)
+
+  // 3. Same key with different Variant (v2) -> Rejected with idempotency_key_conflict
+  // (First approve v2)
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: v2.id,
+  })
+
+  await assert.rejects(
+    () =>
+      createPublicationIntent(db, {
+        workspaceId: base.workspaceId,
+        contentId: item.id,
+        contentVariantId: v2.id,
+        accountId: base.accountId,
+        idempotencyKey,
+      }),
+    /idempotency_key_conflict/i,
+  )
+})
+
+test('42. active intent unique constraint at database level prevents duplicate active posts', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'DB Constraint Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'DB Constraint Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'DB constraint body.',
+  })
+
+  const app = await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  // 1. First active post
+  const post1 = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+  assert.ok(post1.id)
+
+  // 2. Direct concurrent raw INSERT with same active tuple violates UNIQUE constraint idx_post_active_intent
+  assert.throws(
+    () =>
+      raw
+        .prepare(
+          `INSERT INTO post (id, workspace_id, content_variant_id, account_id, content_approval_id, status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'draft', ?, ?)`,
+        )
+        .run(
+          crypto.randomUUID(),
+          base.workspaceId,
+          variant.id,
+          base.accountId,
+          app.approval.id,
+          NOW,
+          NOW,
+        ),
+    /UNIQUE constraint failed/i,
+  )
 })

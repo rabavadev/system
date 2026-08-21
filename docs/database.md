@@ -143,10 +143,21 @@ The content pipeline uses a multi-table structure preserving strict immutability
 6. **`content.selected_variant_id`** (`0020`):
    - Foreign key referencing `content_variant(id) ON DELETE SET NULL`.
    - Designates the single active approved variant designated for publication readiness.
-7. **`post`** (`0004`, `0022`):
+7. **`post`** (`0004`, `0022`, `0023`):
    - Server-authoritative publication intent and dispatch record binding an exact immutable `content_variant_id` to an exact active `account_id`.
-   - Enhanced in `0022`: `workspace_id` (foreign key to `workspace`), `content_approval_id` (foreign key to `content_approval`), and `idempotency_key` (unique deduplication key).
-   - Validated server-side against full publication eligibility chain: `content.status === 'ready'`, `content.selected_variant_id === requested variant`, active human `content_approval` for that exact variant, account active in workspace, account connected to campaign (if campaign content), and account platform matching variant platform format.
+   - Enhanced in `0022` and hardened in `0023`:
+     - Rebuilt table with `workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE RESTRICT`.
+     - Deterministic backfill from `content_variant -> content.workspace_id`.
+     - `content_approval_id` (foreign key to `content_approval`) binding to the exact active approval event.
+     - Partial unique index `idx_post_active_intent ON post (workspace_id, content_variant_id, account_id, content_approval_id) WHERE status IN ('draft', 'scheduled')` preventing duplicate active publication intents.
+     - Index `idx_post_idempotency` for request-bound idempotency lookups.
+   - Validated server-side against full publication eligibility chain:
+     - `content.status === 'ready'`, `content.selected_variant_id === requested variant`, active human `content_approval` for that exact variant.
+     - `account.status === 'active'` (rejects paused/archived/deleted accounts).
+     - Server-derived `campaign_id` from content lineage (rejects client campaign mismatches).
+     - Account connected to campaign (if campaign content), and account platform matching variant platform format.
+     - Strict pre-dispatch post status checks (only `draft` and `scheduled` eligible; rejects `published`, `publishing`, `removed`, `failed`).
+     - Fresh approval lineage: re-approving a revoked variant generates a new approval ID and leaves previous posts historically preserved while requiring a fresh publication intent.
    - Initial status is strictly `draft` (or `scheduled` if internal schedule intent specified).
    - `external_id = NULL`, `url = NULL`, `published_at = NULL` until external dispatch.
    - Zero external network calls are made during preparation; `platform.publish` tool remains `unavailable` and `publisher` agent remains `disabled`.
