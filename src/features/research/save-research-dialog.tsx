@@ -140,18 +140,12 @@ export function SaveResearchDialog({
             confidence: confVal,
             scopeType: scopeType === 'workspace' ? null : scopeType,
             scopeId: scopeType === 'workspace' || !scopeId ? null : scopeId,
+            sourceMessageId: message.id,
             selectedSourceIndices: availableSources.length > 0 ? selectedSourceIndices : undefined,
             origin: {
-              originType: 'researcher',
-              agentId: message.agentId,
-              agentVersionId: message.agentVersionId,
-              conversationId: message.conversationId,
-              messageId: message.id,
-              webSearchUsed: availableSources.length > 0,
               ...(derivedFromResearchIds && derivedFromResearchIds.length > 0
                 ? { derivedFromResearchIds }
                 : {}),
-              createdAt: message.createdAt,
             },
           },
         })

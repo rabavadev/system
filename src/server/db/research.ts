@@ -424,15 +424,43 @@ export async function validateResearchScope(
   throw new ResearchScopeError(`Unsupported scope type '${scopeType}'.`)
 }
 
+export interface ResearchProvenance {
+  originType: 'researcher' | 'manual' | 'import'
+  sourceMessageId: string | null
+  conversationId: string | null
+  agentId: string | null
+  agentName: string | null
+  agentVersionId: string | null
+  versionNumber: number | null
+  executionId: string | null
+  provider: string | null
+  model: string | null
+  generatedAt: string | null
+  savedAt: string
+  webSearchUsed: boolean
+  sourceCount: number
+  derivedFromResearchIds: string[] | null
+}
+
 export const researchOriginSchema = z.object({
-  originType: z.enum(['manual', 'researcher', 'import']).default('manual'),
-  agentId: z.string().uuid().nullable().optional(),
-  agentVersionId: z.string().uuid().nullable().optional(),
-  conversationId: z.string().uuid().nullable().optional(),
+  originType: z.enum(['manual', 'researcher', 'import']).optional(),
+  sourceMessageId: z.string().uuid().nullable().optional(),
   messageId: z.string().uuid().nullable().optional(),
+  conversationId: z.string().uuid().nullable().optional(),
+  agentId: z.string().uuid().nullable().optional(),
+  agentName: z.string().nullable().optional(),
+  agentVersionId: z.string().uuid().nullable().optional(),
+  versionNumber: z.number().int().nullable().optional(),
+  executionId: z.string().nullable().optional(),
+  provider: z.string().nullable().optional(),
+  model: z.string().nullable().optional(),
+  generatedAt: z.string().nullable().optional(),
+  createdAt: z.string().nullable().optional(),
   derivedFromResearchIds: z.array(z.string().uuid()).optional(),
   webSearchUsed: z.boolean().optional(),
-  createdAt: z.string().nullable().optional(),
+  sourceUrls: z.array(z.string()).optional(),
+  searchProvider: z.string().nullable().optional(),
+  toolCallId: z.string().nullable().optional(),
 })
 export type ResearchOrigin = z.infer<typeof researchOriginSchema>
 
@@ -724,6 +752,7 @@ export const createResearchInput = z.object({
   scopeId: z.string().nullable().optional(),
   lastVerifiedAt: z.string().nullable().optional(),
   expiresAt: z.string().nullable().optional(),
+  sourceMessageId: z.string().uuid().nullable().optional(),
   origin: researchOriginSchema.optional(),
   selectedSourceIndices: z.array(z.number().int().min(0)).optional(),
   actor: z
@@ -857,60 +886,226 @@ export async function createResearch(
   // Validate scope integrity
   await validateResearchScope(db, data.workspaceId, data.scopeType, data.scopeId)
 
-  // Verify genuine search sources from origin message if requested
-  if (data.selectedSourceIndices && data.selectedSourceIndices.length > 0) {
-    if (!data.origin?.messageId) {
-      throw new ResearchSourceValidationError(
-        'Origin messageId is required to import genuine search sources.',
-      )
-    }
+  const targetMessageId =
+    data.sourceMessageId ?? data.origin?.sourceMessageId ?? data.origin?.messageId ?? null
 
+  let safeOrigin: ResearchProvenance
+  let importedSourcesCount = 0
+  const chosenSources: Array<{
+    title: string
+    url: string
+    publisher: string | null
+    publishedAt: string | null
+    retrievedAt: string | null
+    note: string | null
+  }> = []
+
+  if (targetMessageId) {
+    // Reload exact source message joined with conversation to verify workspace
     const messageRow = await queryFirst<{
       id: string
       conversation_id: string
       sender_type: string
       agent_id: string | null
+      agent_version_id: string | null
+      content: string
       provider_metadata: string | null
+      created_at: string
+      workspace_id: string
     }>(
       db,
-      `SELECT m.id, m.conversation_id, m.sender_type, m.agent_id, m.provider_metadata
+      `SELECT m.id, m.conversation_id, m.sender_type, m.agent_id, m.agent_version_id,
+              m.content, m.provider_metadata, m.created_at, c.workspace_id
        FROM message m
        JOIN conversation c ON c.id = m.conversation_id
-       WHERE m.id = ? AND c.workspace_id = ?`,
-      [data.origin.messageId, data.workspaceId],
+       WHERE m.id = ?`,
+      [targetMessageId],
     )
 
     if (!messageRow) {
+      throw new ResearchSourceValidationError(`Source message '${targetMessageId}' not found.`)
+    }
+
+    if (messageRow.workspace_id !== data.workspaceId) {
       throw new ResearchSourceValidationError(
-        `Origin message '${data.origin.messageId}' not found or belongs to another workspace.`,
+        `Source message '${targetMessageId}' belongs to another workspace.`,
       )
     }
 
-    if (data.origin.conversationId && messageRow.conversation_id !== data.origin.conversationId) {
+    if (data.origin?.conversationId && messageRow.conversation_id !== data.origin.conversationId) {
       throw new ResearchSourceValidationError('Origin message conversation mismatch.')
     }
 
     if (messageRow.sender_type !== 'agent') {
       throw new ResearchSourceValidationError(
-        'Only assistant messages from Researcher can import search sources.',
+        'Only assistant messages from Researcher can provide research findings.',
       )
     }
 
-    const agentRow = messageRow.agent_id
-      ? await queryFirst<{ id: string; name: string; role: string }>(
-          db,
-          `SELECT id, name, role FROM agent WHERE id = ? AND workspace_id = ?`,
-          [messageRow.agent_id, data.workspaceId],
-        )
-      : null
+    if (!messageRow.agent_id) {
+      throw new ResearchSourceValidationError('Source message has no agent identifier.')
+    }
 
-    if (
-      !agentRow ||
-      (agentRow.role !== 'researcher' && agentRow.name.toLowerCase() !== 'researcher')
-    ) {
+    const agentRow = await queryFirst<{
+      id: string
+      name: string
+      role: string
+      workspace_id: string
+      status: string
+    }>(db, `SELECT id, name, role, workspace_id, status FROM agent WHERE id = ?`, [
+      messageRow.agent_id,
+    ])
+
+    if (!agentRow || agentRow.workspace_id !== data.workspaceId) {
+      throw new ResearchSourceValidationError('Agent for source message not found in workspace.')
+    }
+
+    if (agentRow.role !== 'researcher' && agentRow.name.toLowerCase() !== 'researcher') {
       throw new ResearchSourceValidationError(
-        'Only Researcher agent messages can provide web search sources.',
+        `Only messages from the Researcher agent can provide research findings (got '${agentRow.name}' with role '${agentRow.role}').`,
       )
+    }
+
+    if (!messageRow.agent_version_id) {
+      throw new ResearchSourceValidationError('Source message has no agent version reference.')
+    }
+
+    const versionRow = await queryFirst<{
+      id: string
+      agent_id: string
+      version: number
+    }>(db, `SELECT id, agent_id, version FROM agent_version WHERE id = ? AND agent_id = ?`, [
+      messageRow.agent_version_id,
+      agentRow.id,
+    ])
+
+    if (!versionRow) {
+      throw new ResearchSourceValidationError('Invalid agent version for source message.')
+    }
+
+    let executionId: string | null = null
+    let provider: string | null = null
+    let model: string | null = null
+    let messageSources: Array<{
+      title?: unknown
+      url?: unknown
+      publisher?: unknown
+      publishedAt?: unknown
+      retrievedAt?: unknown
+      snippet?: unknown
+      note?: unknown
+    }> = []
+    let hasSuccessfulWebSearch = false
+
+    if (messageRow.provider_metadata) {
+      try {
+        const parsedMeta = JSON.parse(messageRow.provider_metadata)
+        if (typeof parsedMeta === 'object' && parsedMeta !== null) {
+          if (typeof parsedMeta.executionId === 'string' && parsedMeta.executionId.trim() !== '') {
+            executionId = parsedMeta.executionId
+          }
+          if (typeof parsedMeta.provider === 'string' && parsedMeta.provider.trim() !== '') {
+            provider = parsedMeta.provider
+          }
+          if (typeof parsedMeta.model === 'string' && parsedMeta.model.trim() !== '') {
+            model = parsedMeta.model
+          }
+          if (Array.isArray(parsedMeta.sources)) {
+            messageSources = parsedMeta.sources
+          }
+          if (Array.isArray(parsedMeta.toolCalls)) {
+            hasSuccessfulWebSearch = parsedMeta.toolCalls.some(
+              (tc: { toolKey?: unknown; toolName?: unknown; status?: unknown }) =>
+                tc &&
+                (tc.toolKey === 'web.search' || tc.toolName === 'web.search') &&
+                tc.status === 'succeeded',
+            )
+          } else if (Array.isArray(parsedMeta.sources) && parsedMeta.sources.length > 0) {
+            hasSuccessfulWebSearch = true
+          }
+        }
+      } catch {
+        // Malformed provider metadata
+      }
+    }
+
+    // Extract genuine search sources if requested and valid
+    if (
+      hasSuccessfulWebSearch &&
+      data.selectedSourceIndices &&
+      data.selectedSourceIndices.length > 0 &&
+      messageSources.length > 0
+    ) {
+      for (const idx of data.selectedSourceIndices) {
+        const item = messageSources[idx]
+        if (
+          item &&
+          typeof item === 'object' &&
+          typeof item.url === 'string' &&
+          item.url.trim() !== '' &&
+          typeof item.title === 'string' &&
+          item.title.trim() !== ''
+        ) {
+          const snippet = typeof item.snippet === 'string' ? item.snippet.trim() : null
+          const itemNote = typeof item.note === 'string' ? item.note.trim() : null
+          const note = snippet ? `Search snippet: ${snippet.slice(0, 500)}` : itemNote
+          chosenSources.push({
+            title: item.title.trim(),
+            url: item.url.trim(),
+            publisher: typeof item.publisher === 'string' ? item.publisher.trim() || null : null,
+            publishedAt: typeof item.publishedAt === 'string' ? item.publishedAt : null,
+            retrievedAt: typeof item.retrievedAt === 'string' ? item.retrievedAt : null,
+            note,
+          })
+        }
+      }
+    }
+
+    const webSearchUsed = Boolean(
+      (hasSuccessfulWebSearch && messageSources.length > 0) || chosenSources.length > 0,
+    )
+
+    safeOrigin = {
+      originType: 'researcher',
+      sourceMessageId: messageRow.id,
+      conversationId: messageRow.conversation_id,
+      agentId: agentRow.id,
+      agentName: agentRow.name,
+      agentVersionId: versionRow.id,
+      versionNumber: versionRow.version,
+      executionId,
+      provider,
+      model,
+      generatedAt: messageRow.created_at,
+      savedAt: now,
+      webSearchUsed,
+      sourceCount: 0,
+      derivedFromResearchIds: data.origin?.derivedFromResearchIds ?? null,
+    }
+  } else {
+    // Manual research creation
+    if (data.selectedSourceIndices && data.selectedSourceIndices.length > 0) {
+      throw new ResearchSourceValidationError(
+        'Origin message is required to import web search sources.',
+      )
+    }
+
+    safeOrigin = {
+      originType: 'manual',
+      sourceMessageId: null,
+      conversationId: null,
+      agentId: null,
+      agentName: null,
+      agentVersionId: null,
+      versionNumber: null,
+      executionId: null,
+      provider: null,
+      model: null,
+      generatedAt: null,
+      savedAt: now,
+      webSearchUsed: false,
+      sourceCount: 0,
+      derivedFromResearchIds: data.origin?.derivedFromResearchIds ?? null,
     }
   }
 
@@ -941,73 +1136,8 @@ export async function createResearch(
     ],
   )
 
-  let importedSourcesCount = 0
-
-  // If selectedSourceIndices provided, resolve genuine sources and insert them
-  if (
-    data.selectedSourceIndices &&
-    data.selectedSourceIndices.length > 0 &&
-    data.origin?.messageId
-  ) {
-    const messageRow = await queryFirst<{
-      provider_metadata: string | null
-    }>(db, `SELECT provider_metadata FROM message WHERE id = ?`, [data.origin.messageId])
-
-    let messageSources: Array<{
-      title?: unknown
-      url?: unknown
-      publisher?: unknown
-      publishedAt?: unknown
-      retrievedAt?: unknown
-      snippet?: unknown
-      note?: unknown
-    }> = []
-
-    if (messageRow?.provider_metadata) {
-      try {
-        const parsedMeta = JSON.parse(messageRow.provider_metadata)
-        if (Array.isArray(parsedMeta?.sources)) {
-          messageSources = parsedMeta.sources
-        }
-      } catch {
-        messageSources = []
-      }
-    }
-
-    const chosenSources: Array<{
-      title: string
-      url: string
-      publisher: string | null
-      publishedAt: string | null
-      retrievedAt: string | null
-      note: string | null
-    }> = []
-
-    for (const idx of data.selectedSourceIndices) {
-      const item = messageSources[idx]
-      if (
-        item &&
-        typeof item === 'object' &&
-        typeof item.url === 'string' &&
-        item.url.trim() !== '' &&
-        typeof item.title === 'string' &&
-        item.title.trim() !== ''
-      ) {
-        const snippet = typeof item.snippet === 'string' ? item.snippet.trim() : null
-        const itemNote = typeof item.note === 'string' ? item.note.trim() : null
-        const note = snippet ? `Search snippet: ${snippet.slice(0, 500)}` : itemNote
-        chosenSources.push({
-          title: item.title.trim(),
-          url: item.url.trim(),
-          publisher: typeof item.publisher === 'string' ? item.publisher.trim() || null : null,
-          publishedAt: typeof item.publishedAt === 'string' ? item.publishedAt : null,
-          retrievedAt: typeof item.retrievedAt === 'string' ? item.retrievedAt : null,
-          note,
-        })
-      }
-    }
-
-    // Deduplicate by normalized URL
+  // Insert genuine sources if any
+  if (chosenSources.length > 0) {
     const seenUrls = new Set<string>()
     for (const s of chosenSources) {
       const validUrl = validateSourceUrl(s.url)
@@ -1079,6 +1209,8 @@ export async function createResearch(
     }
   }
 
+  safeOrigin.sourceCount = importedSourcesCount
+
   const record: ResearchRecord = {
     id,
     workspaceId: data.workspaceId,
@@ -1096,18 +1228,6 @@ export async function createResearch(
     deletedAt,
   }
 
-  const safeOrigin = data.origin
-    ? {
-        originType: data.origin.originType,
-        agentId: data.origin.agentId ?? null,
-        agentVersionId: data.origin.agentVersionId ?? null,
-        conversationId: data.origin.conversationId ?? null,
-        messageId: data.origin.messageId ?? null,
-        derivedFromResearchIds: data.origin.derivedFromResearchIds ?? null,
-        ...(data.origin.webSearchUsed || importedSourcesCount > 0 ? { webSearchUsed: true } : {}),
-      }
-    : null
-
   await writeAuditLog(db, {
     workspaceId: data.workspaceId,
     actorType: data.actor?.actorType ?? 'user',
@@ -1122,7 +1242,7 @@ export async function createResearch(
       status: record.status,
       scopeType: record.scopeType,
       scopeId: record.scopeId,
-      ...(safeOrigin ? { origin: safeOrigin } : {}),
+      origin: safeOrigin,
     }),
   })
 
@@ -1139,11 +1259,11 @@ export async function createResearch(
       status: record.status,
       scopeType: record.scopeType,
       scopeId: record.scopeId,
-      ...(safeOrigin ? { origin: safeOrigin } : {}),
+      origin: safeOrigin,
     }),
   })
 
-  if (safeOrigin?.derivedFromResearchIds && safeOrigin.derivedFromResearchIds.length > 0) {
+  if (safeOrigin.derivedFromResearchIds && safeOrigin.derivedFromResearchIds.length > 0) {
     await emitEventSafe(db, {
       workspaceId: data.workspaceId,
       eventType: 'research.analysis_saved',

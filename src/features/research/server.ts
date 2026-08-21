@@ -576,6 +576,7 @@ export const createResearchFn = createServerFn({ method: 'POST' })
       scopeId: z.string().nullable().optional(),
       lastVerifiedAt: z.string().nullable().optional(),
       expiresAt: z.string().nullable().optional(),
+      sourceMessageId: z.string().uuid().nullable().optional(),
       origin: researchOriginSchema.optional(),
       selectedSourceIndices: z.array(z.number().int().min(0)).optional(),
     }),
@@ -595,30 +596,13 @@ export const createResearchFn = createServerFn({ method: 'POST' })
       ...(data.scopeId !== undefined ? { scopeId: data.scopeId } : {}),
       ...(data.lastVerifiedAt !== undefined ? { lastVerifiedAt: data.lastVerifiedAt } : {}),
       ...(data.expiresAt !== undefined ? { expiresAt: data.expiresAt } : {}),
+      ...(data.sourceMessageId !== undefined ? { sourceMessageId: data.sourceMessageId } : {}),
       ...(data.origin !== undefined ? { origin: data.origin } : {}),
       ...(data.selectedSourceIndices !== undefined
         ? { selectedSourceIndices: data.selectedSourceIndices }
         : {}),
       actor: { actorType: 'user' },
     })
-
-    if (
-      created &&
-      data.origin?.derivedFromResearchIds &&
-      data.origin.derivedFromResearchIds.length > 0
-    ) {
-      await emitEventSafe(db, {
-        workspaceId: workspace.id,
-        eventType: 'research.analysis_saved',
-        actorType: 'user',
-        subjectType: 'research',
-        subjectId: created.id,
-        payloadJson: JSON.stringify({
-          derivedFromResearchIds: data.origin.derivedFromResearchIds,
-          origin: data.origin,
-        }),
-      })
-    }
 
     return created
   })

@@ -200,7 +200,39 @@ function setupFixture(raw: Database.Database) {
     )
     .run(researcherId, ws1, NOW, NOW)
 
-  return { ws1, ws2, brand1, brand2, niche1, product1, chiefId, researcherId }
+  const chiefVersionId = crypto.randomUUID()
+  const researcherVersionId = crypto.randomUUID()
+
+  raw
+    .prepare(
+      `INSERT INTO agent_version (id, agent_id, version, config, created_at)
+       VALUES (?, ?, 1, '{}', ?)`,
+    )
+    .run(chiefVersionId, chiefId, NOW)
+  raw
+    .prepare(
+      `INSERT INTO agent_version (id, agent_id, version, config, created_at)
+       VALUES (?, ?, 1, '{}', ?)`,
+    )
+    .run(researcherVersionId, researcherId, NOW)
+
+  raw.prepare(`UPDATE agent SET current_version_id = ? WHERE id = ?`).run(chiefVersionId, chiefId)
+  raw
+    .prepare(`UPDATE agent SET current_version_id = ? WHERE id = ?`)
+    .run(researcherVersionId, researcherId)
+
+  return {
+    ws1,
+    ws2,
+    brand1,
+    brand2,
+    niche1,
+    product1,
+    chiefId,
+    researcherId,
+    chiefVersionId,
+    researcherVersionId,
+  }
 }
 
 test('1. create workspace research', async () => {
@@ -1396,7 +1428,22 @@ test('39. STEP 12C.5: AI response save strictly defaults to status = draft', asy
 
 test('40. STEP 12C.6: save form uses existing createResearch repository function', async () => {
   const { db, raw } = freshDb()
-  const { ws1, brand1, researcherId } = setupFixture(raw)
+  const { ws1, brand1, researcherId, researcherVersionId } = setupFixture(raw)
+
+  const convo = await createConversation(db, {
+    workspaceId: ws1,
+    title: 'Reviewed Finding Convo',
+    scopeType: 'brand',
+    scopeId: brand1,
+  })
+
+  const msgId = crypto.randomUUID()
+  raw
+    .prepare(
+      `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, created_at)
+       VALUES (?, ?, 'agent', ?, ?, 'Key finding content after user review', ?)`,
+    )
+    .run(msgId, convo.id, researcherId, researcherVersionId, NOW)
 
   const created = await createResearch(db, {
     workspaceId: ws1,
@@ -1410,8 +1457,8 @@ test('40. STEP 12C.6: save form uses existing createResearch repository function
     origin: {
       originType: 'researcher',
       agentId: researcherId,
-      conversationId: crypto.randomUUID(),
-      messageId: crypto.randomUUID(),
+      conversationId: convo.id,
+      messageId: msgId,
     },
   })
 
@@ -1611,10 +1658,20 @@ test('46. STEP 12C.12: no fabricated citations or fake sources created on save',
 
 test('47. STEP 12C.13: safe origin linkage recorded in audit logs and events', async () => {
   const { db, raw } = freshDb()
-  const { ws1, researcherId } = setupFixture(raw)
-  const conversationId = crypto.randomUUID()
+  const { ws1, researcherId, researcherVersionId } = setupFixture(raw)
+
+  const convo = await createConversation(db, {
+    workspaceId: ws1,
+    title: 'Traceable Finding Convo',
+  })
+
   const messageId = crypto.randomUUID()
-  const agentVersionId = crypto.randomUUID()
+  raw
+    .prepare(
+      `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, created_at)
+       VALUES (?, ?, 'agent', ?, ?, 'Traceable finding content.', ?)`,
+    )
+    .run(messageId, convo.id, researcherId, researcherVersionId, NOW)
 
   const created = await createResearch(db, {
     workspaceId: ws1,
@@ -1623,8 +1680,8 @@ test('47. STEP 12C.13: safe origin linkage recorded in audit logs and events', a
     origin: {
       originType: 'researcher',
       agentId: researcherId,
-      agentVersionId,
-      conversationId,
+      agentVersionId: researcherVersionId,
+      conversationId: convo.id,
       messageId,
     },
   })
@@ -1640,9 +1697,9 @@ test('47. STEP 12C.13: safe origin linkage recorded in audit logs and events', a
   assert.ok(auditPayload.origin)
   assert.equal(auditPayload.origin.originType, 'researcher')
   assert.equal(auditPayload.origin.agentId, researcherId)
-  assert.equal(auditPayload.origin.agentVersionId, agentVersionId)
-  assert.equal(auditPayload.origin.conversationId, conversationId)
-  assert.equal(auditPayload.origin.messageId, messageId)
+  assert.equal(auditPayload.origin.agentVersionId, researcherVersionId)
+  assert.equal(auditPayload.origin.conversationId, convo.id)
+  assert.equal(auditPayload.origin.sourceMessageId, messageId)
 
   // Verify Event
   const event = raw
@@ -1763,7 +1820,7 @@ test('51. STEP 12C.17: resolveSelectedAgent correctly selects Researcher when ag
 
 test('52. STEP 12C.18: full chat conversation lifecycle with Researcher reply and draft save remains intact', async () => {
   const { db, raw } = freshDb()
-  const { ws1, brand1, researcherId } = setupFixture(raw)
+  const { ws1, brand1, researcherId, researcherVersionId } = setupFixture(raw)
 
   // 1. User launches Researcher chat from Research workspace
   const convo = await createConversation(db, {
@@ -1788,10 +1845,10 @@ test('52. STEP 12C.18: full chat conversation lifecycle with Researcher reply an
     '### Competitor Landscape\nBased on existing research, Notion and Airtable are key players.'
   raw
     .prepare(
-      `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, created_at)
-       VALUES (?, ?, 'agent', ?, ?, ?)`,
+      `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, created_at)
+       VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
     )
-    .run(assistantMsgId, convo.id, researcherId, assistantContent, NOW)
+    .run(assistantMsgId, convo.id, researcherId, researcherVersionId, assistantContent, NOW)
 
   // 4. User clicks "Save as Research" and submits reviewed draft
   const title = deriveResearchTitle(assistantContent)
@@ -2598,7 +2655,7 @@ test('71. STEP 12D.19: saved result does not duplicate underlying sources', asyn
 
 test('72. STEP 12D.20: derived research origin (derivedFromResearchIds) preserved safely', async () => {
   const { db, raw } = freshDb()
-  const { ws1, researcherId } = setupFixture(raw)
+  const { ws1, researcherId, researcherVersionId } = setupFixture(raw)
 
   const r1 = await createResearch(db, {
     workspaceId: ws1,
@@ -2613,8 +2670,18 @@ test('72. STEP 12D.20: derived research origin (derivedFromResearchIds) preserve
     status: 'completed',
   })
 
-  const convoId = crypto.randomUUID()
+  const convo = await createConversation(db, {
+    workspaceId: ws1,
+    title: 'Derived Finding Convo',
+  })
+
   const msgId = crypto.randomUUID()
+  raw
+    .prepare(
+      `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, created_at)
+       VALUES (?, ?, 'agent', ?, ?, 'Synthesized content comparing A and B.', ?)`,
+    )
+    .run(msgId, convo.id, researcherId, researcherVersionId, NOW)
 
   const derived = await createResearch(db, {
     workspaceId: ws1,
@@ -2624,7 +2691,7 @@ test('72. STEP 12D.20: derived research origin (derivedFromResearchIds) preserve
     origin: {
       originType: 'researcher',
       agentId: researcherId,
-      conversationId: convoId,
+      conversationId: convo.id,
       messageId: msgId,
       derivedFromResearchIds: [r1.id, r2.id],
     },
@@ -2708,7 +2775,22 @@ test('73. STEP 12D.21: underlying research records remain unchanged after derive
 
 test('74. STEP 12D.22: existing single-message researcher save flow remains green', async () => {
   const { db, raw } = freshDb()
-  const { ws1, brand1, researcherId } = setupFixture(raw)
+  const { ws1, brand1, researcherId, researcherVersionId } = setupFixture(raw)
+
+  const convo = await createConversation(db, {
+    workspaceId: ws1,
+    title: 'Single Finding Session',
+    scopeType: 'brand',
+    scopeId: brand1,
+  })
+
+  const msgId = crypto.randomUUID()
+  raw
+    .prepare(
+      `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, created_at)
+       VALUES (?, ?, 'agent', ?, ?, 'Researcher insight from conversation turn.', ?)`,
+    )
+    .run(msgId, convo.id, researcherId, researcherVersionId, NOW)
 
   const singleFinding = await createResearch(db, {
     workspaceId: ws1,
@@ -2721,8 +2803,8 @@ test('74. STEP 12D.22: existing single-message researcher save flow remains gree
     origin: {
       originType: 'researcher',
       agentId: researcherId,
-      conversationId: crypto.randomUUID(),
-      messageId: crypto.randomUUID(),
+      conversationId: convo.id,
+      messageId: msgId,
     },
   })
 
@@ -2742,7 +2824,7 @@ test('74. STEP 12D.22: existing single-message researcher save flow remains gree
 
 test('75. STEP 12D.23: full regression across research, chat, context, and derived intelligence intact', async () => {
   const { db, raw } = freshDb()
-  const { ws1, brand1, researcherId } = setupFixture(raw)
+  const { ws1, brand1, researcherId, researcherVersionId } = setupFixture(raw)
 
   // 1. Create base research records with sources
   const r1 = await createResearch(db, {
@@ -2810,10 +2892,10 @@ test('75. STEP 12D.23: full regression across research, chat, context, and deriv
     '### Comparative Assessment\nOur search is functionally accurate but lacks typo tolerance compared to the benchmark.'
   raw
     .prepare(
-      `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, created_at)
-       VALUES (?, ?, 'agent', ?, ?, ?)`,
+      `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, created_at)
+       VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
     )
-    .run(agentMsgId, convo.id, researcherId, agentResponse, NOW)
+    .run(agentMsgId, convo.id, researcherId, researcherVersionId, agentResponse, NOW)
 
   // 6. Save derived research draft
   const derivedDraft = await createResearch(db, {
@@ -2864,7 +2946,7 @@ test('75. STEP 12D.23: full regression across research, chat, context, and deriv
 
 test('STEP 13C: Save Researcher findings with genuine search sources', async (t) => {
   const { db, raw } = freshDb()
-  const { ws1, ws2, researcherId, chiefId } = setupFixture(raw)
+  const { ws1, ws2, researcherId, chiefId, researcherVersionId, chiefVersionId } = setupFixture(raw)
 
   const convo = await createConversation(db, {
     workspaceId: ws1,
@@ -2914,13 +2996,14 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
 
       raw
         .prepare(
-          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-         VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
         )
         .run(
           msgId,
           convo.id,
           researcherId,
+          researcherVersionId,
           '### Analysis\nOrganic query volume increased 25% YoY with distinct indexing patterns.',
           JSON.stringify(metaWithSources),
           NOW,
@@ -2974,10 +3057,10 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
       const msgId = crypto.randomUUID()
       raw
         .prepare(
-          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-         VALUES (?, ?, 'agent', ?, ?, NULL, ?)`,
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, ?, NULL, ?)`,
         )
-        .run(msgId, convo.id, researcherId, 'No search conducted here.', NOW)
+        .run(msgId, convo.id, researcherId, researcherVersionId, 'No search conducted here.', NOW)
 
       const created = await createResearch(db, {
         workspaceId: ws1,
@@ -3017,13 +3100,14 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
 
       raw
         .prepare(
-          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-         VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
         )
         .run(
           msgId,
           convo.id,
           researcherId,
+          researcherVersionId,
           'Content for selective sources',
           JSON.stringify(metaWith3Sources),
           NOW,
@@ -3077,13 +3161,14 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
 
       raw
         .prepare(
-          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-         VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
         )
         .run(
           msgId,
           convo.id,
           researcherId,
+          researcherVersionId,
           'Duplicate search sources test',
           JSON.stringify(metaWithDuplicates),
           NOW,
@@ -3129,13 +3214,14 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
 
       raw
         .prepare(
-          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-         VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
         )
         .run(
           msgId,
           convo.id,
           researcherId,
+          researcherVersionId,
           'Minimal metadata findings',
           JSON.stringify(metaMinimal),
           NOW,
@@ -3173,13 +3259,14 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
       const msgWs2Id = crypto.randomUUID()
       raw
         .prepare(
-          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-         VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
         )
         .run(
           msgWs2Id,
           convoWs2.id,
           researcherId,
+          researcherVersionId,
           'WS2 message',
           JSON.stringify({ sources: [{ title: 'T', url: 'https://ex.com' }] }),
           NOW,
@@ -3209,13 +3296,14 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
       const chiefMsgId = crypto.randomUUID()
       raw
         .prepare(
-          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-         VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
         )
         .run(
           chiefMsgId,
           convo.id,
           chiefId,
+          chiefVersionId,
           'Chief reply',
           JSON.stringify({ sources: [{ title: 'T', url: 'https://ex.com' }] }),
           NOW,
@@ -3284,13 +3372,14 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
       const msgId = crypto.randomUUID()
       raw
         .prepare(
-          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-         VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
         )
         .run(
           msgId,
           convo.id,
           researcherId,
+          researcherVersionId,
           'Content with ignored sources',
           JSON.stringify({
             sources: [{ title: 'Ignored', url: 'https://example.com/ignored', retrievedAt: NOW }],
@@ -3328,13 +3417,14 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
       const msgId = crypto.randomUUID()
       raw
         .prepare(
-          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-         VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
         )
         .run(
           msgId,
           convo.id,
           researcherId,
+          researcherVersionId,
           'Content for standard editing',
           JSON.stringify({
             sources: [
@@ -3395,13 +3485,14 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
       const msgId = crypto.randomUUID()
       raw
         .prepare(
-          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-         VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
         )
         .run(
           msgId,
           convo.id,
           researcherId,
+          researcherVersionId,
           'Audited search findings',
           JSON.stringify({
             sources: [
@@ -3436,7 +3527,7 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
       assert.ok(audit)
       const auditObj = JSON.parse(audit.new_value)
       assert.equal(auditObj.origin.webSearchUsed, true)
-      assert.equal(auditObj.origin.messageId, msgId)
+      assert.equal(auditObj.origin.sourceMessageId, msgId)
 
       const events = raw
         .prepare(
@@ -3452,7 +3543,13 @@ test('STEP 13C: Save Researcher findings with genuine search sources', async (t)
 
 test('STEP 13D: Live Web Research UX', async (t) => {
   const { db, raw } = freshDb()
-  const { ws1, brand1: brandId, product1: productId, researcherId } = setupFixture(raw)
+  const {
+    ws1,
+    brand1: brandId,
+    product1: productId,
+    researcherId,
+    researcherVersionId,
+  } = setupFixture(raw)
   const now = new Date().toISOString()
 
   // 1. Research the web opens normal Researcher Chat
@@ -3502,13 +3599,14 @@ test('STEP 13D: Live Web Research UX', async (t) => {
     // Message WITH real search sources
     raw
       .prepare(
-        `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-       VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+        `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+       VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
       )
       .run(
         msgRealSearchId,
         convo.id,
         researcherId,
+        researcherVersionId,
         'Found competitor pricing via web search.',
         JSON.stringify({
           sources: [{ title: 'Comp A', url: 'https://compa.com', retrievedAt: now }],
@@ -3520,13 +3618,14 @@ test('STEP 13D: Live Web Research UX', async (t) => {
     // Message WITHOUT search
     raw
       .prepare(
-        `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-       VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+        `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+       VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
       )
       .run(
         msgNoSearchId,
         convo.id,
         researcherId,
+        researcherVersionId,
         'Answer based on workspace context only.',
         JSON.stringify({}),
         now,
@@ -3661,13 +3760,14 @@ test('STEP 13D: Live Web Research UX', async (t) => {
     const msgId = crypto.randomUUID()
     raw
       .prepare(
-        `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, provider_metadata, created_at)
-       VALUES (?, ?, 'agent', ?, ?, ?, ?)`,
+        `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+       VALUES (?, ?, 'agent', ?, ?, ?, ?, ?)`,
       )
       .run(
         msgId,
         convo.id,
         researcherId,
+        researcherVersionId,
         'Valuable findings from live web research',
         JSON.stringify({
           sources: [
@@ -3754,4 +3854,1322 @@ test('STEP 13D: Live Web Research UX', async (t) => {
       assert.ok(Array.isArray(list))
     },
   )
+})
+
+// ============================================================================
+// STEP 13E: HARDENING H3A.2 Server-Authoritative Research Provenance
+// ============================================================================
+
+test('STEP 13E: HARDENING H3A.2 Server-Authoritative Research Provenance', async (t) => {
+  const { db, raw } = freshDb()
+  const { ws1, ws2, brand1, researcherId, researcherVersionId } = setupFixture(raw)
+
+  // Additional Creator and Critic agents for masquerade rejection tests
+  const creatorId = crypto.randomUUID()
+  const creatorVersionId = crypto.randomUUID()
+  raw
+    .prepare(
+      `INSERT INTO agent (id, workspace_id, name, role, execution_type, status, origin, created_at, updated_at)
+       VALUES (?, ?, 'Creator', 'creator', 'direct_model', 'active', 'builtin', ?, ?)`,
+    )
+    .run(creatorId, ws1, NOW, NOW)
+  raw
+    .prepare(
+      `INSERT INTO agent_version (id, agent_id, version, config, created_at)
+       VALUES (?, ?, 1, '{}', ?)`,
+    )
+    .run(creatorVersionId, creatorId, NOW)
+  raw
+    .prepare(`UPDATE agent SET current_version_id = ? WHERE id = ?`)
+    .run(creatorVersionId, creatorId)
+
+  const criticId = crypto.randomUUID()
+  const criticVersionId = crypto.randomUUID()
+  raw
+    .prepare(
+      `INSERT INTO agent (id, workspace_id, name, role, execution_type, status, origin, created_at, updated_at)
+       VALUES (?, ?, 'Critic', 'critic', 'direct_model', 'active', 'builtin', ?, ?)`,
+    )
+    .run(criticId, ws1, NOW, NOW)
+  raw
+    .prepare(
+      `INSERT INTO agent_version (id, agent_id, version, config, created_at)
+       VALUES (?, ?, 1, '{}', ?)`,
+    )
+    .run(criticVersionId, criticId, NOW)
+  raw.prepare(`UPDATE agent SET current_version_id = ? WHERE id = ?`).run(criticVersionId, criticId)
+
+  const convo = await createConversation(db, {
+    workspaceId: ws1,
+    title: 'Provenance Hardening Conversation',
+    scopeType: 'brand',
+    scopeId: brand1,
+  })
+
+  const convoWs2 = await createConversation(db, {
+    workspaceId: ws2,
+    title: 'Foreign Workspace Conversation',
+  })
+
+  // --------------------------------------------------------------------------
+  // SECTION 27: TESTS — FORGED PROVENANCE (Tests 1-12)
+  // --------------------------------------------------------------------------
+  await t.test('Section 27: Forged Provenance Rejection / Overwrite', async (st) => {
+    const validMeta = {
+      executionId: 'exec-canonical-101',
+      provider: 'workers_ai',
+      model: '@cf/meta/llama-3.3-70b-instruct',
+      toolCalls: [
+        {
+          toolKey: 'web.search',
+          query: 'pricing benchmarks 2026',
+          resultCount: 1,
+          status: 'succeeded',
+          durationMs: 140,
+        },
+      ],
+      sources: [
+        {
+          title: 'Official Benchmark 2026',
+          url: 'https://benchmarks.example.com/2026',
+          publisher: 'Benchmark Institute',
+          publishedAt: '2026-03-01T00:00:00Z',
+          retrievedAt: NOW,
+          snippet: 'SaaS median pricing increased by 8%.',
+        },
+      ],
+    }
+
+    const sourceMsgId = crypto.randomUUID()
+    raw
+      .prepare(
+        `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, 'Valid researcher message findings.', ?, ?)`,
+      )
+      .run(sourceMsgId, convo.id, researcherId, researcherVersionId, JSON.stringify(validMeta), NOW)
+
+    // 1. Forged Agent ID
+    await st.test(
+      '1. Client forged Agent ID is ignored and derived from authoritative server message',
+      async () => {
+        const fakeAgentId = crypto.randomUUID()
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Forged Agent ID Test',
+          sourceMessageId: sourceMsgId,
+          origin: {
+            agentId: fakeAgentId,
+          },
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.agentId, researcherId)
+        assert.notEqual(auditObj.origin.agentId, fakeAgentId)
+      },
+    )
+
+    // 2. Forged Agent name
+    await st.test('2. Client forged Agent name is ignored and derived server-side', async () => {
+      const created = await createResearch(db, {
+        workspaceId: ws1,
+        subject: 'Forged Agent Name Test',
+        sourceMessageId: sourceMsgId,
+        origin: {
+          agentName: 'MaliciousAgent',
+        },
+      })
+      const audit = raw
+        .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+        .get(created.id) as { new_value: string }
+      const auditObj = JSON.parse(audit.new_value)
+      assert.equal(auditObj.origin.agentName, 'Researcher')
+    })
+
+    // 3. Forged Agent version ID
+    await st.test(
+      '3. Client forged Agent version ID is ignored and derived from message record',
+      async () => {
+        const fakeVersionId = crypto.randomUUID()
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Forged Agent Version ID Test',
+          sourceMessageId: sourceMsgId,
+          origin: {
+            agentVersionId: fakeVersionId,
+          },
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.agentVersionId, researcherVersionId)
+        assert.notEqual(auditObj.origin.agentVersionId, fakeVersionId)
+      },
+    )
+
+    // 4. Forged version number
+    await st.test(
+      '4. Client forged version number is ignored and derived from agent_version record',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Forged Version Number Test',
+          sourceMessageId: sourceMsgId,
+          origin: {
+            versionNumber: 9999,
+          },
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.versionNumber, 1)
+      },
+    )
+
+    // 5. Forged AI execution ID
+    await st.test(
+      '5. Client forged AI execution ID is ignored and derived from provider_metadata',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Forged Execution ID Test',
+          sourceMessageId: sourceMsgId,
+          origin: {
+            executionId: 'fake-execution-id-999',
+          },
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.executionId, 'exec-canonical-101')
+      },
+    )
+
+    // 6. Forged provider
+    await st.test(
+      '6. Client forged provider is ignored and derived from provider_metadata',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Forged Provider Test',
+          sourceMessageId: sourceMsgId,
+          origin: {
+            provider: 'openai',
+          },
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.provider, 'workers_ai')
+      },
+    )
+
+    // 7. Forged model
+    await st.test(
+      '7. Client forged model is ignored and derived from provider_metadata',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Forged Model Test',
+          sourceMessageId: sourceMsgId,
+          origin: {
+            model: 'gpt-4o',
+          },
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.model, '@cf/meta/llama-3.3-70b-instruct')
+      },
+    )
+
+    // 8. Forged generated timestamp
+    await st.test(
+      '8. Client forged generatedAt/createdAt timestamp is ignored and derived from message.created_at',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Forged Timestamp Test',
+          sourceMessageId: sourceMsgId,
+          origin: {
+            createdAt: '2020-01-01T00:00:00Z',
+            generatedAt: '2020-01-01T00:00:00Z',
+          },
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.generatedAt, NOW)
+      },
+    )
+
+    // 9. Forged search source URL
+    await st.test('9. Client cannot inject arbitrary search source URLs array', async () => {
+      const created = await createResearch(db, {
+        workspaceId: ws1,
+        subject: 'Forged Source URL Test',
+        sourceMessageId: sourceMsgId,
+        origin: {
+          sourceUrls: ['https://forged-site.com/fake-news'],
+        },
+        selectedSourceIndices: [0],
+      })
+      const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+      assert.equal(sources.length, 1)
+      assert.equal(sources[0].url, 'https://benchmarks.example.com/2026')
+      assert.ok(!sources.some((s) => s.url.includes('forged-site.com')))
+    })
+
+    // 10. Forged publisher
+    await st.test(
+      '10. Client forged publisher is ignored; authoritative stored tool metadata publisher is used',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Forged Publisher Test',
+          sourceMessageId: sourceMsgId,
+          origin: {
+            searchProvider: 'Fake Search Provider',
+          },
+          selectedSourceIndices: [0],
+        })
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+        assert.equal(sources.length, 1)
+        assert.equal(sources[0].publisher, 'Benchmark Institute')
+      },
+    )
+
+    // 11. Forged tool-call identity
+    await st.test(
+      '11. Client forged toolCallId is not accepted to fabricate search execution',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Forged Tool Call Test',
+          sourceMessageId: sourceMsgId,
+          origin: {
+            toolCallId: 'fake-tool-call-uuid-999',
+          },
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.webSearchUsed, true) // Based on real message
+        assert.equal(auditObj.origin.sourceCount, 0)
+      },
+    )
+
+    // 12. Forged source count
+    await st.test(
+      '12. Client claimed source count is ignored; true count of inserted sources is recorded',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Forged Source Count Test',
+          sourceMessageId: sourceMsgId,
+          selectedSourceIndices: [0],
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.sourceCount, 1)
+      },
+    )
+  })
+
+  // --------------------------------------------------------------------------
+  // SECTION 28: TESTS — SOURCE AUTHORITY (Tests 13-28)
+  // --------------------------------------------------------------------------
+  await t.test('Section 28: Source Authority & Validation', async (st) => {
+    const authMsgId = crypto.randomUUID()
+    raw
+      .prepare(
+        `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+         VALUES (?, ?, 'agent', ?, ?, 'Authoritative finding content.', ?, ?)`,
+      )
+      .run(
+        authMsgId,
+        convo.id,
+        researcherId,
+        researcherVersionId,
+        JSON.stringify({
+          executionId: 'exec-auth-202',
+          provider: 'google_ai',
+          model: 'gemini-1.5-flash',
+          toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+          sources: [{ title: 'Doc 1', url: 'https://example.com/doc1', retrievedAt: NOW }],
+        }),
+        NOW,
+      )
+
+    // 13. Valid Researcher message can create Research
+    await st.test('13. Valid Researcher message creates Research successfully', async () => {
+      const created = await createResearch(db, {
+        workspaceId: ws1,
+        subject: 'Valid Researcher Message Finding',
+        sourceMessageId: authMsgId,
+      })
+      assert.ok(created.id)
+      assert.equal(created.status, 'completed')
+    })
+
+    // 14. Exact source message ID stored/linked
+    await st.test('14. Exact source message ID stored and linked in provenance', async () => {
+      const created = await createResearch(db, {
+        workspaceId: ws1,
+        subject: 'Linked Message Finding',
+        sourceMessageId: authMsgId,
+      })
+      const audit = raw
+        .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+        .get(created.id) as { new_value: string }
+      const auditObj = JSON.parse(audit.new_value)
+      assert.equal(auditObj.origin.sourceMessageId, authMsgId)
+    })
+
+    // 15. Exact conversation validated
+    await st.test(
+      '15. Origin conversationId mismatch throws ResearchSourceValidationError',
+      async () => {
+        const wrongConvoId = crypto.randomUUID()
+        await assert.rejects(
+          () =>
+            createResearch(db, {
+              workspaceId: ws1,
+              subject: 'Conversation Mismatch Finding',
+              sourceMessageId: authMsgId,
+              origin: {
+                conversationId: wrongConvoId,
+              },
+            }),
+          (err: unknown) => {
+            assert.ok(err instanceof ResearchSourceValidationError)
+            assert.ok((err as Error).message.includes('conversation mismatch'))
+            return true
+          },
+        )
+      },
+    )
+
+    // 16. Researcher Agent derived server-side
+    await st.test('16. Researcher Agent identity derived server-side', async () => {
+      const created = await createResearch(db, {
+        workspaceId: ws1,
+        subject: 'Derived Researcher Identity',
+        sourceMessageId: authMsgId,
+      })
+      const audit = raw
+        .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+        .get(created.id) as { new_value: string }
+      const auditObj = JSON.parse(audit.new_value)
+      assert.equal(auditObj.origin.agentId, researcherId)
+      assert.equal(auditObj.origin.agentName, 'Researcher')
+    })
+
+    // 17. Exact historical Agent version preserved
+    await st.test(
+      '17. Exact historical Agent version preserved when agent upgrades to v2',
+      async () => {
+        // Simulate Researcher upgrade to version 2
+        const v2Id = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO agent_version (id, agent_id, version, config, created_at)
+           VALUES (?, ?, 2, '{"upgraded": true}', ?)`,
+          )
+          .run(v2Id, researcherId, NOW)
+        raw.prepare(`UPDATE agent SET current_version_id = ? WHERE id = ?`).run(v2Id, researcherId)
+
+        // Saving older message generated under v1
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Historical Version Preserved',
+          sourceMessageId: authMsgId,
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.agentVersionId, researcherVersionId)
+        assert.equal(auditObj.origin.versionNumber, 1)
+        assert.notEqual(auditObj.origin.agentVersionId, v2Id)
+        assert.notEqual(auditObj.origin.versionNumber, 2)
+      },
+    )
+
+    // 18. AI execution derived server-side
+    await st.test(
+      '18. AI execution ID derived server-side from message provider_metadata',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Derived Execution ID Finding',
+          sourceMessageId: authMsgId,
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.executionId, 'exec-auth-202')
+      },
+    )
+
+    // 19. Provider and model derived server-side
+    await st.test(
+      '19. Provider and model derived server-side from message provider_metadata',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Derived Provider/Model Finding',
+          sourceMessageId: authMsgId,
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.provider, 'google_ai')
+        assert.equal(auditObj.origin.model, 'gemini-1.5-flash')
+      },
+    )
+
+    // 20. Unknown model remains null (never defaulted to fake/fallback model)
+    await st.test(
+      '20. Unknown model remains null and is never defaulted to a fake model',
+      async () => {
+        const msgNoModelId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Finding without model metadata.', ?, ?)`,
+          )
+          .run(
+            msgNoModelId,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({ executionId: 'exec-no-model' }),
+            NOW,
+          )
+
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'No Model Finding',
+          sourceMessageId: msgNoModelId,
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.model, null)
+        assert.notEqual(auditObj.origin.model, 'default')
+        assert.notEqual(auditObj.origin.model, 'gpt-4')
+      },
+    )
+
+    // 21. Generation timestamp derived server-side
+    await st.test(
+      '21. Generation timestamp derived server-side from message created_at',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Derived Generation Timestamp Finding',
+          sourceMessageId: authMsgId,
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.generatedAt, NOW)
+      },
+    )
+
+    // 22. Wrong workspace message rejected
+    await st.test(
+      '22. Message from another workspace is rejected with ResearchSourceValidationError',
+      async () => {
+        const msgWs2Id = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'WS2 Message.', NULL, ?)`,
+          )
+          .run(msgWs2Id, convoWs2.id, researcherId, researcherVersionId, NOW)
+
+        await assert.rejects(
+          () =>
+            createResearch(db, {
+              workspaceId: ws1,
+              subject: 'Cross-Workspace Message Finding',
+              sourceMessageId: msgWs2Id,
+            }),
+          (err: unknown) => {
+            assert.ok(err instanceof ResearchSourceValidationError)
+            assert.ok((err as Error).message.includes('belongs to another workspace'))
+            return true
+          },
+        )
+      },
+    )
+
+    // 23. Wrong conversation rejected
+    await st.test('23. Non-existent source message is rejected', async () => {
+      const missingMsgId = crypto.randomUUID()
+      await assert.rejects(
+        () =>
+          createResearch(db, {
+            workspaceId: ws1,
+            subject: 'Missing Message Finding',
+            sourceMessageId: missingMsgId,
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof ResearchSourceValidationError)
+          assert.ok((err as Error).message.includes('not found'))
+          return true
+        },
+      )
+    })
+
+    // 24. Non-assistant source rejected
+    await st.test('24. User message cannot be used as source message for Research', async () => {
+      const userMsgId = crypto.randomUUID()
+      raw
+        .prepare(
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, content, created_at)
+           VALUES (?, ?, 'user', NULL, 'User prompt question.', ?)`,
+        )
+        .run(userMsgId, convo.id, NOW)
+
+      await assert.rejects(
+        () =>
+          createResearch(db, {
+            workspaceId: ws1,
+            subject: 'User Message Source Finding',
+            sourceMessageId: userMsgId,
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof ResearchSourceValidationError)
+          assert.ok((err as Error).message.includes('Only assistant messages'))
+          return true
+        },
+      )
+    })
+
+    // 25. Creator message cannot masquerade as Researcher
+    await st.test(
+      '25. Message produced by Creator agent is rejected when attempting to save Research',
+      async () => {
+        const creatorMsgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Creator drafting copy.', ?)`,
+          )
+          .run(creatorMsgId, convo.id, creatorId, creatorVersionId, NOW)
+
+        await assert.rejects(
+          () =>
+            createResearch(db, {
+              workspaceId: ws1,
+              subject: 'Creator Masquerade Finding',
+              sourceMessageId: creatorMsgId,
+            }),
+          (err: unknown) => {
+            assert.ok(err instanceof ResearchSourceValidationError)
+            assert.ok((err as Error).message.includes('Researcher'))
+            return true
+          },
+        )
+      },
+    )
+
+    // 26. Critic message cannot masquerade as Researcher
+    await st.test(
+      '26. Message produced by Critic agent is rejected when attempting to save Research',
+      async () => {
+        const criticMsgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Critic review scorecard.', ?)`,
+          )
+          .run(criticMsgId, convo.id, criticId, criticVersionId, NOW)
+
+        await assert.rejects(
+          () =>
+            createResearch(db, {
+              workspaceId: ws1,
+              subject: 'Critic Masquerade Finding',
+              sourceMessageId: criticMsgId,
+            }),
+          (err: unknown) => {
+            assert.ok(err instanceof ResearchSourceValidationError)
+            assert.ok((err as Error).message.includes('Researcher'))
+            return true
+          },
+        )
+      },
+    )
+
+    // 27. Fake execution ID rejected / ignored
+    await st.test(
+      '27. Fake execution ID provided by client is ignored and stored execution ID is used',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Fake Execution ID Test',
+          sourceMessageId: authMsgId,
+          origin: {
+            executionId: 'fake-exec-xyz',
+          },
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.executionId, 'exec-auth-202')
+        assert.notEqual(auditObj.origin.executionId, 'fake-exec-xyz')
+      },
+    )
+
+    // 28. Cross-workspace execution rejected
+    await st.test('28. Cross-workspace execution and message rejected strictly', async () => {
+      const foreignMsgId = crypto.randomUUID()
+      raw
+        .prepare(
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Foreign execution message.', ?, ?)`,
+        )
+        .run(
+          foreignMsgId,
+          convoWs2.id,
+          researcherId,
+          researcherVersionId,
+          JSON.stringify({ executionId: 'foreign-exec-999' }),
+          NOW,
+        )
+
+      await assert.rejects(
+        () =>
+          createResearch(db, {
+            workspaceId: ws1,
+            subject: 'Foreign Execution Attempt',
+            sourceMessageId: foreignMsgId,
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof ResearchSourceValidationError)
+          return true
+        },
+      )
+    })
+  })
+
+  // --------------------------------------------------------------------------
+  // SECTION 29: TESTS — SEARCH SOURCE AUTHORITY (Tests 29-41)
+  // --------------------------------------------------------------------------
+  await t.test('Section 29: Search Source Authority', async (st) => {
+    // 29. Successful web.search sources imported
+    await st.test(
+      '29. Successful web.search sources are imported into research_source',
+      async () => {
+        const msgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Web search findings.', ?, ?)`,
+          )
+          .run(
+            msgId,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+              sources: [{ title: 'Doc A', url: 'https://example.com/doc-a', retrievedAt: NOW }],
+            }),
+            NOW,
+          )
+
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Successful Web Search Import',
+          sourceMessageId: msgId,
+          selectedSourceIndices: [0],
+        })
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+        assert.equal(sources.length, 1)
+        assert.equal(sources[0].url, 'https://example.com/doc-a')
+      },
+    )
+
+    // 30. Exact message sources only
+    await st.test(
+      '30. Only sources present in target message provider_metadata are imported',
+      async () => {
+        const msgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Exact message sources.', ?, ?)`,
+          )
+          .run(
+            msgId,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+              sources: [
+                {
+                  title: 'Target Msg Source',
+                  url: 'https://example.com/target-only',
+                  retrievedAt: NOW,
+                },
+              ],
+            }),
+            NOW,
+          )
+
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Exact Message Sources Test',
+          sourceMessageId: msgId,
+          selectedSourceIndices: [0],
+        })
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+        assert.equal(sources.length, 1)
+        assert.equal(sources[0].url, 'https://example.com/target-only')
+      },
+    )
+
+    // 31. Unrelated previous message sources excluded
+    await st.test(
+      '31. Sources from an earlier message in the same conversation are excluded',
+      async () => {
+        const msg1Id = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'First turn message.', ?, ?)`,
+          )
+          .run(
+            msg1Id,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+              sources: [
+                { title: 'Old Source', url: 'https://example.com/old-turn', retrievedAt: NOW },
+              ],
+            }),
+            NOW,
+          )
+
+        const msg2Id = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Second turn message.', ?, ?)`,
+          )
+          .run(
+            msg2Id,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+              sources: [
+                { title: 'New Source', url: 'https://example.com/new-turn', retrievedAt: NOW },
+              ],
+            }),
+            NOW,
+          )
+
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Second Turn Import',
+          sourceMessageId: msg2Id,
+          selectedSourceIndices: [0],
+        })
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+        assert.equal(sources.length, 1)
+        assert.equal(sources[0].url, 'https://example.com/new-turn')
+        assert.ok(!sources.some((s) => s.url.includes('old-turn')))
+      },
+    )
+
+    // 32. Duplicate URLs deduplicated
+    await st.test(
+      '32. Duplicate URLs in search results are deduplicated upon saving research',
+      async () => {
+        const msgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Duplicates message.', ?, ?)`,
+          )
+          .run(
+            msgId,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+              sources: [
+                { title: 'Doc 1', url: 'https://example.com/dup', retrievedAt: NOW },
+                { title: 'Doc 1 duplicate', url: 'https://example.com/dup/', retrievedAt: NOW },
+              ],
+            }),
+            NOW,
+          )
+
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Deduplicated Search Sources',
+          sourceMessageId: msgId,
+          selectedSourceIndices: [0, 1],
+        })
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+        assert.equal(sources.length, 1)
+      },
+    )
+
+    // 33. Failed search produces no sources
+    await st.test('33. Failed search produces 0 sources and webSearchUsed is false', async () => {
+      const msgId = crypto.randomUUID()
+      raw
+        .prepare(
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Failed search message.', ?, ?)`,
+        )
+        .run(
+          msgId,
+          convo.id,
+          researcherId,
+          researcherVersionId,
+          JSON.stringify({
+            toolCalls: [{ toolKey: 'web.search', status: 'failed' }],
+            sources: [
+              { title: 'Failed Source', url: 'https://example.com/failed', retrievedAt: NOW },
+            ],
+          }),
+          NOW,
+        )
+
+      const created = await createResearch(db, {
+        workspaceId: ws1,
+        subject: 'Failed Search Finding',
+        sourceMessageId: msgId,
+        selectedSourceIndices: [0],
+      })
+      const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+      assert.equal(sources.length, 0)
+      const audit = raw
+        .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+        .get(created.id) as { new_value: string }
+      const auditObj = JSON.parse(audit.new_value)
+      assert.equal(auditObj.origin.webSearchUsed, false)
+    })
+
+    // 34. Blocked search produces no sources
+    await st.test('34. Blocked search produces 0 sources and webSearchUsed is false', async () => {
+      const msgId = crypto.randomUUID()
+      raw
+        .prepare(
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Blocked search message.', ?, ?)`,
+        )
+        .run(
+          msgId,
+          convo.id,
+          researcherId,
+          researcherVersionId,
+          JSON.stringify({
+            toolCalls: [{ toolKey: 'web.search', status: 'blocked' }],
+            sources: [
+              { title: 'Blocked Source', url: 'https://example.com/blocked', retrievedAt: NOW },
+            ],
+          }),
+          NOW,
+        )
+
+      const created = await createResearch(db, {
+        workspaceId: ws1,
+        subject: 'Blocked Search Finding',
+        sourceMessageId: msgId,
+        selectedSourceIndices: [0],
+      })
+      const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+      assert.equal(sources.length, 0)
+    })
+
+    // 35. approval_required produces no sources
+    await st.test(
+      '35. approval_required tool call produces 0 sources and webSearchUsed is false',
+      async () => {
+        const msgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Approval required search message.', ?, ?)`,
+          )
+          .run(
+            msgId,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'approval_required' }],
+              sources: [
+                { title: 'Approval Source', url: 'https://example.com/approval', retrievedAt: NOW },
+              ],
+            }),
+            NOW,
+          )
+
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Approval Required Finding',
+          sourceMessageId: msgId,
+          selectedSourceIndices: [0],
+        })
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+        assert.equal(sources.length, 0)
+      },
+    )
+
+    // 36. not_configured produces no sources
+    await st.test(
+      '36. not_configured tool call produces 0 sources and webSearchUsed is false',
+      async () => {
+        const msgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Not configured search message.', ?, ?)`,
+          )
+          .run(
+            msgId,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'not_configured' }],
+              sources: [
+                {
+                  title: 'Not Configured Source',
+                  url: 'https://example.com/not-conf',
+                  retrievedAt: NOW,
+                },
+              ],
+            }),
+            NOW,
+          )
+
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Not Configured Search Finding',
+          sourceMessageId: msgId,
+          selectedSourceIndices: [0],
+        })
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+        assert.equal(sources.length, 0)
+      },
+    )
+
+    // 37. Client fake source array ignored
+    await st.test('37. Client cannot fabricate sources outside stored tool metadata', async () => {
+      const msgId = crypto.randomUUID()
+      raw
+        .prepare(
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Clean message without search.', ?, ?)`,
+        )
+        .run(msgId, convo.id, researcherId, researcherVersionId, JSON.stringify({}), NOW)
+
+      const created = await createResearch(db, {
+        workspaceId: ws1,
+        subject: 'Fabricated Sources Test',
+        sourceMessageId: msgId,
+        origin: {
+          sourceUrls: ['https://malicious.com/fake'],
+        },
+        selectedSourceIndices: [0],
+      })
+      const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+      assert.equal(sources.length, 0)
+    })
+
+    // 38. Source publisher derived from stored Tool metadata
+    await st.test(
+      '38. Source publisher is derived strictly from stored Tool metadata',
+      async () => {
+        const msgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Publisher test message.', ?, ?)`,
+          )
+          .run(
+            msgId,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+              sources: [
+                {
+                  title: 'Financial Times Report',
+                  url: 'https://ft.com/report-123',
+                  publisher: 'Financial Times',
+                  retrievedAt: NOW,
+                },
+              ],
+            }),
+            NOW,
+          )
+
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Publisher Test Finding',
+          sourceMessageId: msgId,
+          selectedSourceIndices: [0],
+        })
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+        assert.equal(sources.length, 1)
+        assert.equal(sources[0].publisher, 'Financial Times')
+      },
+    )
+
+    // 39. Source retrievedAt derived from stored Tool metadata
+    await st.test('39. Source retrievedAt timestamp is derived from tool metadata', async () => {
+      const msgId = crypto.randomUUID()
+      raw
+        .prepare(
+          `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'RetrievedAt test message.', ?, ?)`,
+        )
+        .run(
+          msgId,
+          convo.id,
+          researcherId,
+          researcherVersionId,
+          JSON.stringify({
+            toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+            sources: [
+              {
+                title: 'Market Stat',
+                url: 'https://market.org/stat',
+                retrievedAt: '2026-08-20T12:00:00.000Z',
+              },
+            ],
+          }),
+          NOW,
+        )
+
+      const created = await createResearch(db, {
+        workspaceId: ws1,
+        subject: 'RetrievedAt Test Finding',
+        sourceMessageId: msgId,
+        selectedSourceIndices: [0],
+      })
+      const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+      assert.equal(sources.length, 1)
+      assert.equal(sources[0].retrievedAt, '2026-08-20T12:00:00.000Z')
+    })
+
+    // 40. Snippets remain labeled as snippets/summaries
+    await st.test(
+      '40. Imported snippets are clearly labeled as "Search snippet: ..."',
+      async () => {
+        const msgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Snippet test message.', ?, ?)`,
+          )
+          .run(
+            msgId,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+              sources: [
+                {
+                  title: 'Snippet Doc',
+                  url: 'https://docs.example.com/snippet',
+                  snippet: 'Direct quote summary from search engine.',
+                  retrievedAt: NOW,
+                },
+              ],
+            }),
+            NOW,
+          )
+
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Snippet Label Finding',
+          sourceMessageId: msgId,
+          selectedSourceIndices: [0],
+        })
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+        assert.equal(sources.length, 1)
+        assert.ok(sources[0].note?.startsWith('Search snippet: Direct quote summary'))
+      },
+    )
+
+    // 41. No claim of full-page fetch
+    await st.test(
+      '41. Provenance and sources indicate search summaries without claiming full-page reading',
+      async () => {
+        const msgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+           VALUES (?, ?, 'agent', ?, ?, 'Full page summary test.', ?, ?)`,
+          )
+          .run(
+            msgId,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+              sources: [
+                {
+                  title: 'Summary Page',
+                  url: 'https://example.com/summary-page',
+                  snippet: 'Snippet overview only.',
+                  retrievedAt: NOW,
+                },
+              ],
+            }),
+            NOW,
+          )
+
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Summary Page Finding',
+          sourceMessageId: msgId,
+          selectedSourceIndices: [0],
+        })
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: created.id })
+        assert.equal(sources.length, 1)
+        assert.equal(sources[0].sourceType, 'website')
+        assert.ok(!sources[0].note?.includes('Full article text read'))
+      },
+    )
+  })
+
+  // --------------------------------------------------------------------------
+  // SECTION 30: TESTS — MANUAL RESEARCH (Tests 42-45)
+  // --------------------------------------------------------------------------
+  await t.test('Section 30: Manual Research Truthfulness', async (st) => {
+    // 42. Manual Research saves without fake AI provenance
+    await st.test(
+      '42. Manual Research saves with originType: manual and no fake AI provenance',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Manual User Note',
+          findings: 'User handwritten research findings.',
+          researchType: 'market',
+          status: 'completed',
+        })
+        assert.ok(created.id)
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.originType, 'manual')
+        assert.equal(auditObj.origin.sourceMessageId, null)
+        assert.equal(auditObj.origin.agentId, null)
+        assert.equal(auditObj.origin.agentVersionId, null)
+        assert.equal(auditObj.origin.executionId, null)
+      },
+    )
+
+    // 43. Manual origin remains user/manual
+    await st.test(
+      '43. Manual Research preserves originType: manual even if client submits fake AI origin',
+      async () => {
+        const created = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Manual Finding Overwriting Fake Origin',
+          findings: 'Findings...',
+          origin: {
+            originType: 'researcher',
+            agentId: researcherId,
+            executionId: 'fake-exec',
+            provider: 'fake-provider',
+            model: 'fake-model',
+          },
+        })
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(created.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.originType, 'manual')
+        assert.equal(auditObj.origin.agentId, null)
+        assert.equal(auditObj.origin.agentVersionId, null)
+        assert.equal(auditObj.origin.executionId, null)
+        assert.equal(auditObj.origin.provider, null)
+        assert.equal(auditObj.origin.model, null)
+      },
+    )
+
+    // 44. No fake Agent/version/execution attached
+    await st.test('44. All AI provenance fields are strictly null on manual research', async () => {
+      const created = await createResearch(db, {
+        workspaceId: ws1,
+        subject: 'Manual Pure Finding',
+        findings: 'Handcrafted notes',
+      })
+      const audit = raw
+        .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+        .get(created.id) as { new_value: string }
+      const auditObj = JSON.parse(audit.new_value)
+      assert.strictEqual(auditObj.origin.agentId, null)
+      assert.strictEqual(auditObj.origin.agentName, null)
+      assert.strictEqual(auditObj.origin.agentVersionId, null)
+      assert.strictEqual(auditObj.origin.versionNumber, null)
+      assert.strictEqual(auditObj.origin.executionId, null)
+      assert.strictEqual(auditObj.origin.provider, null)
+      assert.strictEqual(auditObj.origin.model, null)
+      assert.strictEqual(auditObj.origin.generatedAt, null)
+      assert.strictEqual(auditObj.origin.webSearchUsed, false)
+      assert.strictEqual(auditObj.origin.sourceCount, 0)
+    })
+
+    // 45. Manual Research cannot claim web sources without server-authoritative source import
+    await st.test(
+      '45. Manual Research rejects selectedSourceIndices without a sourceMessageId',
+      async () => {
+        await assert.rejects(
+          () =>
+            createResearch(db, {
+              workspaceId: ws1,
+              subject: 'Manual Source Attempt',
+              findings: 'User findings',
+              selectedSourceIndices: [0],
+            }),
+          (err: unknown) => {
+            assert.ok(err instanceof ResearchSourceValidationError)
+            assert.ok((err as Error).message.includes('Origin message is required'))
+            return true
+          },
+        )
+      },
+    )
+  })
 })
