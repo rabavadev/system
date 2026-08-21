@@ -147,7 +147,8 @@ The content pipeline uses a multi-table structure preserving strict immutability
    - Server-authoritative publication intent and dispatch record binding an exact immutable `content_variant_id` to an exact active `account_id`.
    - Enhanced in `0022` and hardened in `0023`:
      - Rebuilt table with `workspace_id TEXT NOT NULL REFERENCES workspace(id) ON DELETE RESTRICT`.
-     - Deterministic backfill from `content_variant -> content.workspace_id`.
+     - Preserves and deterministically backfills valid resolvable legacy posts from `content_variant -> content.workspace_id`.
+     - Removes unresolvable corrupted or orphaned posts where `workspace_id IS NULL` to enforce schema-level non-null tenant integrity.
      - `content_approval_id` (foreign key to `content_approval`) binding to the exact active approval event.
      - Partial unique index `idx_post_active_intent ON post (workspace_id, content_variant_id, account_id, content_approval_id) WHERE status IN ('draft', 'scheduled')` preventing duplicate active publication intents.
      - Index `idx_post_idempotency` for request-bound idempotency lookups.

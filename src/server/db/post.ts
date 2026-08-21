@@ -4,6 +4,7 @@ import type {
   ContentApprovalStatus,
   ContentStatus,
   PostDetail,
+  PostDispatchStatus,
   PostStatus,
   PublicationEligibilityResult,
 } from '~/types/domain'
@@ -93,17 +94,130 @@ export interface PostRow {
   // Joins
   account_handle?: string | null
   account_display_name?: string | null
+  account_status?: string | null
   platform_id?: string | null
   platform_name?: string | null
   content_id?: string | null
   content_title?: string | null
+  content_status?: string | null
+  content_selected_variant_id?: string | null
   campaign_id?: string | null
   campaign_name?: string | null
   variant_body?: string | null
   variant_metadata?: string | null
+  variant_platform_id?: string | null
   approval_status?: ContentApprovalStatus | null
   approval_created_at?: string | null
+  approval_actor_type?: string | null
   critic_override?: number | null
+  latest_approval_id?: string | null
+  latest_approval_status?: ContentApprovalStatus | null
+  latest_approval_actor_type?: string | null
+}
+
+export function derivePostState(row: PostRow): {
+  isCurrentlyEligible: boolean
+  eligibilityReason: string | null
+  dispatchStatus: PostDispatchStatus
+} {
+  // Terminal / in-flight states
+  if (row.status === 'published') {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason: 'Post is already published.',
+      dispatchStatus: 'published',
+    }
+  }
+  if (row.status === 'publishing') {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason: 'Post is currently publishing.',
+      dispatchStatus: 'publishing',
+    }
+  }
+  if (row.status === 'failed') {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason: 'Post execution failed. Explicit retry required.',
+      dispatchStatus: 'failed',
+    }
+  }
+  if (row.status === 'removed') {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason: 'Post has been removed.',
+      dispatchStatus: 'removed',
+    }
+  }
+
+  // If status is draft or scheduled, check current eligibility
+  if (!row.content_approval_id) {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason: 'Publication intent has no approval lineage and must be prepared again.',
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+
+  if (row.content_status !== 'ready') {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason: `Content is in '${row.content_status ?? 'draft'}' status, not 'ready'.`,
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+
+  if (row.content_selected_variant_id !== row.content_variant_id) {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason:
+        'Content variant is no longer the active approved publication variant for this content item.',
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+
+  if (
+    !row.latest_approval_id ||
+    row.latest_approval_id !== row.content_approval_id ||
+    row.latest_approval_status !== 'approved'
+  ) {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason:
+        'Post references a stale or revoked approval lineage. Re-approval requires a new publication intent.',
+      dispatchStatus: 'stale',
+    }
+  }
+
+  if (row.latest_approval_actor_type !== 'user') {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason: 'Publication requires human editorial approval.',
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+
+  if (row.account_status !== 'active') {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason: `Account is ${row.account_status ?? 'inactive'} (must be active to dispatch publication).`,
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+
+  if (row.platform_id && row.variant_platform_id && row.platform_id !== row.variant_platform_id) {
+    return {
+      isCurrentlyEligible: false,
+      eligibilityReason: `Platform mismatch: Account platform is '${row.platform_id}' but variant platform is '${row.variant_platform_id}'.`,
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+
+  return {
+    isCurrentlyEligible: true,
+    eligibilityReason: null,
+    dispatchStatus: row.status === 'scheduled' ? 'scheduled' : 'prepared',
+  }
 }
 
 export function toPostDetail(row: PostRow): PostDetail {
@@ -118,6 +232,8 @@ export function toPostDetail(row: PostRow): PostDetail {
       metaHeadline = null
     }
   }
+
+  const { isCurrentlyEligible, eligibilityReason, dispatchStatus } = derivePostState(row)
 
   return {
     id: row.id,
@@ -145,14 +261,74 @@ export function toPostDetail(row: PostRow): PostDetail {
     variantNumber: null,
     variantBody: row.variant_body ?? null,
     variantHeadline: metaHeadline,
+    linkedApprovalStatus: row.approval_status ?? null,
     approvalStatus: row.approval_status ?? null,
     approvalCreatedAt: row.approval_created_at ?? null,
     criticOverride:
       row.critic_override !== undefined && row.critic_override !== null
         ? Boolean(row.critic_override)
         : null,
+    isCurrentlyEligible,
+    eligibilityReason,
+    dispatchStatus,
   }
 }
+
+const POST_DETAIL_SELECT_FIELDS = `
+  p.*,
+  a.handle AS account_handle,
+  a.display_name AS account_display_name,
+  a.status AS account_status,
+  a.platform_id,
+  pl.name AS platform_name,
+  c.id AS content_id,
+  c.title AS content_title,
+  c.status AS content_status,
+  c.selected_variant_id AS content_selected_variant_id,
+  c.campaign_id,
+  cmp.name AS campaign_name,
+  v.body AS variant_body,
+  v.metadata AS variant_metadata,
+  v.platform_id AS variant_platform_id,
+  ca.status AS approval_status,
+  ca.created_at AS approval_created_at,
+  ca.critic_override,
+  ca.actor_type AS approval_actor_type,
+  (
+    SELECT ca2.id FROM content_approval ca2
+    WHERE ca2.workspace_id = p.workspace_id
+      AND ca2.content_id = c.id
+      AND ca2.content_variant_id = p.content_variant_id
+    ORDER BY ca2.created_at DESC, ca2.rowid DESC
+    LIMIT 1
+  ) AS latest_approval_id,
+  (
+    SELECT ca2.status FROM content_approval ca2
+    WHERE ca2.workspace_id = p.workspace_id
+      AND ca2.content_id = c.id
+      AND ca2.content_variant_id = p.content_variant_id
+    ORDER BY ca2.created_at DESC, ca2.rowid DESC
+    LIMIT 1
+  ) AS latest_approval_status,
+  (
+    SELECT ca2.actor_type FROM content_approval ca2
+    WHERE ca2.workspace_id = p.workspace_id
+      AND ca2.content_id = c.id
+      AND ca2.content_variant_id = p.content_variant_id
+    ORDER BY ca2.created_at DESC, ca2.rowid DESC
+    LIMIT 1
+  ) AS latest_approval_actor_type
+`
+
+const POST_DETAIL_FROM_CLAUSE = `
+  FROM post p
+  JOIN content_variant v ON v.id = p.content_variant_id
+  JOIN content c ON c.id = v.content_id AND c.workspace_id = p.workspace_id
+  JOIN account a ON a.id = p.account_id AND a.workspace_id = p.workspace_id AND a.deleted_at IS NULL
+  JOIN platform pl ON pl.id = a.platform_id
+  LEFT JOIN campaign cmp ON cmp.id = c.campaign_id AND cmp.workspace_id = p.workspace_id AND cmp.deleted_at IS NULL
+  LEFT JOIN content_approval ca ON ca.id = p.content_approval_id AND ca.workspace_id = p.workspace_id AND ca.content_variant_id = p.content_variant_id
+`
 
 export const createPublicationIntentInput = z.object({
   workspaceId: z.string().uuid(),
@@ -238,7 +414,7 @@ export async function createPublicationIntent(
     throw new IntegrityError('Content variant not found or does not belong to this content item.')
   }
 
-  // 5. Validate Active Human Editorial Approval
+  // 5. Validate Active Human Editorial Approval (Requirement 4)
   const latestApproval = await queryFirst<ContentApprovalRow>(
     db,
     `SELECT * FROM content_approval 
@@ -246,9 +422,13 @@ export async function createPublicationIntent(
      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     [data.workspaceId, data.contentId, data.contentVariantId],
   )
-  if (!latestApproval || latestApproval.status !== 'approved') {
+  if (
+    !latestApproval ||
+    latestApproval.status !== 'approved' ||
+    latestApproval.actor_type !== 'user'
+  ) {
     throw new IntegrityError(
-      'Content variant does not have an active human editorial approval (it may be unapproved or revoked).',
+      'Content variant does not have an active human editorial approval (it may be unapproved, revoked, or non-human).',
     )
   }
 
@@ -259,29 +439,25 @@ export async function createPublicationIntent(
     [data.accountId, data.workspaceId],
   )
   if (!accountRow) {
-    throw new IntegrityError('Account not found in this workspace or is deleted.')
+    throw new IntegrityError('Account not found or is deleted in this workspace.')
   }
   if (accountRow.status !== 'active') {
     throw new IntegrityError(
-      `Account is ${accountRow.status} (must be active to prepare publication).`,
+      `Account is '${accountRow.status}', but must be in 'active' status to prepare publication.`,
     )
   }
-
-  // Ensure account platform matches content variant platform
   if (accountRow.platform_id !== variantRow.platform_id) {
     throw new IntegrityError(
-      `Platform mismatch: Account belongs to platform '${accountRow.platform_id}' but variant is formatted for '${variantRow.platform_id}'.`,
+      `Platform mismatch: Account platform is '${accountRow.platform_id}' but variant platform is '${variantRow.platform_id}'.`,
     )
   }
-
-  // If content has a designated target_account_id, ensure account matches
   if (contentRow.target_account_id && contentRow.target_account_id !== data.accountId) {
     throw new IntegrityError(
       'Account does not match the designated target account for this content item.',
     )
   }
 
-  // If content belongs to a campaign, ensure account is attached to the campaign
+  // Campaign Account Linkage Verification
   if (serverCampaignId) {
     const campaignAccount = await queryFirst<{ campaign_id: string; account_id: string }>(
       db,
@@ -299,20 +475,10 @@ export async function createPublicationIntent(
   if (cleanIdempotencyKey) {
     const existingByIdempotency = await getPostByQuery(
       db,
-      `SELECT p.*, a.handle AS account_handle, a.display_name AS account_display_name,
-              a.platform_id, pl.name AS platform_name,
-              c.id AS content_id, c.title AS content_title, c.campaign_id, cmp.name AS campaign_name,
-              v.body AS variant_body, v.metadata AS variant_metadata,
-              ca.status AS approval_status, ca.created_at AS approval_created_at, ca.critic_override
-       FROM post p
-       JOIN account a ON a.id = p.account_id
-       JOIN platform pl ON pl.id = a.platform_id
-       JOIN content_variant v ON v.id = p.content_variant_id
-       JOIN content c ON c.id = v.content_id
-       LEFT JOIN campaign cmp ON cmp.id = c.campaign_id
-       LEFT JOIN content_approval ca ON ca.id = p.content_approval_id
-       WHERE p.workspace_id = ? AND c.workspace_id = ? AND p.idempotency_key = ?`,
-      [data.workspaceId, data.workspaceId, cleanIdempotencyKey],
+      `SELECT ${POST_DETAIL_SELECT_FIELDS}
+       ${POST_DETAIL_FROM_CLAUSE}
+       WHERE p.workspace_id = ? AND p.idempotency_key = ?`,
+      [data.workspaceId, cleanIdempotencyKey],
     )
     if (existingByIdempotency) {
       // Verify that this idempotency key was bound to the exact same request parameters
@@ -334,24 +500,14 @@ export async function createPublicationIntent(
   // Check if an identical active publication intent already exists for the CURRENT approval
   const existingActivePost = await getPostByQuery(
     db,
-    `SELECT p.*, a.handle AS account_handle, a.display_name AS account_display_name,
-            a.platform_id, pl.name AS platform_name,
-            c.id AS content_id, c.title AS content_title, c.campaign_id, cmp.name AS campaign_name,
-            v.body AS variant_body, v.metadata AS variant_metadata,
-            ca.status AS approval_status, ca.created_at AS approval_created_at, ca.critic_override
-     FROM post p
-     JOIN account a ON a.id = p.account_id
-     JOIN platform pl ON pl.id = a.platform_id
-     JOIN content_variant v ON v.id = p.content_variant_id
-     JOIN content c ON c.id = v.content_id
-     LEFT JOIN campaign cmp ON cmp.id = c.campaign_id
-     LEFT JOIN content_approval ca ON ca.id = p.content_approval_id
-     WHERE p.workspace_id = ? AND c.workspace_id = ?
+    `SELECT ${POST_DETAIL_SELECT_FIELDS}
+     ${POST_DETAIL_FROM_CLAUSE}
+     WHERE p.workspace_id = ?
        AND p.content_variant_id = ? AND p.account_id = ? AND p.content_approval_id = ?
        AND p.status IN ('draft', 'scheduled')
      ORDER BY p.created_at DESC, p.rowid DESC
      LIMIT 1`,
-    [data.workspaceId, data.workspaceId, data.contentVariantId, data.accountId, latestApproval.id],
+    [data.workspaceId, data.contentVariantId, data.accountId, latestApproval.id],
   )
   if (existingActivePost && !cleanIdempotencyKey) {
     return existingActivePost
@@ -382,29 +538,10 @@ export async function createPublicationIntent(
     ],
   )
 
-  // 9. Write Audit Log & Emit Domain Event
-  await writeAuditLog(db, {
-    workspaceId: data.workspaceId,
-    actorType: 'user',
-    action: 'create',
-    entityType: 'post',
-    entityId: postId,
-    newValueJson: JSON.stringify({
-      postId,
-      campaignId: serverCampaignId,
-      contentId: data.contentId,
-      contentVariantId: data.contentVariantId,
-      accountId: data.accountId,
-      contentApprovalId: latestApproval.id,
-      status: initialStatus,
-      scheduledAt: data.scheduledAt ?? null,
-      hasIdempotencyKey: Boolean(cleanIdempotencyKey),
-    }),
-  })
-
+  // 9. Emit Publication Events
   await emitEventSafe(db, {
     workspaceId: data.workspaceId,
-    eventType: 'publication.prepared',
+    eventType: 'post.created',
     actorType: 'user',
     subjectType: 'post',
     subjectId: postId,
@@ -444,7 +581,7 @@ export async function validatePublicationEligibility(
   let contentVariantId: string
   let accountId: string
   let expectedApprovalId: string | null = null
-  let postStatus: PostStatus | undefined = undefined
+  let postStatus: PostStatus | undefined
 
   if ('postId' in target) {
     const postRow = await queryFirst<PostRow>(
@@ -452,9 +589,10 @@ export async function validatePublicationEligibility(
       `SELECT p.*, v.content_id
        FROM post p
        JOIN content_variant v ON v.id = p.content_variant_id
-       JOIN content c ON c.id = v.content_id
-       WHERE p.id = ? AND p.workspace_id = ? AND c.workspace_id = ?`,
-      [target.postId, target.workspaceId, target.workspaceId],
+       JOIN content c ON c.id = v.content_id AND c.workspace_id = p.workspace_id
+       JOIN account a ON a.id = p.account_id AND a.workspace_id = p.workspace_id AND a.deleted_at IS NULL
+       WHERE p.id = ? AND p.workspace_id = ?`,
+      [target.postId, target.workspaceId],
     )
     if (!postRow || !postRow.content_id) {
       return {
@@ -468,6 +606,16 @@ export async function validatePublicationEligibility(
     accountId = postRow.account_id
     expectedApprovalId = postRow.content_approval_id
     postStatus = postRow.status
+
+    // Legacy Null Approval Lineage Check (Requirement 2 & 14)
+    if (!postRow.content_approval_id) {
+      return {
+        eligible: false,
+        reason: 'Publication intent has no approval lineage and must be prepared again.',
+        postId: target.postId,
+        postStatus: postRow.status,
+      }
+    }
 
     // Post Status Guard (Requirements 12 & 13)
     if (postRow.status === 'published') {
@@ -565,7 +713,7 @@ export async function validatePublicationEligibility(
     }
   }
 
-  // 3. Approval check (Requirements 14 & 15)
+  // 3. Approval check (Requirements 3, 4, 12, 13, 14)
   const latestApproval = await queryFirst<ContentApprovalRow>(
     db,
     `SELECT * FROM content_approval 
@@ -577,6 +725,17 @@ export async function validatePublicationEligibility(
     return {
       eligible: false,
       reason: 'Active human editorial approval is missing or was revoked.',
+      contentId,
+      contentVariantId,
+      hasApproval: false,
+      postStatus,
+    }
+  }
+
+  if (latestApproval.actor_type !== 'user') {
+    return {
+      eligible: false,
+      reason: 'Publication requires human editorial approval.',
       contentId,
       contentVariantId,
       hasApproval: false,
@@ -695,21 +854,11 @@ export async function listPostsForContent(
 ): Promise<PostDetail[]> {
   const rows = await queryAll<PostRow>(
     db,
-    `SELECT p.*, a.handle AS account_handle, a.display_name AS account_display_name,
-            a.platform_id, pl.name AS platform_name,
-            c.id AS content_id, c.title AS content_title, c.campaign_id, cmp.name AS campaign_name,
-            v.body AS variant_body, v.metadata AS variant_metadata,
-            ca.status AS approval_status, ca.created_at AS approval_created_at, ca.critic_override
-     FROM post p
-     JOIN account a ON a.id = p.account_id
-     JOIN platform pl ON pl.id = a.platform_id
-     JOIN content_variant v ON v.id = p.content_variant_id
-     JOIN content c ON c.id = v.content_id
-     LEFT JOIN campaign cmp ON cmp.id = c.campaign_id
-     LEFT JOIN content_approval ca ON ca.id = p.content_approval_id
-     WHERE p.workspace_id = ? AND c.workspace_id = ? AND c.id = ?
+    `SELECT ${POST_DETAIL_SELECT_FIELDS}
+     ${POST_DETAIL_FROM_CLAUSE}
+     WHERE p.workspace_id = ? AND c.id = ?
      ORDER BY p.created_at DESC, p.rowid DESC`,
-    [workspaceId, workspaceId, contentId],
+    [workspaceId, contentId],
   )
 
   return rows.map(toPostDetail)
@@ -725,21 +874,11 @@ export async function listPostsForCampaign(
 ): Promise<PostDetail[]> {
   const rows = await queryAll<PostRow>(
     db,
-    `SELECT p.*, a.handle AS account_handle, a.display_name AS account_display_name,
-            a.platform_id, pl.name AS platform_name,
-            c.id AS content_id, c.title AS content_title, c.campaign_id, cmp.name AS campaign_name,
-            v.body AS variant_body, v.metadata AS variant_metadata,
-            ca.status AS approval_status, ca.created_at AS approval_created_at, ca.critic_override
-     FROM post p
-     JOIN account a ON a.id = p.account_id
-     JOIN platform pl ON pl.id = a.platform_id
-     JOIN content_variant v ON v.id = p.content_variant_id
-     JOIN content c ON c.id = v.content_id
-     JOIN campaign cmp ON cmp.id = c.campaign_id
-     LEFT JOIN content_approval ca ON ca.id = p.content_approval_id
-     WHERE p.workspace_id = ? AND c.workspace_id = ? AND cmp.workspace_id = ? AND cmp.id = ?
+    `SELECT ${POST_DETAIL_SELECT_FIELDS}
+     ${POST_DETAIL_FROM_CLAUSE}
+     WHERE p.workspace_id = ? AND cmp.id = ?
      ORDER BY p.created_at DESC, p.rowid DESC`,
-    [workspaceId, workspaceId, workspaceId, campaignId],
+    [workspaceId, campaignId],
   )
 
   return rows.map(toPostDetail)
@@ -755,20 +894,10 @@ export async function getPostDetail(
 ): Promise<PostDetail | null> {
   return getPostByQuery(
     db,
-    `SELECT p.*, a.handle AS account_handle, a.display_name AS account_display_name,
-            a.platform_id, pl.name AS platform_name,
-            c.id AS content_id, c.title AS content_title, c.campaign_id, cmp.name AS campaign_name,
-            v.body AS variant_body, v.metadata AS variant_metadata,
-            ca.status AS approval_status, ca.created_at AS approval_created_at, ca.critic_override
-     FROM post p
-     JOIN account a ON a.id = p.account_id
-     JOIN platform pl ON pl.id = a.platform_id
-     JOIN content_variant v ON v.id = p.content_variant_id
-     JOIN content c ON c.id = v.content_id
-     LEFT JOIN campaign cmp ON cmp.id = c.campaign_id
-     LEFT JOIN content_approval ca ON ca.id = p.content_approval_id
-     WHERE p.id = ? AND p.workspace_id = ? AND c.workspace_id = ?`,
-    [postId, workspaceId, workspaceId],
+    `SELECT ${POST_DETAIL_SELECT_FIELDS}
+     ${POST_DETAIL_FROM_CLAUSE}
+     WHERE p.id = ? AND p.workspace_id = ?`,
+    [postId, workspaceId],
   )
 }
 

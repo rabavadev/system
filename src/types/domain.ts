@@ -571,21 +571,35 @@ export interface Post {
   updatedAt: IsoTimestamp
 }
 
+export type PostDispatchStatus =
+  | 'prepared'
+  | 'scheduled'
+  | 'needs_reprepare'
+  | 'stale'
+  | 'published'
+  | 'failed'
+  | 'removed'
+  | 'publishing'
+
 export interface PostDetail extends Post {
-  accountHandle?: string | null
-  accountDisplayName?: string | null
-  platformId?: string | null
-  platformName?: string | null
-  contentId?: string | null
-  contentTitle?: string | null
-  campaignId?: string | null
-  campaignName?: string | null
-  variantNumber?: number | null
-  variantBody?: string | null
-  variantHeadline?: string | null
-  approvalStatus?: ContentApprovalStatus | null
-  approvalCreatedAt?: IsoTimestamp | null
-  criticOverride?: boolean | null
+  accountHandle?: string | null | undefined
+  accountDisplayName?: string | null | undefined
+  platformId?: string | null | undefined
+  platformName?: string | null | undefined
+  contentId?: string | null | undefined
+  contentTitle?: string | null | undefined
+  campaignId?: string | null | undefined
+  campaignName?: string | null | undefined
+  variantNumber?: number | null | undefined
+  variantBody?: string | null | undefined
+  variantHeadline?: string | null | undefined
+  linkedApprovalStatus?: ContentApprovalStatus | null | undefined
+  approvalStatus?: ContentApprovalStatus | null | undefined
+  approvalCreatedAt?: IsoTimestamp | null | undefined
+  criticOverride?: boolean | null | undefined
+  isCurrentlyEligible?: boolean | undefined
+  eligibilityReason?: string | null | undefined
+  dispatchStatus?: PostDispatchStatus | undefined
 }
 
 export interface PublicationEligibilityResult {

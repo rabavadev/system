@@ -1227,12 +1227,15 @@ export function CampaignDraftModal({
                       Publication Dispatch Readiness
                     </span>
                     {posts.some(
-                      (p) =>
-                        p.contentVariantId === savedVariantId &&
-                        (p.status === 'draft' || p.status === 'scheduled') &&
-                        p.approvalStatus === 'approved',
+                      (p) => p.contentVariantId === savedVariantId && p.isCurrentlyEligible,
                     ) ? (
-                      <Badge tone="success">Prepared for Dispatch</Badge>
+                      <Badge tone="success">
+                        {posts.find(
+                          (p) => p.contentVariantId === savedVariantId && p.isCurrentlyEligible,
+                        )?.dispatchStatus === 'scheduled'
+                          ? 'Scheduled internally'
+                          : 'Prepared for Dispatch'}
+                      </Badge>
                     ) : (
                       <Badge tone="neutral">Ready to Prepare</Badge>
                     )}
@@ -1240,12 +1243,7 @@ export function CampaignDraftModal({
                 </div>
 
                 <p className="text-xs text-zinc-600">
-                  {posts.some(
-                    (p) =>
-                      p.contentVariantId === savedVariantId &&
-                      (p.status === 'draft' || p.status === 'scheduled') &&
-                      p.approvalStatus === 'approved',
-                  )
+                  {posts.some((p) => p.contentVariantId === savedVariantId && p.isCurrentlyEligible)
                     ? 'A server-authoritative publication intent record exists for this approved variant. Internal foundation active; zero external network calls are made until external dispatch is triggered.'
                     : 'This approved variant is ready to be prepared for publication. Preparing creates an internal Post record linked to the target account.'}
                 </p>
@@ -1257,54 +1255,57 @@ export function CampaignDraftModal({
                     <div className="space-y-1.5">
                       {posts
                         .filter((p) => p.contentVariantId === savedVariantId)
-                        .map((post) => (
-                          <div
-                            key={post.id}
-                            className="flex items-center justify-between rounded bg-zinc-50 px-2.5 py-1.5 text-xs text-zinc-700"
-                          >
-                            <div className="flex items-center gap-2">
-                              <span className="font-semibold text-zinc-800">
-                                {post.platformName ?? 'Platform'}
-                              </span>
-                              {post.accountHandle && (
-                                <span className="text-zinc-500">
-                                  @{post.accountHandle.replace(/^@/, '')}
+                        .map((post) => {
+                          const getDispatchBadge = () => {
+                            switch (post.dispatchStatus) {
+                              case 'prepared':
+                                return <Badge tone="success">Prepared</Badge>
+                              case 'scheduled':
+                                return <Badge tone="success">Scheduled internally</Badge>
+                              case 'stale':
+                                return <Badge tone="warning">No longer Ready</Badge>
+                              case 'needs_reprepare':
+                                return <Badge tone="warning">Needs Re-prepare</Badge>
+                              case 'published':
+                                return <Badge tone="success">Published</Badge>
+                              case 'publishing':
+                                return <Badge tone="neutral">Publishing</Badge>
+                              case 'failed':
+                                return <Badge tone="warning">Failed</Badge>
+                              case 'removed':
+                                return <Badge tone="muted">Removed</Badge>
+                              default:
+                                return <Badge tone="neutral">{post.status}</Badge>
+                            }
+                          }
+
+                          return (
+                            <div
+                              key={post.id}
+                              className="flex items-center justify-between rounded bg-zinc-50 px-2.5 py-1.5 text-xs text-zinc-700"
+                            >
+                              <div className="flex items-center gap-2">
+                                <span className="font-semibold text-zinc-800">
+                                  {post.platformName ?? 'Platform'}
                                 </span>
-                              )}
+                                {post.accountHandle && (
+                                  <span className="text-zinc-500">
+                                    @{post.accountHandle.replace(/^@/, '')}
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {getDispatchBadge()}
+                                <span className="text-[11px] text-zinc-400">
+                                  {new Date(post.createdAt).toLocaleTimeString([], {
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })}
+                                </span>
+                              </div>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <Badge
-                                tone={
-                                  (post.status === 'draft' || post.status === 'scheduled') &&
-                                  post.approvalStatus === 'approved'
-                                    ? 'success'
-                                    : post.approvalStatus === 'revoked'
-                                      ? 'warning'
-                                      : post.status === 'published'
-                                        ? 'success'
-                                        : post.status === 'failed'
-                                          ? 'warning'
-                                          : 'neutral'
-                                }
-                              >
-                                {(post.status === 'draft' || post.status === 'scheduled') &&
-                                post.approvalStatus === 'approved'
-                                  ? post.status === 'draft'
-                                    ? 'Prepared (Draft)'
-                                    : 'Prepared (Scheduled)'
-                                  : post.approvalStatus === 'revoked'
-                                    ? 'Needs Re-prepare (Revoked)'
-                                    : post.status}
-                              </Badge>
-                              <span className="text-[11px] text-zinc-400">
-                                {new Date(post.createdAt).toLocaleTimeString([], {
-                                  hour: '2-digit',
-                                  minute: '2-digit',
-                                })}
-                              </span>
-                            </div>
-                          </div>
-                        ))}
+                          )
+                        })}
                     </div>
                   </div>
                 )}
@@ -1319,10 +1320,7 @@ export function CampaignDraftModal({
                   </span>
 
                   {!posts.some(
-                    (p) =>
-                      p.contentVariantId === savedVariantId &&
-                      (p.status === 'draft' || p.status === 'scheduled') &&
-                      p.approvalStatus === 'approved',
+                    (p) => p.contentVariantId === savedVariantId && p.isCurrentlyEligible,
                   ) && (
                     <Button
                       variant="primary"
