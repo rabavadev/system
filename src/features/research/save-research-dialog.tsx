@@ -41,6 +41,7 @@ interface SearchSourceItem {
 function deriveSuggestedType(scopeType?: string | null): ResearchType {
   if (scopeType === 'product') return 'product'
   if (scopeType === 'brand') return 'market'
+  if (scopeType === 'niche') return 'market'
   if (scopeType === 'account') return 'competitor'
   return 'general'
 }

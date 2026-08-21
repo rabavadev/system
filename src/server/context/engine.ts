@@ -283,7 +283,9 @@ export async function buildContext(
   const hasExplicit = Boolean(
     explicit.brand || explicit.niche || explicit.product || explicit.account || explicit.campaign,
   )
-  const hasConversationScope = Boolean(conv.brand || conv.product || conv.account || conv.campaign)
+  const hasConversationScope = Boolean(
+    conv.brand || conv.niche || conv.product || conv.account || conv.campaign,
+  )
   const source = decideScopeSource({
     hasExplicit,
     hasConversationScope,
@@ -631,8 +633,12 @@ async function loadExplicitEntities(
     }
     // Niches carry no workspace_id; the owning brand defines the boundary.
     const nicheBrand = await getContextBrand(db, row.brand_id)
-    if (nicheBrand) {
-      assertEntityWorkspace(nicheBrand.workspace_id, workspaceId, 'niche', niche.id)
+    if (!nicheBrand) {
+      throw notFoundError('brand', row.brand_id)
+    }
+    assertEntityWorkspace(nicheBrand.workspace_id, workspaceId, 'niche', niche.id)
+    if (nicheBrand.deleted_at) {
+      throw archivedError(trace, 'brand', nicheBrand.id, nicheBrand.name)
     }
     if (isNicheArchived(niche)) throw archivedError(trace, 'niche', niche.id, niche.name)
   }
@@ -738,6 +744,7 @@ async function loadExplicitEntities(
 
 interface ConvEntities {
   brand: ScopedBrand | null
+  niche: ScopedNiche | null
   product: ScopedProduct | null
   account: ScopedAccount | null
   campaign: ScopedCampaign | null
@@ -754,7 +761,13 @@ async function loadConversationScope(
   workspaceId: string,
   scope: { scopeType: ConversationScopeType; scopeId: string } | null,
 ): Promise<ConvEntities> {
-  const empty: ConvEntities = { brand: null, product: null, account: null, campaign: null }
+  const empty: ConvEntities = {
+    brand: null,
+    niche: null,
+    product: null,
+    account: null,
+    campaign: null,
+  }
   if (!scope) {
     return empty
   }
@@ -798,6 +811,36 @@ async function loadConversationScope(
       brand: {
         id: row.id,
         workspaceId: row.workspace_id,
+        name: row.name,
+        description: row.description,
+        deletedAt: row.deleted_at,
+      },
+    }
+  }
+
+  if (scopeType === 'niche') {
+    const row = await getContextNiche(db, scopeId)
+    if (!row) {
+      gone('niche')
+      return empty
+    }
+    const brandRow = await getContextBrand(db, row.brand_id)
+    if (!brandRow || brandRow.workspace_id !== workspaceId) {
+      throw new ContextError(
+        'conversation_mismatch',
+        'The conversation scope belongs to a different workspace.',
+        { type: 'niche', id: scopeId },
+      )
+    }
+    if (row.deleted_at || brandRow.deleted_at) {
+      archived('niche', row.name)
+      return empty
+    }
+    return {
+      ...empty,
+      niche: {
+        id: row.id,
+        brandId: row.brand_id,
         name: row.name,
         description: row.description,
         deletedAt: row.deleted_at,
@@ -980,16 +1023,17 @@ async function resolveConversationGraph(
   const graph: ResolvedGraph = {
     source: 'conversation',
     brand: conv.brand,
-    niche: null,
+    niche: conv.niche,
     product: conv.product,
     account: conv.account,
     campaign: conv.campaign,
   }
-  let brandId = conv.brand?.id ?? conv.product?.brandId ?? conv.campaign?.brandId ?? null
+  let brandId =
+    conv.brand?.id ?? conv.niche?.brandId ?? conv.product?.brandId ?? conv.campaign?.brandId ?? null
   if (!brandId && conv.account) {
     brandId = deriveAccountBrandId(conv.account)
   }
-  let nicheId = conv.product?.nicheId ?? null
+  let nicheId = conv.niche?.id ?? conv.product?.nicheId ?? null
   if (!nicheId && conv.account?.primaryNicheId) {
     const primary = conv.account.niches.find((n) => n.id === conv.account?.primaryNicheId)
     if (primary && primary.deletedAt === null && (!brandId || primary.brandId === brandId)) {
@@ -1098,6 +1142,14 @@ function assertConversationCompatible(graph: ResolvedGraph, conv: ConvEntities):
     )
   if (conv.brand && graph.brand && conv.brand.id !== graph.brand.id) {
     throw mismatch('brand', conv.brand.id)
+  }
+  if (conv.niche) {
+    if (graph.niche && conv.niche.id !== graph.niche.id) {
+      throw mismatch('niche', conv.niche.id)
+    }
+    if (graph.brand && conv.niche.brandId !== graph.brand.id) {
+      throw mismatch('niche', conv.niche.id)
+    }
   }
   if (conv.product) {
     if (graph.product && conv.product.id !== graph.product.id) {

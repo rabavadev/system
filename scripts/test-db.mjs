@@ -45,7 +45,7 @@ const id = () => crypto.randomUUID()
 test('clean database migrates from zero; all tables exist', () => {
   const db = freshDb()
   const files = migrate(db)
-  assert.equal(files.length, 16, `expected 16 migrations, got: ${files.join(', ')}`)
+  assert.equal(files.length, 17, `expected 17 migrations, got: ${files.join(', ')}`)
 
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -95,6 +95,43 @@ test('clean database migrates from zero; all tables exist', () => {
     'workspace',
   ].sort()
   assert.deepEqual(tables, expected)
+  db.close()
+})
+
+test('conversation table enforces scope_type enum including niche', () => {
+  const db = freshDb()
+  migrate(db)
+  const wsId = id()
+  db.prepare(
+    `INSERT INTO workspace (id, name, slug, created_at, updated_at) VALUES (?, 'WS', 'ws', ?, ?)`,
+  ).run(wsId, NOW, NOW)
+
+  const convId = id()
+  const nicheId = id()
+  // Valid niche scope_type
+  db.prepare(
+    `INSERT INTO conversation (id, workspace_id, title, scope_type, scope_id, created_at, updated_at)
+     VALUES (?, ?, 'Niche Chat', 'niche', ?, ?, ?)`,
+  ).run(convId, wsId, nicheId, NOW, NOW)
+
+  const row = db.prepare(`SELECT scope_type, scope_id FROM conversation WHERE id = ?`).get(convId)
+  assert.equal(row.scope_type, 'niche')
+  assert.equal(row.scope_id, nicheId)
+
+  // Other valid scope types
+  for (const st of ['brand', 'product', 'account', 'campaign']) {
+    db.prepare(`UPDATE conversation SET scope_type = ? WHERE id = ?`).run(st, convId)
+    const u = db.prepare(`SELECT scope_type FROM conversation WHERE id = ?`).get(convId)
+    assert.equal(u.scope_type, st)
+  }
+
+  // Invalid scope_type rejected by CHECK constraint
+  assert.throws(
+    () =>
+      db.prepare(`UPDATE conversation SET scope_type = 'invalid_scope' WHERE id = ?`).run(convId),
+    /CHECK/i,
+  )
+
   db.close()
 })
 

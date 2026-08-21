@@ -52,6 +52,7 @@ import {
   restoreResearch,
   updateResearch,
   updateResearchSource,
+  validateResearchScope,
   validateResearchSelection,
   validateSourceUrl,
 } from '../src/server/db/research.ts'
@@ -5169,6 +5170,252 @@ test('STEP 13E: HARDENING H3A.2 Server-Authoritative Research Provenance', async
             return true
           },
         )
+      },
+    )
+  })
+
+  await t.test('Section 31: HARDENING H3B.1 Niche Scope Integrity in Research', async (st) => {
+    const { db, raw } = freshDb()
+    const ws1 = crypto.randomUUID()
+    const ws2 = crypto.randomUUID()
+    const brand1 = crypto.randomUUID()
+    const brand2 = crypto.randomUUID()
+    const niche1 = crypto.randomUUID()
+    const niche2 = crypto.randomUUID()
+    const nicheArch = crypto.randomUUID()
+
+    raw
+      .prepare(
+        `INSERT INTO workspace (id, name, slug, created_at, updated_at) VALUES (?, 'WS 1', 'ws1', ?, ?)`,
+      )
+      .run(ws1, NOW, NOW)
+    raw
+      .prepare(
+        `INSERT INTO workspace (id, name, slug, created_at, updated_at) VALUES (?, 'WS 2', 'ws2', ?, ?)`,
+      )
+      .run(ws2, NOW, NOW)
+    raw
+      .prepare(
+        `INSERT INTO brand (id, workspace_id, name, created_at, updated_at) VALUES (?, ?, 'Brand 1', ?, ?)`,
+      )
+      .run(brand1, ws1, NOW, NOW)
+    raw
+      .prepare(
+        `INSERT INTO brand (id, workspace_id, name, created_at, updated_at) VALUES (?, ?, 'Brand 2', ?, ?)`,
+      )
+      .run(brand2, ws2, NOW, NOW)
+
+    raw
+      .prepare(
+        `INSERT INTO niche (id, brand_id, name, description, created_at, updated_at, deleted_at) VALUES (?, ?, 'Niche 1', 'Niche 1 desc', ?, ?, NULL)`,
+      )
+      .run(niche1, brand1, NOW, NOW)
+    raw
+      .prepare(
+        `INSERT INTO niche (id, brand_id, name, description, created_at, updated_at, deleted_at) VALUES (?, ?, 'Niche 2', 'Niche 2 desc', ?, ?, NULL)`,
+      )
+      .run(niche2, brand2, NOW, NOW)
+    raw
+      .prepare(
+        `INSERT INTO niche (id, brand_id, name, description, created_at, updated_at, deleted_at) VALUES (?, ?, 'Archived Niche', NULL, ?, ?, ?)`,
+      )
+      .run(nicheArch, brand1, NOW, NOW, NOW)
+
+    const researcherId = crypto.randomUUID()
+    const researcherVersionId = crypto.randomUUID()
+    raw
+      .prepare(
+        `INSERT INTO agent (id, workspace_id, name, role, status, origin, execution_type, created_at, updated_at)
+         VALUES (?, ?, 'Researcher', 'researcher', 'active', 'builtin', 'direct_model', ?, ?)`,
+      )
+      .run(researcherId, ws1, NOW, NOW)
+    raw
+      .prepare(
+        `INSERT INTO agent_version (id, agent_id, version, config, created_at) VALUES (?, ?, 1, '{}', ?)`,
+      )
+      .run(researcherVersionId, researcherId, NOW)
+    raw
+      .prepare(`UPDATE agent SET current_version_id = ? WHERE id = ?`)
+      .run(researcherVersionId, researcherId)
+
+    // 46. Niche-scoped conversation preserves niche scope without remapping to brand
+    await st.test(
+      '46. Niche-scoped conversation stores scope_type=niche and actual niche ID',
+      async () => {
+        const convo = await createConversation(db, {
+          workspaceId: ws1,
+          title: 'Niche Research Chat',
+          scopeType: 'niche',
+          scopeId: niche1,
+        })
+        assert.equal(convo.scopeType, 'niche')
+        assert.equal(convo.scopeId, niche1)
+        assert.notEqual(convo.scopeId, brand1)
+
+        const row = raw
+          .prepare(`SELECT scope_type, scope_id FROM conversation WHERE id = ?`)
+          .get(convo.id) as { scope_type: string; scope_id: string }
+        assert.equal(row.scope_type, 'niche')
+        assert.equal(row.scope_id, niche1)
+      },
+    )
+
+    // 47. Saving research from niche conversation retains scopeType: niche
+    await st.test(
+      '47. Saving research with niche scope retains scopeType: niche and scopeId',
+      async () => {
+        const convo = await createConversation(db, {
+          workspaceId: ws1,
+          title: 'Niche Chat',
+          scopeType: 'niche',
+          scopeId: niche1,
+        })
+        const msgId = crypto.randomUUID()
+        raw
+          .prepare(
+            `INSERT INTO message (id, conversation_id, sender_type, agent_id, agent_version_id, content, provider_metadata, created_at)
+             VALUES (?, ?, 'agent', ?, ?, 'Niche market findings.', ?, ?)`,
+          )
+          .run(
+            msgId,
+            convo.id,
+            researcherId,
+            researcherVersionId,
+            JSON.stringify({
+              toolCalls: [{ toolKey: 'web.search', status: 'succeeded' }],
+              sources: [
+                {
+                  title: 'Niche Report',
+                  url: 'https://example.com/niche-report',
+                  publisher: 'NichePub',
+                  retrievedAt: NOW,
+                },
+              ],
+            }),
+            NOW,
+          )
+
+        const saved = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Niche 1 Opportunity Analysis',
+          findings: 'Niche market findings.',
+          researchType: 'market',
+          status: 'completed',
+          confidence: 0.85,
+          scopeType: 'niche',
+          scopeId: niche1,
+          sourceMessageId: msgId,
+          selectedSourceIndices: [0],
+        })
+
+        assert.equal(saved.scopeType, 'niche')
+        assert.equal(saved.scopeId, niche1)
+
+        const loaded = await getResearch(db, { workspaceId: ws1, id: saved.id })
+        assert.ok(loaded)
+        assert.equal(loaded.scopeType, 'niche')
+        assert.equal(loaded.scopeId, niche1)
+
+        // Verify provenance retained without fabricated brand provenance
+        const audit = raw
+          .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ?`)
+          .get(saved.id) as { new_value: string }
+        const auditObj = JSON.parse(audit.new_value)
+        assert.equal(auditObj.origin.originType, 'researcher')
+        assert.equal(auditObj.origin.sourceMessageId, msgId)
+        assert.equal(auditObj.origin.conversationId, convo.id)
+        assert.equal(auditObj.origin.agentId, researcherId)
+        assert.equal(auditObj.origin.sourceCount, 1)
+
+        const sources = await listResearchSources(db, { workspaceId: ws1, researchId: saved.id })
+        assert.equal(sources.length, 1)
+        assert.equal(sources[0].url, 'https://example.com/niche-report')
+      },
+    )
+
+    // 48. Cross-workspace niche in research validation rejected
+    await st.test('48. Cross-workspace niche rejected in research validation', async () => {
+      await assert.rejects(
+        () => validateResearchScope(db, ws1, 'niche', niche2),
+        (err: unknown) => {
+          assert.ok(err instanceof ResearchScopeError)
+          assert.ok((err as Error).message.includes('not found in workspace'))
+          return true
+        },
+      )
+      await assert.rejects(
+        () =>
+          createResearch(db, {
+            workspaceId: ws1,
+            subject: 'Cross WS Niche Research',
+            scopeType: 'niche',
+            scopeId: niche2,
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof ResearchScopeError)
+          return true
+        },
+      )
+    })
+
+    // 49. Archived niche in research rejected
+    await st.test('49. Archived niche rejected in research validation', async () => {
+      await assert.rejects(
+        () => validateResearchScope(db, ws1, 'niche', nicheArch),
+        (err: unknown) => {
+          assert.ok(err instanceof ResearchScopeError)
+          assert.ok((err as Error).message.includes('is archived'))
+          return true
+        },
+      )
+      await assert.rejects(
+        () =>
+          createResearch(db, {
+            workspaceId: ws1,
+            subject: 'Archived Niche Research',
+            scopeType: 'niche',
+            scopeId: nicheArch,
+          }),
+        (err: unknown) => {
+          assert.ok(err instanceof ResearchScopeError)
+          assert.ok((err as Error).message.includes('is archived'))
+          return true
+        },
+      )
+    })
+
+    // 50. Multi-research selection across identical niches yields common scope
+    await st.test(
+      '50. Multi-research selection validates and preserves niche scope records',
+      async () => {
+        const r1 = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Niche Report Part 1',
+          findings: 'First part of niche research.',
+          researchType: 'market',
+          status: 'completed',
+          scopeType: 'niche',
+          scopeId: niche1,
+        })
+        const r2 = await createResearch(db, {
+          workspaceId: ws1,
+          subject: 'Niche Report Part 2',
+          findings: 'Second part of niche research.',
+          researchType: 'market',
+          status: 'completed',
+          scopeType: 'niche',
+          scopeId: niche1,
+        })
+
+        const selected = await validateResearchSelection(db, {
+          workspaceId: ws1,
+          researchIds: [r1.id, r2.id],
+        })
+        assert.equal(selected.length, 2)
+        assert.equal(selected[0].scopeType, 'niche')
+        assert.equal(selected[0].scopeId, niche1)
+        assert.equal(selected[1].scopeType, 'niche')
+        assert.equal(selected[1].scopeId, niche1)
       },
     )
   })

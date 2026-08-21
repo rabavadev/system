@@ -61,6 +61,12 @@ const WS1 = crypto.randomUUID()
 const WS2 = crypto.randomUUID()
 const BRAND_WS1 = crypto.randomUUID()
 const BRAND_WS2 = crypto.randomUUID()
+const NICHE_WS1 = crypto.randomUUID()
+const NICHE_WS2 = crypto.randomUUID()
+const NICHE_ARCH = crypto.randomUUID()
+const PRODUCT_WS1 = crypto.randomUUID()
+const ACCOUNT_WS1 = crypto.randomUUID()
+const CAMPAIGN_WS1 = crypto.randomUUID()
 const NOW = '2026-08-19T00:00:00.000Z'
 
 function freshDb(): SqlDatabase {
@@ -82,10 +88,39 @@ function freshDb(): SqlDatabase {
   )
   insertBrand.run(BRAND_WS1, WS1, 'Brand One', NOW, NOW)
   insertBrand.run(BRAND_WS2, WS2, 'Brand Two', NOW, NOW)
+
+  const insertNiche = sqlite.prepare(
+    `INSERT INTO niche (id, brand_id, name, description, created_at, updated_at, deleted_at) VALUES (?, ?, ?, NULL, ?, ?, ?)`,
+  )
+  insertNiche.run(NICHE_WS1, BRAND_WS1, 'Niche Alpha', NOW, NOW, null)
+  insertNiche.run(NICHE_WS2, BRAND_WS2, 'Niche Beta', NOW, NOW, null)
+  insertNiche.run(NICHE_ARCH, BRAND_WS1, 'Archived Niche', NOW, NOW, NOW)
+
+  const insertProduct = sqlite.prepare(
+    `INSERT INTO product (id, brand_id, niche_id, name, description, status, created_at, updated_at) VALUES (?, ?, ?, ?, NULL, 'active', ?, ?)`,
+  )
+  insertProduct.run(PRODUCT_WS1, BRAND_WS1, NICHE_WS1, 'Product One', NOW, NOW)
+
+  const insertPlatform = sqlite.prepare(
+    `INSERT INTO platform (id, adapter_key, name, created_at) VALUES (?, 'pinterest', 'Pinterest', ?)`,
+  )
+  const platId = crypto.randomUUID()
+  insertPlatform.run(platId, NOW)
+
+  const insertAccount = sqlite.prepare(
+    `INSERT INTO account (id, workspace_id, platform_id, handle, display_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`,
+  )
+  insertAccount.run(ACCOUNT_WS1, WS1, platId, '@account_one', 'Account One', NOW, NOW)
+
+  const insertCampaign = sqlite.prepare(
+    `INSERT INTO campaign (id, workspace_id, brand_id, product_id, name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)`,
+  )
+  insertCampaign.run(CAMPAIGN_WS1, WS1, BRAND_WS1, PRODUCT_WS1, 'Campaign One', NOW, NOW)
+
   return shim(sqlite)
 }
 
-test('create conversation: general and brand-scoped', async () => {
+test('create conversation: general, brand-scoped, and niche-scoped', async () => {
   const db = freshDb()
   const general = await createConversation(db, { workspaceId: WS1 })
   assert.equal(general.workspaceId, WS1)
@@ -93,27 +128,81 @@ test('create conversation: general and brand-scoped', async () => {
   assert.equal(general.scopeType, null)
   assert.equal(general.scopeId, null)
 
-  const scoped = await createConversation(db, {
+  const scopedBrand = await createConversation(db, {
     workspaceId: WS1,
-    title: 'Review campaign',
+    title: 'Review brand',
     scopeType: 'brand',
     scopeId: BRAND_WS1,
   })
-  assert.equal(scoped.title, 'Review campaign')
-  assert.equal(scoped.scopeType, 'brand')
-  assert.equal(scoped.scopeId, BRAND_WS1)
+  assert.equal(scopedBrand.title, 'Review brand')
+  assert.equal(scopedBrand.scopeType, 'brand')
+  assert.equal(scopedBrand.scopeId, BRAND_WS1)
 
-  const summary = await getConversationSummary(db, scoped.id)
-  assert.equal(summary?.scopeName, 'Brand One')
-  assert.equal(summary?.messageCount, 0)
+  const brandSummary = await getConversationSummary(db, scopedBrand.id)
+  assert.equal(brandSummary?.scopeName, 'Brand One')
+  assert.equal(brandSummary?.messageCount, 0)
+
+  // Niche scope integrity
+  const scopedNiche = await createConversation(db, {
+    workspaceId: WS1,
+    title: 'Review niche',
+    scopeType: 'niche',
+    scopeId: NICHE_WS1,
+  })
+  assert.equal(scopedNiche.title, 'Review niche')
+  assert.equal(scopedNiche.scopeType, 'niche')
+  assert.equal(scopedNiche.scopeId, NICHE_WS1)
+  assert.notEqual(scopedNiche.scopeId, BRAND_WS1, 'Must store actual niche ID, not brand ID')
+
+  const nicheSummary = await getConversationSummary(db, scopedNiche.id)
+  assert.equal(nicheSummary?.scopeName, 'Niche Alpha', 'Scope label must display Niche name')
+  assert.equal(nicheSummary?.messageCount, 0)
+
+  // Regression: product, account, campaign scopes
+  const scopedProduct = await createConversation(db, {
+    workspaceId: WS1,
+    title: 'Product chat',
+    scopeType: 'product',
+    scopeId: PRODUCT_WS1,
+  })
+  assert.equal(scopedProduct.scopeType, 'product')
+  const prodSummary = await getConversationSummary(db, scopedProduct.id)
+  assert.equal(prodSummary?.scopeName, 'Product One')
+
+  const scopedAccount = await createConversation(db, {
+    workspaceId: WS1,
+    title: 'Account chat',
+    scopeType: 'account',
+    scopeId: ACCOUNT_WS1,
+  })
+  assert.equal(scopedAccount.scopeType, 'account')
+  const accSummary = await getConversationSummary(db, scopedAccount.id)
+  assert.equal(accSummary?.scopeName, 'Account One')
+
+  const scopedCampaign = await createConversation(db, {
+    workspaceId: WS1,
+    title: 'Campaign chat',
+    scopeType: 'campaign',
+    scopeId: CAMPAIGN_WS1,
+  })
+  assert.equal(scopedCampaign.scopeType, 'campaign')
+  const campSummary = await getConversationSummary(db, scopedCampaign.id)
+  assert.equal(campSummary?.scopeName, 'Campaign One')
 })
 
 test('scope validation rejects cross-workspace, archived, unknown, unpaired', async () => {
   const db = freshDb()
+  // Cross-workspace brand
   await assert.rejects(
     createConversation(db, { workspaceId: WS1, scopeType: 'brand', scopeId: BRAND_WS2 }),
     /not available/,
   )
+  // Cross-workspace niche
+  await assert.rejects(
+    createConversation(db, { workspaceId: WS1, scopeType: 'niche', scopeId: NICHE_WS2 }),
+    /not available/,
+  )
+  // Unknown brand / niche
   await assert.rejects(
     createConversation(db, {
       workspaceId: WS1,
@@ -123,24 +212,60 @@ test('scope validation rejects cross-workspace, archived, unknown, unpaired', as
     /not available/,
   )
   await assert.rejects(
+    createConversation(db, {
+      workspaceId: WS1,
+      scopeType: 'niche',
+      scopeId: crypto.randomUUID(),
+    }),
+    /not available/,
+  )
+  // Unpaired scope
+  await assert.rejects(
     createConversation(db, { workspaceId: WS1, scopeType: 'brand' }),
+    /set together/,
+  )
+  await assert.rejects(
+    createConversation(db, { workspaceId: WS1, scopeType: 'niche' }),
     /set together/,
   )
   await assert.rejects(
     createConversation(db, { workspaceId: WS1, scopeId: BRAND_WS1 }),
     /set together/,
   )
+  await assert.rejects(
+    createConversation(db, { workspaceId: WS1, scopeId: NICHE_WS1 }),
+    /set together/,
+  )
 
-  // Archived scope target
+  // Archived scope target: brand
   const archivedBrand = crypto.randomUUID()
   await db
     .prepare(
-      `INSERT INTO brand (id, workspace_id, name, created_at, updated_at, deleted_at) VALUES (?, ?, 'Old', ?, ?, ?)`,
+      `INSERT INTO brand (id, workspace_id, name, created_at, updated_at, deleted_at) VALUES (?, ?, 'Old Brand', ?, ?, ?)`,
     )
     .bind(archivedBrand, WS1, NOW, NOW, NOW)
     .run()
   await assert.rejects(
     createConversation(db, { workspaceId: WS1, scopeType: 'brand', scopeId: archivedBrand }),
+    /archived/,
+  )
+
+  // Archived scope target: niche
+  await assert.rejects(
+    createConversation(db, { workspaceId: WS1, scopeType: 'niche', scopeId: NICHE_ARCH }),
+    /archived/,
+  )
+
+  // Niche under archived brand
+  const nicheUnderArchBrand = crypto.randomUUID()
+  await db
+    .prepare(
+      `INSERT INTO niche (id, brand_id, name, created_at, updated_at, deleted_at) VALUES (?, ?, 'Niche in Old Brand', ?, ?, NULL)`,
+    )
+    .bind(nicheUnderArchBrand, archivedBrand, NOW, NOW)
+    .run()
+  await assert.rejects(
+    createConversation(db, { workspaceId: WS1, scopeType: 'niche', scopeId: nicheUnderArchBrand }),
     /archived/,
   )
 })

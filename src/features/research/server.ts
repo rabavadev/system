@@ -412,21 +412,12 @@ export const startResearcherChatFn = createServerFn({ method: 'POST' })
       agents.find((a) => a.name.toLowerCase() === 'researcher')
     const agentId = researcher?.id ?? null
 
-    let targetScopeType: 'brand' | 'product' | 'account' | 'campaign' | null = null
+    let targetScopeType: 'brand' | 'niche' | 'product' | 'account' | 'campaign' | null = null
     let targetScopeId: string | null = null
 
     if (data.scopeType && data.scopeId && data.scopeType !== 'workspace') {
-      if (data.scopeType === 'niche') {
-        const niche = await getDb()
-          .prepare('SELECT brand_id FROM niche WHERE id = ?')
-          .bind(data.scopeId)
-          .first<{ brand_id: string }>()
-        if (niche?.brand_id) {
-          targetScopeType = 'brand'
-          targetScopeId = niche.brand_id
-        }
-      } else if (['brand', 'product', 'account', 'campaign'].includes(data.scopeType)) {
-        targetScopeType = data.scopeType as 'brand' | 'product' | 'account' | 'campaign'
+      if (['brand', 'niche', 'product', 'account', 'campaign'].includes(data.scopeType)) {
+        targetScopeType = data.scopeType as 'brand' | 'niche' | 'product' | 'account' | 'campaign'
         targetScopeId = data.scopeId
       }
     }
@@ -486,7 +477,7 @@ export const startResearchAnalysisChatFn = createServerFn({ method: 'POST' })
     const agentId = researcher?.id ?? null
 
     // Determine common scope if applicable
-    let commonScopeType: 'brand' | 'product' | 'account' | 'campaign' | null = null
+    let commonScopeType: 'brand' | 'niche' | 'product' | 'account' | 'campaign' | null = null
     let commonScopeId: string | null = null
 
     const validScopes = selectedResearch
@@ -494,7 +485,7 @@ export const startResearchAnalysisChatFn = createServerFn({ method: 'POST' })
         (r) =>
           r.scopeType &&
           r.scopeId &&
-          ['brand', 'product', 'account', 'campaign'].includes(r.scopeType),
+          ['brand', 'niche', 'product', 'account', 'campaign'].includes(r.scopeType),
       )
       .map((r) => `${r.scopeType}:${r.scopeId}`)
 
@@ -505,7 +496,7 @@ export const startResearchAnalysisChatFn = createServerFn({ method: 'POST' })
       new Set(validScopes).size === 1
     ) {
       commonScopeType =
-        (firstItem.scopeType as 'brand' | 'product' | 'account' | 'campaign') ?? null
+        (firstItem.scopeType as 'brand' | 'niche' | 'product' | 'account' | 'campaign') ?? null
       commonScopeId = firstItem.scopeId ?? null
     }
 

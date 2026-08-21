@@ -29,7 +29,7 @@ export type MemoryScopeType =
 export type GoalScopeType = 'workspace' | 'brand' | 'product' | 'campaign'
 
 /** Entities a conversation can optionally be about. NULL scope = general. */
-export type ConversationScopeType = 'brand' | 'product' | 'account' | 'campaign'
+export type ConversationScopeType = 'brand' | 'niche' | 'product' | 'account' | 'campaign'
 
 /* ---- Commercial hierarchy ---- */
 

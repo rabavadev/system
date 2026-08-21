@@ -43,7 +43,7 @@ import type { Message } from '~/types/domain'
 const idWire = z.object({ id: z.uuid() })
 const createConversationWire = z.object({
   title: z.string().trim().min(1).max(120).optional(),
-  scopeType: z.enum(['brand', 'product', 'account', 'campaign']).nullable().optional(),
+  scopeType: z.enum(['brand', 'niche', 'product', 'account', 'campaign']).nullable().optional(),
   scopeId: z.string().uuid().nullable().optional(),
 })
 const renameConversationWire = z.object({
@@ -189,7 +189,8 @@ export const createConversationFn = createServerFn({ method: 'POST' })
     const workspace = await requireWorkspace()
     const db = getDb()
 
-    let scopeType: 'brand' | 'product' | 'account' | 'campaign' | null = data.scopeType ?? null
+    let scopeType: 'brand' | 'niche' | 'product' | 'account' | 'campaign' | null =
+      data.scopeType ?? null
     let scopeId: string | null = data.scopeId ?? null
     if (!scopeType || !scopeId) {
       const activeBrandId = getCookie(ACTIVE_BRAND_COOKIE)

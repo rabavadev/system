@@ -48,12 +48,13 @@ export interface ConversationSummary extends Conversation {
 
 const SCOPE_LABEL: Record<ConversationScopeType, { table: string; label: string }> = {
   brand: { table: 'brand', label: 'name' },
+  niche: { table: 'niche', label: 'name' },
   product: { table: 'product', label: 'name' },
   account: { table: 'account', label: 'COALESCE(display_name, handle)' },
   campaign: { table: 'campaign', label: 'name' },
 }
 
-const SCOPE_TYPES = ['brand', 'product', 'account', 'campaign'] as const
+const SCOPE_TYPES = ['brand', 'niche', 'product', 'account', 'campaign'] as const
 
 export const createConversationInput = z
   .object({
@@ -80,16 +81,41 @@ async function requireScopeTarget(
   scopeType: ConversationScopeType,
   scopeId: string,
 ): Promise<void> {
-  if (scopeType === 'product') {
-    const row = await queryFirst<{ id: string; workspace_id: string; deleted_at: string | null }>(
+  if (scopeType === 'niche') {
+    const row = await queryFirst<{
+      id: string
+      workspace_id: string
+      deleted_at: string | null
+      brand_deleted_at: string | null
+    }>(
       db,
-      `SELECT p.id, b.workspace_id, p.deleted_at FROM product p JOIN brand b ON b.id = p.brand_id WHERE p.id = ?`,
+      `SELECT n.id, b.workspace_id, n.deleted_at, b.deleted_at AS brand_deleted_at FROM niche n JOIN brand b ON b.id = n.brand_id WHERE n.id = ?`,
       [scopeId],
     )
     if (!row || row.workspace_id !== workspaceId) {
       throw new Error('That item is not available in this workspace.')
     }
-    if (row.deleted_at) {
+    if (row.deleted_at || row.brand_deleted_at) {
+      throw new Error('That item is archived.')
+    }
+    return
+  }
+
+  if (scopeType === 'product') {
+    const row = await queryFirst<{
+      id: string
+      workspace_id: string
+      deleted_at: string | null
+      brand_deleted_at: string | null
+    }>(
+      db,
+      `SELECT p.id, b.workspace_id, p.deleted_at, b.deleted_at AS brand_deleted_at FROM product p JOIN brand b ON b.id = p.brand_id WHERE p.id = ?`,
+      [scopeId],
+    )
+    if (!row || row.workspace_id !== workspaceId) {
+      throw new Error('That item is not available in this workspace.')
+    }
+    if (row.deleted_at || row.brand_deleted_at) {
       throw new Error('That item is archived.')
     }
     return
@@ -120,6 +146,7 @@ const SUMMARY_SELECT = `
     ) AS last_activity_at,
     CASE c.scope_type
       WHEN 'brand' THEN (SELECT b.name FROM brand b WHERE b.id = c.scope_id)
+      WHEN 'niche' THEN (SELECT n.name FROM niche n WHERE n.id = c.scope_id)
       WHEN 'product' THEN (SELECT p.name FROM product p WHERE p.id = c.scope_id)
       WHEN 'account' THEN (SELECT COALESCE(a.display_name, a.handle) FROM account a WHERE a.id = c.scope_id)
       WHEN 'campaign' THEN (SELECT ca.name FROM campaign ca WHERE ca.id = c.scope_id)
