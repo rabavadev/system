@@ -143,6 +143,7 @@ export type PolicyRequestOrigin = (typeof POLICY_REQUEST_ORIGINS)[number]
 /** Policy source that determined the final mode. */
 export const POLICY_SOURCES = [
   'hard_security',
+  'tool_requirement',
   'brand_override',
   'workspace_policy',
   'risk_fallback',

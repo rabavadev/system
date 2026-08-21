@@ -94,7 +94,7 @@ export async function createApprovalRequest(
   // Check if minimumMode (e.g. hard tool approval requirement) elevates AUTO to REVIEW
   if (effectiveMode === 'auto' && input.minimumMode === 'review') {
     effectiveMode = 'review'
-    effectiveSource = 'hard_security'
+    effectiveSource = 'tool_requirement'
     effectiveReason = 'Tool definition requires human approval'
   }
 
@@ -211,6 +211,8 @@ export async function createApprovalRequest(
       status: record.status,
       summary: record.summary,
       fingerprint: record.fingerprint,
+      policySource: record.policySource,
+      risks: record.risks,
     }),
   })
 
@@ -227,6 +229,7 @@ export async function createApprovalRequest(
       summary: record.summary,
       fingerprint: record.fingerprint,
       risk: record.risk,
+      risks: record.risks,
       policySource: record.policySource,
     }),
   })
@@ -236,7 +239,7 @@ export async function createApprovalRequest(
     created: true,
     isDuplicate: false,
     request: record,
-    reason: policyResult.reason,
+    reason: effectiveReason,
   }
 }
 

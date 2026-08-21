@@ -1870,6 +1870,8 @@ test('H1B.1: Hard-required tool under Policy AUTO elevates to REVIEW and creates
   assert.equal(req.conversationId, conversation.id)
   assert.ok(req.executionId)
   assert.equal(req.status, 'pending')
+  assert.equal(req.policySource, 'tool_requirement')
+  assert.equal(req.reason, 'Tool definition requires human approval')
   assert.deepEqual(req.risks, ['write', 'external'])
   assert.equal(req.risk, 'write')
   assert.match(req.summary, /Publisher requests Publish content/i)

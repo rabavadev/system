@@ -915,7 +915,7 @@ test('32. malformed or unknown risk values are safely filtered without crashing'
   assert.equal(loaded.risk, 'sensitive')
 })
 
-// 33. Hard-gated minimumMode elevates AUTO policy to REVIEW
+// 33. Hard-gated minimumMode elevates AUTO policy to REVIEW with tool_requirement source and truthful reason
 test('33. minimumMode elevates policy from AUTO to REVIEW and creates a pending request', async () => {
   const db = freshDb()
   await setApprovalPolicy(db, {
@@ -936,6 +936,7 @@ test('33. minimumMode elevates policy from AUTO to REVIEW and creates a pending 
   assert.equal(autoRes.status, 'auto')
   assert.equal(autoRes.created, false)
   assert.equal(autoRes.request, null)
+  assert.equal(autoRes.reason, 'Workspace policy')
 
   // With minimumMode: 'review', AUTO is elevated to REVIEW
   const elevatedRes = await createApprovalRequest(db, {
@@ -950,5 +951,200 @@ test('33. minimumMode elevates policy from AUTO to REVIEW and creates a pending 
   assert.equal(elevatedRes.created, true)
   assert.ok(elevatedRes.request)
   assert.equal(elevatedRes.request.resolvedMode, 'review')
-  assert.equal(elevatedRes.request.policySource, 'hard_security')
+  assert.equal(elevatedRes.request.policySource, 'tool_requirement')
+  assert.equal(elevatedRes.request.reason, 'Tool definition requires human approval')
+  // Returned reason must agree with stored request reason
+  assert.equal(elevatedRes.reason, elevatedRes.request.reason)
+  assert.equal(elevatedRes.reason, 'Tool definition requires human approval')
+})
+
+// 34. HARDENING H1B.2: Reason truthfulness across AUTO, BLOCKED, and REVIEW
+test('34. CreateApprovalResult.reason matches stored request reason across all modes', async () => {
+  const db = freshDb()
+
+  // 1. Ordinary Workspace policy REVIEW
+  await setApprovalPolicy(db, {
+    workspaceId: WS_A,
+    scopeType: 'workspace',
+    scopeId: WS_A,
+    actionKey: 'workspace.read',
+    mode: 'review',
+  })
+  const wsReview = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'workspace.read',
+    origin: 'agent',
+    payload: { key: 'review-key' },
+  })
+  assert.equal(wsReview.status, 'pending')
+  assert.ok(wsReview.request)
+  assert.equal(wsReview.reason, 'Workspace policy')
+  assert.equal(wsReview.request.reason, 'Workspace policy')
+  assert.equal(wsReview.reason, wsReview.request.reason)
+  assert.equal(wsReview.request.policySource, 'workspace_policy')
+
+  // 2. Elevated Hard-tool REVIEW
+  await setApprovalPolicy(db, {
+    workspaceId: WS_A,
+    scopeType: 'workspace',
+    scopeId: WS_A,
+    actionKey: 'external.read',
+    mode: 'auto',
+  })
+  const toolElevated = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'external.read',
+    origin: 'agent',
+    minimumMode: 'review',
+    payload: { query: 'elevated-query' },
+  })
+  assert.equal(toolElevated.status, 'pending')
+  assert.ok(toolElevated.request)
+  assert.equal(toolElevated.reason, 'Tool definition requires human approval')
+  assert.equal(toolElevated.request.reason, 'Tool definition requires human approval')
+  assert.equal(toolElevated.reason, toolElevated.request.reason)
+  assert.equal(toolElevated.request.policySource, 'tool_requirement')
+
+  // 3. AUTO returns effective reason
+  const autoResult = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'external.read',
+    origin: 'agent',
+    payload: { query: 'auto-query' },
+  })
+  assert.equal(autoResult.status, 'auto')
+  assert.equal(autoResult.reason, 'Workspace policy')
+
+  // 4. BLOCKED returns effective reason
+  await setApprovalPolicy(db, {
+    workspaceId: WS_A,
+    scopeType: 'workspace',
+    scopeId: WS_A,
+    actionKey: 'external.read',
+    mode: 'blocked',
+  })
+  const blockedResult = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'external.read',
+    origin: 'agent',
+    payload: { query: 'blocked-query' },
+  })
+  assert.equal(blockedResult.status, 'blocked')
+  assert.equal(blockedResult.reason, 'Workspace policy')
+})
+
+// 35. HARDENING H1B.2: Hard security source remains distinct from tool_requirement
+test('35. hard_security and tool_requirement policy sources remain strictly distinct', async () => {
+  const db = freshDb()
+
+  // Real hard security invariant (target with isSecret: true)
+  const secretRes = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'external.write',
+    origin: 'agent',
+    target: { isSecret: true },
+    payload: { key: 'secret-val' },
+  })
+  assert.equal(secretRes.status, 'blocked')
+  assert.match(secretRes.reason, /secret/i)
+
+  // Hard tool requirement under AUTO -> REVIEW with tool_requirement
+  await setApprovalPolicy(db, {
+    workspaceId: WS_A,
+    scopeType: 'workspace',
+    scopeId: WS_A,
+    actionKey: 'content.publish',
+    mode: 'auto',
+  })
+  const toolReqRes = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'content.publish',
+    origin: 'agent',
+    minimumMode: 'review',
+    payload: { accountId: crypto.randomUUID(), contentVariantId: crypto.randomUUID() },
+    risk: ['write', 'external'],
+  })
+  assert.equal(toolReqRes.status, 'pending')
+  assert.ok(toolReqRes.request)
+  assert.equal(toolReqRes.request.policySource, 'tool_requirement')
+  assert.notEqual(toolReqRes.request.policySource, 'hard_security')
+})
+
+// 36. HARDENING H1B.2: Multi-risk array preserved in approval.requested event and audit log
+test('36. approval.requested event and audit log include full risks array and policySource', async () => {
+  const db = freshDb()
+  const created = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'external.read',
+    origin: 'agent',
+    payload: { query: 'growth tactics' },
+    risk: ['read', 'external'],
+  })
+
+  assert.ok(created.request)
+
+  // Check event emission
+  const events = await listRecentEvents(db, WS_A, 'approval.', 10)
+  const approvalEvent = events.find((e) => e.event_type === 'approval.requested')
+  assert.ok(approvalEvent, 'approval.requested event MUST be emitted')
+
+  const eventPayload = JSON.parse(approvalEvent.payload ?? '{}') as {
+    actionKey: string
+    origin: string
+    summary: string
+    fingerprint: string
+    risk: string
+    risks: string[]
+    policySource: string
+  }
+
+  assert.equal(eventPayload.actionKey, 'external.read')
+  assert.deepEqual(eventPayload.risks, ['read', 'external'])
+  assert.equal(eventPayload.risk, 'read')
+  assert.equal(eventPayload.policySource, 'risk_fallback')
+
+  // Check audit log
+  const auditRow = await db
+    .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ? AND action = 'create'`)
+    .bind(created.request.id)
+    .first<{ new_value: string }>()
+
+  assert.ok(auditRow)
+  const auditPayload = JSON.parse(auditRow.new_value) as {
+    actionKey: string
+    policySource: string
+    risks: string[]
+  }
+  assert.equal(auditPayload.actionKey, 'external.read')
+  assert.deepEqual(auditPayload.risks, ['read', 'external'])
+  assert.equal(auditPayload.policySource, 'risk_fallback')
+})
+
+// 37. HARDENING H1B.2: Duplicate pending request deduplication preserves original request
+test('37. duplicate pending request deduplication preserves original reason and source', async () => {
+  const db = freshDb()
+  const first = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'content.publish',
+    origin: 'agent',
+    payload: { prompt: 'Post 1' },
+    risk: ['write', 'external'],
+  })
+  assert.ok(first.request)
+  assert.equal(first.created, true)
+  assert.equal(first.isDuplicate, false)
+
+  const second = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'content.publish',
+    origin: 'agent',
+    payload: { prompt: 'Post 1' },
+    risk: ['write', 'external'],
+  })
+  assert.ok(second.request)
+  assert.equal(second.created, false)
+  assert.equal(second.isDuplicate, true)
+  assert.equal(second.request.id, first.request.id)
+  assert.equal(second.reason, 'Reusing existing pending approval request')
+  assert.equal(second.request.policySource, first.request.policySource)
 })

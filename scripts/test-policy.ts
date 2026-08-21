@@ -613,3 +613,20 @@ test('21. setting external.write AUTO does not affect external.read', async () =
     'external.read MUST remain review when external.write is set to auto',
   )
 })
+
+// 22. HARDENING H1B.2: POLICY_SOURCES includes tool_requirement and hard_security is preserved
+test('22. POLICY_SOURCES contains tool_requirement and hard_security separately', async () => {
+  const { POLICY_SOURCES } = await import('../src/server/policy/types.ts')
+  assert.ok(POLICY_SOURCES.includes('tool_requirement'))
+  assert.ok(POLICY_SOURCES.includes('hard_security'))
+
+  const db = freshDb()
+  const secRes = await resolveApprovalPolicy(db, {
+    action: 'external.write',
+    workspaceId: WS_A,
+    origin: 'agent',
+    target: { isSecret: true },
+  })
+  assert.equal(secRes.mode, 'blocked')
+  assert.equal(secRes.source, 'hard_security')
+})
