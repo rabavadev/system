@@ -11,6 +11,7 @@ export {
   checkHardSecurityInvariants,
   type HardSecurityCheckResult,
 } from './security.ts'
+export { resolveActionKeyForTool } from './tool-action.ts'
 export {
   ACTION_DEFINITIONS,
   ACTION_KEYS,

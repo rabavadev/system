@@ -155,7 +155,7 @@ export async function createApprovalRequest(
     reason: policyResult.reason,
     resolvedMode: 'review',
     policySource: policyResult.source,
-    risk: input.risk ?? null,
+    risk: (Array.isArray(input.risk) ? (input.risk[0] ?? null) : input.risk) ?? null,
     snapshotJson,
     fingerprint,
     status: 'pending',

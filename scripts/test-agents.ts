@@ -41,6 +41,11 @@ import { runAgentReply } from '../src/server/agents/reply.ts'
 import type { ExecuteAIDeps } from '../src/server/ai/executor.ts'
 import type { AIAdapterRawResponse, AIProviderAdapter } from '../src/server/ai/types.ts'
 import {
+  ApprovalServiceError,
+  createApprovalRequest,
+  decideApprovalRequest,
+} from '../src/server/approval/service.ts'
+import {
   addAgentVersion,
   createAgent,
   createAgentInput,
@@ -50,9 +55,13 @@ import {
   listAgentVersions,
   setAgentStatus,
 } from '../src/server/db/agent.ts'
+import { getApprovalRequest, listApprovalRequests } from '../src/server/db/approval.ts'
 import { createConversation, getConversationById } from '../src/server/db/conversation.ts'
+import { listRecentEvents } from '../src/server/db/event.ts'
 import { appendUserMessage, listMessages } from '../src/server/db/message.ts'
+import { setApprovalPolicy } from '../src/server/db/policy.ts'
 import type { SqlDatabase } from '../src/server/db/sql.ts'
+import { resolveActionKeyForTool } from '../src/server/policy/tool-action.ts'
 import {
   createWebSearchAdapter,
   type ExecuteToolDeps,
@@ -853,6 +862,13 @@ test('STEP 13B: Researcher executes web.search via generic AI tool calling loop'
 
   const conversation = await createConversation(db, { workspaceId: WS })
   const researcher = await builtinByName(db, 'Researcher')
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.write',
+    mode: 'auto',
+  })
 
   const reply = await sendTo(
     db,
@@ -925,6 +941,13 @@ test('STEP 13B: Tool calling loop is bounded to maximum 3 tool calls', async () 
 
   const conversation = await createConversation(db, { workspaceId: WS })
   const researcher = await builtinByName(db, 'Researcher')
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.write',
+    mode: 'auto',
+  })
 
   const reply = await sendTo(
     db,
@@ -943,6 +966,13 @@ test('STEP 13B: Tool calling loop is bounded to maximum 3 tool calls', async () 
 
 test('STEP 13B: Non-permitted agent model call to web.search is rejected with capability_denied', async () => {
   const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.write',
+    mode: 'auto',
+  })
   const mockClient = new MockWebSearchClient({
     results: [{ title: 'Secret', url: 'https://secret.com' }],
   })
@@ -1004,6 +1034,13 @@ test('STEP 13B: Non-permitted agent model call to web.search is rejected with ca
 
 test('STEP 13B: Search provider error (e.g. not_configured) is handled gracefully by model loop', async () => {
   const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.write',
+    mode: 'auto',
+  })
   const mockClient = new MockWebSearchClient({
     error: new ToolError('not_configured', 'Web search provider is not configured.'),
   })
@@ -1078,4 +1115,605 @@ test('STEP 13B: Unconfigured web.search is not advertised in model tool definiti
     !toolDefs.some((t) => t.key === 'web.search'),
     'Unconfigured web.search must not be sent to the model',
   )
+})
+
+/* ========================================================================= */
+/* HARDENING H1B: Agent Tool Execution Approval Policy Integration Tests     */
+/* ========================================================================= */
+
+test('H1B: Direct Agent Tool AUTO executes adapter and returns results', async () => {
+  const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.write',
+    mode: 'auto',
+  })
+
+  let adapterCalled = false
+  const mockClient = new MockWebSearchClient({
+    results: [
+      {
+        title: 'Auto Result',
+        url: 'https://example.com/auto',
+        snippet: 'Ran under AUTO policy.',
+      },
+    ],
+  })
+  const customAdapter = createWebSearchAdapter({ client: mockClient })
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      [
+        'web.search',
+        {
+          key: 'web.search',
+          isConfigured: () => true,
+          async run(input) {
+            adapterCalled = true
+            return customAdapter.run(input)
+          },
+        },
+      ],
+    ]),
+  }
+
+  let turn = 0
+  const { adapter } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-auto',
+            toolKey: 'web.search',
+            args: { query: 'auto search' },
+          },
+        ],
+        finishReason: 'tool_calls',
+      }
+    }
+    const toolMsg = input.messages.find((m) => m.role === 'tool')
+    assert.ok(toolMsg)
+    assert.match(toolMsg.content, /Auto Result/)
+    return {
+      content: 'Here are the auto results.',
+      finishReason: 'stop',
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(db, conversation.id, researcher.id, 'Search auto.', adapter, toolDeps)
+
+  assert.ok(reply.ok)
+  assert.ok(adapterCalled, 'Adapter must be executed under AUTO policy')
+  assert.equal(reply.execution.toolCalls?.[0]?.status, 'succeeded')
+
+  // Zero approval requests should be created for AUTO
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(approvals.length, 0, 'No approval request must be created for AUTO mode')
+})
+
+test('H1B: Direct Agent Tool REVIEW creates Approval Request and does NOT execute adapter', async () => {
+  const db = freshDb()
+  // Default policy for external.write is review
+  let adapterCalled = false
+  const mockClient = new MockWebSearchClient({
+    results: [{ title: 'Should Not Run', url: 'https://example.com/never' }],
+  })
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      [
+        'web.search',
+        {
+          key: 'web.search',
+          isConfigured: () => true,
+          async run(input) {
+            adapterCalled = true
+            return createWebSearchAdapter({ client: mockClient }).run(input)
+          },
+        },
+      ],
+    ]),
+  }
+
+  let turn = 0
+  const { adapter } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-review',
+            toolKey: 'web.search',
+            args: { query: 'review query', limit: 5 },
+          },
+        ],
+        finishReason: 'tool_calls',
+      }
+    }
+    const toolMsg = input.messages.find((m) => m.role === 'tool')
+    assert.ok(toolMsg)
+    assert.match(toolMsg.content, /approval_required/)
+    return {
+      content: 'Web search needs your approval before it can run.',
+      finishReason: 'stop',
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    researcher.id,
+    'Search review.',
+    adapter,
+    toolDeps,
+  )
+
+  assert.ok(reply.ok)
+  assert.equal(adapterCalled, false, 'Tool adapter MUST NOT run under REVIEW policy')
+
+  // Tool trace records approval_required
+  assert.equal(reply.execution.toolCalls?.length, 1)
+  assert.equal(reply.execution.toolCalls[0].status, 'failed')
+  assert.equal(reply.execution.toolCalls[0].error, 'approval_required')
+
+  // Real Approval Request created in database
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(approvals.length, 1, 'Real Approval Request must be created')
+  const req = approvals[0]
+
+  // Linkage assertions
+  assert.equal(req.origin, 'agent')
+  assert.equal(req.requestedByType, 'agent')
+  assert.equal(req.requestedById, researcher.id)
+  assert.equal(req.actionKey, 'external.write')
+  assert.equal(req.conversationId, conversation.id)
+  assert.ok(req.executionId, 'Execution ID must be populated')
+  assert.equal(req.status, 'pending')
+  assert.match(req.summary, /Researcher requests Web search/i)
+
+  // Snapshot integrity & secret hygiene
+  const snapshot = JSON.parse(req.snapshotJson)
+  assert.equal(snapshot.toolKey, 'web.search')
+  assert.deepEqual(snapshot.args, { query: 'review query', limit: 5 })
+  assert.equal(snapshot.agentId, researcher.id)
+  assert.ok(!req.snapshotJson.includes('API_KEY'))
+  assert.ok(!req.snapshotJson.includes('secret'))
+})
+
+test('H1B: Duplicate identical pending request is deduplicated', async () => {
+  const db = freshDb()
+  const researcher = await builtinByName(db, 'Researcher')
+
+  // Calling createApprovalRequest with identical fingerprint and executionId deduplicates
+  const res1 = await createApprovalRequest(db, {
+    workspaceId: WS,
+    actionKey: 'external.write',
+    origin: 'agent',
+    requestedByType: 'agent',
+    requestedById: researcher.id,
+    executionId: 'exec-agent-1',
+    summary: 'Researcher requests Web search',
+    payload: {
+      toolKey: 'web.search',
+      args: { query: 'dedup query', limit: 5 },
+    },
+  })
+
+  const res2 = await createApprovalRequest(db, {
+    workspaceId: WS,
+    actionKey: 'external.write',
+    origin: 'agent',
+    requestedByType: 'agent',
+    requestedById: researcher.id,
+    executionId: 'exec-agent-1',
+    summary: 'Researcher requests Web search',
+    payload: {
+      toolKey: 'web.search',
+      args: { query: 'dedup query', limit: 5 },
+    },
+  })
+
+  assert.equal(res1.created, true)
+  assert.equal(res2.created, false)
+  assert.equal(res2.isDuplicate, true)
+  assert.equal(res1.request?.id, res2.request?.id)
+
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(
+    approvals.length,
+    1,
+    'Duplicate identical request must be deduplicated, not duplicated',
+  )
+})
+
+test('H1B: Direct Agent Tool BLOCKED returns canonical blocked result and creates NO approval request', async () => {
+  const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.write',
+    mode: 'blocked',
+  })
+
+  let adapterCalled = false
+  const mockClient = new MockWebSearchClient({
+    results: [{ title: 'Should Never Run', url: 'https://example.com/blocked' }],
+  })
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      [
+        'web.search',
+        {
+          key: 'web.search',
+          isConfigured: () => true,
+          async run(input) {
+            adapterCalled = true
+            return createWebSearchAdapter({ client: mockClient }).run(input)
+          },
+        },
+      ],
+    ]),
+  }
+
+  let turn = 0
+  const { adapter } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-blocked',
+            toolKey: 'web.search',
+            args: { query: 'blocked search' },
+          },
+        ],
+        finishReason: 'tool_calls',
+      }
+    }
+    const toolMsg = input.messages.find((m) => m.role === 'tool')
+    assert.ok(toolMsg)
+    assert.match(toolMsg.content, /blocked/)
+    return {
+      content: 'Web search is blocked by your Autonomy settings.',
+      finishReason: 'stop',
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    researcher.id,
+    'Search blocked.',
+    adapter,
+    toolDeps,
+  )
+
+  assert.ok(reply.ok)
+  assert.equal(adapterCalled, false, 'Adapter MUST NOT run when policy is BLOCKED')
+  assert.equal(reply.execution.toolCalls?.[0]?.status, 'failed')
+  assert.equal(reply.execution.toolCalls?.[0]?.error, 'blocked')
+
+  // No approval request should be created for BLOCKED mode
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(approvals.length, 0, 'No approval request must be created for BLOCKED mode')
+})
+
+test('H1B: Capability denial happens before policy check even if policy is AUTO', async () => {
+  const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.write',
+    mode: 'auto',
+  })
+
+  let adapterCalled = false
+  const mockClient = new MockWebSearchClient({
+    results: [{ title: 'Unauthorized', url: 'https://example.com/unauth' }],
+  })
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      [
+        'web.search',
+        {
+          key: 'web.search',
+          isConfigured: () => true,
+          async run(input) {
+            adapterCalled = true
+            return createWebSearchAdapter({ client: mockClient }).run(input)
+          },
+        },
+      ],
+    ]),
+  }
+
+  const { adapter } = recordingAdapter(() => {
+    return {
+      content: 'Creator cannot search web.',
+      toolCalls: [
+        {
+          id: 'call-creator-search',
+          toolKey: 'web.search',
+          args: { query: 'creator search' },
+        },
+      ],
+      finishReason: 'stop',
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const creator = await builtinByName(db, 'Creator')
+
+  const reply = await sendTo(db, conversation.id, creator.id, 'Search web.', adapter, toolDeps)
+
+  assert.ok(reply.ok)
+  assert.equal(adapterCalled, false)
+  assert.equal(reply.execution.toolCalls?.[0]?.status, 'failed')
+  assert.equal(reply.execution.toolCalls?.[0]?.error, 'capability_denied')
+
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(approvals.length, 0, 'Capability denied calls must never create approval requests')
+})
+
+test('H1B: Invalid Tool args reject with invalid_input and do not create Approval Request', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({ results: [] })
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
+
+  let turn = 0
+  const { adapter } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-invalid-query',
+            toolKey: 'web.search',
+            args: { query: '   ' }, // empty query fails validation
+          },
+        ],
+        finishReason: 'tool_calls',
+      }
+    }
+    const toolMsg = input.messages.find((m) => m.role === 'tool')
+    assert.ok(toolMsg)
+    assert.match(toolMsg.content, /invalid_input/)
+    return {
+      content: 'Invalid search query.',
+      finishReason: 'stop',
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(db, conversation.id, researcher.id, 'Search empty.', adapter, toolDeps)
+
+  assert.ok(reply.ok)
+  assert.equal(reply.execution.toolCalls?.[0]?.status, 'failed')
+  assert.equal(reply.execution.toolCalls?.[0]?.error, 'invalid_input')
+
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(approvals.length, 0, 'Invalid input must not create approval request')
+})
+
+test('H1B: Unconfigured Tool rejects with not_configured and does not create Approval Request', async () => {
+  const db = freshDb()
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: null })], // unconfigured
+    ]),
+  }
+
+  let turn = 0
+  const { adapter } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-unconf',
+            toolKey: 'web.search',
+            args: { query: 'unconfigured test' },
+          },
+        ],
+        finishReason: 'tool_calls',
+      }
+    }
+    const toolMsg = input.messages.find((m) => m.role === 'tool')
+    assert.ok(toolMsg)
+    assert.match(toolMsg.content, /not_configured/)
+    return {
+      content: 'Search not configured.',
+      finishReason: 'stop',
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    researcher.id,
+    'Search unconfigured.',
+    adapter,
+    toolDeps,
+  )
+
+  assert.ok(reply.ok)
+  assert.equal(reply.execution.toolCalls?.[0]?.status, 'failed')
+  assert.equal(reply.execution.toolCalls?.[0]?.error, 'not_configured')
+
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(approvals.length, 0, 'Unconfigured tool must not create approval request')
+})
+
+test('H1B: Inactive agent cannot execute Tool request or create Approval Request', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({ results: [] })
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
+
+  const researcher = await builtinByName(db, 'Researcher')
+  await setAgentStatus(db, researcher.id, 'disabled')
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const { adapter } = recordingAdapter()
+
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    researcher.id,
+    'Search disabled.',
+    adapter,
+    toolDeps,
+  )
+
+  assert.ok(!reply.ok, 'Disabled agent reply must fail')
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(approvals.length, 0, 'Disabled agent must not create approval request')
+})
+
+test('H1B: Tool -> ActionKey mapping is shared and consistent across Workflows and Agents', async () => {
+  assert.equal(resolveActionKeyForTool('web.search'), 'workspace.read')
+  const webDef = (await import('../src/server/tools/definitions.ts')).TOOL_DEFINITIONS.find(
+    (d) => d.key === 'web.search',
+  )
+  assert.equal(resolveActionKeyForTool('web.search', webDef), 'external.write')
+  assert.equal(resolveActionKeyForTool('platform.publish'), 'content.publish')
+  assert.equal(resolveActionKeyForTool('workflow.run'), 'workflow.run')
+  assert.equal(resolveActionKeyForTool('image.generate'), 'external.write')
+  assert.equal(resolveActionKeyForTool('workspace.get_product'), 'workspace.read')
+})
+
+test('H1B: Agent cannot decide its own Approval Request (Anti-Self-Approval)', async () => {
+  const db = freshDb()
+  const researcher = await builtinByName(db, 'Researcher')
+
+  // Create an approval request
+  const approvalRes = await createApprovalRequest(db, {
+    workspaceId: WS,
+    actionKey: 'external.write',
+    origin: 'agent',
+    requestedByType: 'agent',
+    requestedById: researcher.id,
+    summary: 'Researcher web search',
+    payload: { toolKey: 'web.search', query: 'self approve test' },
+  })
+
+  assert.ok(approvalRes.request)
+  const requestId = approvalRes.request.id
+
+  // Attempt to self-approve with actorType: 'agent'
+  await assert.rejects(
+    async () => {
+      await decideApprovalRequest(db, {
+        workspaceId: WS,
+        requestId,
+        decision: 'approved',
+        actor: {
+          actorType: 'agent' as unknown as 'user',
+          actorId: researcher.id,
+        },
+      })
+    },
+    (err: Error) => {
+      assert.ok(err instanceof ApprovalServiceError)
+      assert.match(err.message, /Only human users or system can decide approval requests/i)
+      return true
+    },
+  )
+
+  // Status remains pending
+  const req = await getApprovalRequest(db, { workspaceId: WS, id: requestId })
+  assert.equal(req?.status, 'pending')
+})
+
+test('H1B: Zero API key or secret leakage in snapshot, trace, or event metadata', async () => {
+  const db = freshDb()
+  const mockClient = new MockWebSearchClient({ results: [] })
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
+
+  const { adapter } = recordingAdapter((input) => {
+    const isFirst = !input.messages.some((m) => m.role === 'tool')
+    if (isFirst) {
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-secret-check',
+            toolKey: 'web.search',
+            args: { query: 'secret test' },
+          },
+        ],
+        finishReason: 'tool_calls',
+      }
+    }
+    return {
+      content: 'Done checking.',
+      finishReason: 'stop',
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    researcher.id,
+    'Check secrets.',
+    adapter,
+    toolDeps,
+  )
+  assert.ok(reply.ok)
+
+  // Inspect approval snapshot
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(approvals.length, 1)
+  const snapshotStr = JSON.stringify(approvals[0])
+  assert.ok(!snapshotStr.includes('BRAVE_API_KEY'))
+  assert.ok(!snapshotStr.includes('WEB_SEARCH_API_KEY'))
+
+  // Inspect message provider metadata
+  assert.ok(reply.message.providerMetadataJson)
+  assert.ok(!reply.message.providerMetadataJson.includes('BRAVE_API_KEY'))
+  assert.ok(!reply.message.providerMetadataJson.includes('WEB_SEARCH_API_KEY'))
+
+  // Inspect events emitted
+  const events = await listRecentEvents(db, WS, '', 50)
+  for (const evt of events) {
+    const payload = JSON.stringify(evt)
+    assert.ok(!payload.includes('BRAVE_API_KEY'))
+    assert.ok(!payload.includes('WEB_SEARCH_API_KEY'))
+  }
 })

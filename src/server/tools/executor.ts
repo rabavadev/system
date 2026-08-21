@@ -1,6 +1,8 @@
 import { ContextError } from '../context/index.ts'
 import { emitEventSafe } from '../db/event.ts'
 import { newId, nowIso, type SqlDatabase } from '../db/sql.ts'
+import { resolveActionKeyForTool } from '../policy/tool-action.ts'
+import type { ActionKey } from '../policy/types.ts'
 import { TOOL_ADAPTERS } from './adapters/index.ts'
 import { filterToolsForCaller, listToolDefinitions } from './registry.ts'
 import type {
@@ -43,6 +45,30 @@ export interface ExecuteToolInput {
   /** Separate from capability: future write tools may require approval. */
   approvalGranted?: boolean
 }
+
+export interface PrepareToolExecutionInput {
+  workspaceId: string
+  toolKey: string
+  args?: unknown
+  caller: ToolCaller
+}
+
+export type ToolPreparationResult =
+  | {
+      ok: true
+      definition: ToolDefinition
+      adapter: ToolAdapter
+      parsedArgs: unknown
+      actionKey: ActionKey
+    }
+  | {
+      ok: false
+      error: {
+        code: ToolErrorCode
+        message: string
+      }
+      definition: ToolDefinition | null
+    }
 
 export interface ExecuteToolDeps {
   definitions?: readonly ToolDefinition[]
@@ -149,99 +175,144 @@ async function runWithTimeout(
   }
 }
 
-export async function executeTool(
-  input: ExecuteToolInput,
+/**
+ * Prepares and validates a requested tool call without executing the adapter.
+ * Used by both executeTool and the direct Agent task policy loop to avoid
+ * creating approval requests for malformed, unpermitted, or unconfigured tools.
+ */
+export function prepareToolExecution(
+  input: PrepareToolExecutionInput,
   deps: ExecuteToolDeps = {},
-): Promise<ToolExecutionResult> {
-  const startedAt = (deps.now ?? Date.now)()
-  const executionId = newId()
+): ToolPreparationResult {
   const definitions = deps.definitions ?? listToolDefinitions()
   const definition = definitionMap(definitions).get(input.toolKey) ?? null
 
   if (!definition) {
-    return fail({
-      input,
+    return {
+      ok: false,
+      error: {
+        code: 'tool_not_found',
+        message: 'That tool does not exist.',
+      },
       definition: null,
-      startedAt,
-      executionId,
-      code: 'tool_not_found',
-      message: 'That tool does not exist.',
-    })
+    }
   }
 
   // 1. Agent is allowed to request it. Disabled/archived agents get nothing.
   if (input.caller.agentStatus !== 'active') {
-    return fail({
-      input,
+    return {
+      ok: false,
+      error: {
+        code: 'capability_denied',
+        message: `${input.caller.agentName} is not active right now.`,
+      },
       definition,
-      startedAt,
-      executionId,
-      code: 'capability_denied',
-      message: `${input.caller.agentName} is not active right now.`,
-    })
+    }
   }
   if (!input.caller.capabilities.includes(definition.requiredCapability)) {
-    return fail({
-      input,
+    return {
+      ok: false,
+      error: {
+        code: 'capability_denied',
+        message: `${input.caller.agentName} is not allowed to use ${definition.name}.`,
+      },
       definition,
-      startedAt,
-      executionId,
-      code: 'capability_denied',
-      message: `${input.caller.agentName} is not allowed to use ${definition.name}.`,
-    })
+    }
   }
 
   // 2. Tool is available/configured. Capability never implies availability.
   if (definition.status === 'disabled') {
-    return fail({
-      input,
+    return {
+      ok: false,
+      error: {
+        code: 'tool_disabled',
+        message: `${definition.name} is disabled.`,
+      },
       definition,
-      startedAt,
-      executionId,
-      code: 'tool_disabled',
-      message: `${definition.name} is disabled.`,
-    })
+    }
   }
   if (definition.status === 'needs_setup' || definition.status === 'unavailable') {
-    return fail({
-      input,
+    return {
+      ok: false,
+      error: {
+        code: 'not_configured',
+        message:
+          definition.status === 'needs_setup'
+            ? `${definition.name} needs setup before it can be used.`
+            : `${definition.name} is not available yet.`,
+      },
       definition,
-      startedAt,
-      executionId,
-      code: 'not_configured',
-      message:
-        definition.status === 'needs_setup'
-          ? `${definition.name} needs setup before it can be used.`
-          : `${definition.name} is not available yet.`,
-    })
+    }
+  }
+
+  const adapters = deps.adapters ?? TOOL_ADAPTERS
+  const adapter = adapters.get(definition.key)
+  if (!adapter) {
+    return {
+      ok: false,
+      error: {
+        code: 'not_configured',
+        message: `${definition.name} has no configured implementation.`,
+      },
+      definition,
+    }
+  }
+  if (typeof adapter.isConfigured === 'function' && !adapter.isConfigured()) {
+    return {
+      ok: false,
+      error: {
+        code: 'not_configured',
+        message: `${definition.name} needs setup before it can be used.`,
+      },
+      definition,
+    }
   }
 
   // 3. Input is validated server-side. AI- or client-supplied args are data,
   // never code and never trusted.
   const parsedInput = definition.inputSchema.safeParse(input.args ?? {})
   if (!parsedInput.success) {
+    return {
+      ok: false,
+      error: {
+        code: 'invalid_input',
+        message: `Invalid input for ${definition.name}.`,
+      },
+      definition,
+    }
+  }
+
+  const actionKey = resolveActionKeyForTool(definition.key, definition)
+
+  return {
+    ok: true,
+    definition,
+    adapter,
+    parsedArgs: parsedInput.data,
+    actionKey,
+  }
+}
+
+export async function executeTool(
+  input: ExecuteToolInput,
+  deps: ExecuteToolDeps = {},
+): Promise<ToolExecutionResult> {
+  const startedAt = (deps.now ?? Date.now)()
+  const executionId = newId()
+
+  const prep = prepareToolExecution(input, deps)
+  if (!prep.ok) {
     return fail({
       input,
-      definition,
+      definition: prep.definition,
       startedAt,
       executionId,
-      code: 'invalid_input',
-      message: `Invalid input for ${definition.name}.`,
+      code: prep.error.code,
+      message: prep.error.message,
     })
   }
 
-  const adapters = deps.adapters ?? TOOL_ADAPTERS
-  const adapter = adapters.get(definition.key)
-  if (!adapter) {
-    return fail({
-      input,
-      definition,
-      startedAt,
-      executionId,
-      code: 'not_configured',
-      message: `${definition.name} has no configured implementation.`,
-    })
-  }
+  const { definition, adapter, parsedArgs } = prep
 
   // 4. Approval is a separate gate. STEP 9 has no approval workflow, but an
   // approval-gated tool can never execute merely because capability exists.
@@ -263,7 +334,7 @@ export async function executeTool(
       adapter.run({
         db: input.db,
         workspaceId: input.workspaceId,
-        args: parsedInput.data,
+        args: parsedArgs,
         caller: input.caller,
         ...(input.context ? { context: input.context } : {}),
       }),
@@ -326,7 +397,7 @@ export async function executeTool(
       risk: definition.risk,
       requiredCapability: definition.requiredCapability,
       durationMs,
-      argsSummary: definition.summarizeInput?.(parsedInput.data) ?? {},
+      argsSummary: definition.summarizeInput?.(parsedArgs) ?? {},
       idempotencyKey: input.idempotencyKey ?? null,
     }),
   })

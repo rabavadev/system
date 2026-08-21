@@ -158,7 +158,7 @@ export interface PolicyResolutionRequest {
   workspaceId: Id
   brandId?: Id | null
   origin: PolicyRequestOrigin
-  risk?: readonly ToolRisk[] | ToolRisk
+  risk?: readonly ToolRisk[] | ToolRisk | null
   target?: {
     entityType?: string
     entityId?: string

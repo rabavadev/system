@@ -70,7 +70,7 @@ export interface CreateApprovalRequestInput {
   subjectType?: string | null
   subjectId?: string | null
   summary?: string
-  risk?: ToolRisk
+  risk?: readonly ToolRisk[] | ToolRisk | null
   target?: PolicyResolutionRequest['target']
   payload: Record<string, unknown>
   expiresAt?: string | null

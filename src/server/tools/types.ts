@@ -114,6 +114,7 @@ export const TOOL_ERROR_CODES = [
   'invalid_input',
   'scope_denied',
   'approval_required',
+  'blocked',
   'not_configured',
   'no_data',
   'execution_failed',

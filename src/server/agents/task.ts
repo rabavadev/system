@@ -7,6 +7,7 @@ import type {
   AIToolDefinition,
   AIToolTraceSummary,
 } from '../ai/types.ts'
+import { createApprovalRequest } from '../approval/index.ts'
 import type { ContextPackage } from '../context/index.ts'
 import { emitEventSafe } from '../db/event.ts'
 import { newId, type SqlDatabase } from '../db/sql.ts'
@@ -14,6 +15,7 @@ import {
   type ExecuteToolDeps,
   executeTool,
   getAvailableTools,
+  prepareToolExecution,
   type ToolCaller,
   type ToolKey,
 } from '../tools/index.ts'
@@ -260,15 +262,26 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
       toolCallCount += 1
       const toolStart = Date.now()
 
-      const toolDef = availableTools.find((t) => t.key === call.toolKey)
-      if (!toolDef) {
+      // 1. Pre-execution validation: identity, capability, status, config, schemas
+      const prepared = prepareToolExecution(
+        {
+          workspaceId,
+          toolKey: call.toolKey,
+          args: call.args,
+          caller,
+        },
+        input.toolDeps,
+      )
+
+      if (!prepared.ok) {
+        const durationMs = Math.max(0, Date.now() - toolStart)
         currentMessages.push({
           role: 'tool',
           toolCallId: call.id,
           toolKey: call.toolKey,
           content: JSON.stringify({
-            error: 'capability_denied',
-            message: `Tool '${call.toolKey}' is not available or permitted for this agent.`,
+            error: prepared.error.code,
+            message: prepared.error.message,
           }),
         })
         toolTraces.push({
@@ -277,8 +290,8 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
           args: call.args,
           resultCount: 0,
           status: 'failed',
-          durationMs: Math.max(0, Date.now() - toolStart),
-          error: 'capability_denied',
+          durationMs,
+          error: prepared.error.code,
         })
         continue
       }
@@ -287,6 +300,102 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
       const conversationId =
         typeof metaObj?.conversationId === 'string' ? metaObj.conversationId : undefined
 
+      // 2. Policy resolution & approval request creation using server-derived context
+      const brandId =
+        pkg.activeScope?.type === 'brand' ? (pkg.activeScope.id ?? null) : (pkg.brand?.id ?? null)
+
+      const approvalResult = await createApprovalRequest(db, {
+        workspaceId,
+        actionKey: prepared.actionKey,
+        origin: 'agent',
+        requestedByType: 'agent',
+        requestedById: agent.id,
+        brandId,
+        conversationId: conversationId ?? null,
+        executionId,
+        summary: `${agent.name} requests ${prepared.definition.name}`,
+        payload: {
+          toolKey: call.toolKey,
+          args: prepared.parsedArgs,
+          agentId: agent.id,
+          agentVersionId: version.id,
+        },
+        risk: prepared.definition.risk,
+      })
+
+      // 3. Handle BLOCKED mode
+      if (approvalResult.status === 'blocked') {
+        const durationMs = Math.max(0, Date.now() - toolStart)
+        currentMessages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolKey: call.toolKey,
+          content: JSON.stringify({
+            error: 'blocked',
+            message: approvalResult.reason ?? 'This action is blocked by your Autonomy settings.',
+          }),
+        })
+        toolTraces.push({
+          toolKey: call.toolKey,
+          callNumber: toolCallCount,
+          args: call.args,
+          resultCount: 0,
+          status: 'failed',
+          durationMs,
+          error: 'blocked',
+        })
+        continue
+      }
+
+      // 4. Handle REVIEW mode
+      if (approvalResult.status === 'pending') {
+        const durationMs = Math.max(0, Date.now() - toolStart)
+        currentMessages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolKey: call.toolKey,
+          content: JSON.stringify({
+            error: 'approval_required',
+            message: 'This action needs user approval before it can run.',
+          }),
+        })
+        toolTraces.push({
+          toolKey: call.toolKey,
+          callNumber: toolCallCount,
+          args: call.args,
+          resultCount: 0,
+          status: 'failed',
+          durationMs,
+          error: 'approval_required',
+        })
+        continue
+      }
+
+      // 5. Handle hard tool guard if definition requires approval
+      if (prepared.definition.approval === 'required') {
+        const durationMs = Math.max(0, Date.now() - toolStart)
+        currentMessages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolKey: call.toolKey,
+          content: JSON.stringify({
+            error: 'approval_required',
+            message: `${prepared.definition.name} needs approval before it can run.`,
+          }),
+        })
+        toolTraces.push({
+          toolKey: call.toolKey,
+          callNumber: toolCallCount,
+          args: call.args,
+          resultCount: 0,
+          status: 'failed',
+          durationMs,
+          error: 'approval_required',
+        })
+        continue
+      }
+
+      // 6. AUTO mode: execute authorized tool
       const toolExecResult = await executeTool(
         {
           db,
@@ -298,6 +407,7 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
             ...(conversationId ? { conversationId } : {}),
             taskText: task,
           },
+          approvalGranted: true,
         },
         input.toolDeps,
       )

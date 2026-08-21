@@ -195,7 +195,7 @@ export async function insertApprovalRequest(
       record.reason,
       record.resolvedMode,
       record.policySource,
-      record.risk,
+      record.risk ? (Array.isArray(record.risk) ? record.risk[0] : String(record.risk)) : null,
       record.snapshotJson,
       record.fingerprint,
       record.status,

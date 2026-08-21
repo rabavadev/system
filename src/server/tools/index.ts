@@ -13,8 +13,13 @@ export type {
   WebSearchResultItem,
 } from './adapters/web/types.ts'
 export { TOOL_DEFINITIONS } from './definitions.ts'
-export type { ExecuteToolDeps, ExecuteToolInput } from './executor.ts'
-export { executeTool, getAvailableTools } from './executor.ts'
+export type {
+  ExecuteToolDeps,
+  ExecuteToolInput,
+  PrepareToolExecutionInput,
+  ToolPreparationResult,
+} from './executor.ts'
+export { executeTool, getAvailableTools, prepareToolExecution } from './executor.ts'
 export {
   filterToolsForCaller,
   getToolDefinition,
