@@ -25,7 +25,9 @@ import {
   getWorkflowVersion,
   listWorkflowStepRuns,
   updateWorkflowRun,
+  validateWorkflowRunScope,
 } from '../db/workflow.ts'
+import type { WorkflowRunScopeType } from '~/types/domain'
 import { type ExecuteToolDeps, executeTool } from '../tools/index.ts'
 import {
   type BindingScope,
@@ -217,7 +219,7 @@ export interface StartWorkflowRunInput {
   workflowId: string
   inputs: Record<string, unknown>
   scope?: {
-    type: 'workspace' | 'brand' | 'niche' | 'product' | 'account' | 'campaign'
+    type: WorkflowRunScopeType
     id: string
   } | null
   triggerType?: 'manual' | 'schedule' | 'event' | 'agent'
@@ -270,6 +272,25 @@ export async function startWorkflowRun(input: StartWorkflowRunInput): Promise<St
   const inputs = validateInputs(definition.inputs, input.inputs)
   if (!inputs.ok) return { ok: false, message: inputs.message }
 
+  // Validate explicit scope if provided
+  let scopeType: WorkflowRunScopeType | null = null
+  let scopeId: string | null = null
+  if (input.scope !== undefined && input.scope !== null) {
+    if (!input.scope.type || !input.scope.id) {
+      return { ok: false, message: 'scope.type and scope.id must both be provided.' }
+    }
+    try {
+      await validateWorkflowRunScope(db, workspaceId, input.scope.type, input.scope.id)
+    } catch (err: unknown) {
+      return {
+        ok: false,
+        message: err instanceof Error ? err.message : 'Invalid workflow run scope target.',
+      }
+    }
+    scopeType = input.scope.type
+    scopeId = input.scope.id
+  }
+
   // Scope goes through the Context Engine. Cross-workspace ids, archived
   // entities and broken relationships reject here, not three steps later.
   let pkg: ContextPackage
@@ -303,6 +324,8 @@ export async function startWorkflowRun(input: StartWorkflowRunInput): Promise<St
     contextJson: boundedSnapshot(pkg, WORKFLOW_LIMITS.maxStepSnapshotChars * 4),
     planJson: JSON.stringify(plan),
     stateJson: JSON.stringify(state),
+    scopeType,
+    scopeId,
   })
 
   await workflowEvent(db, run, workspaceId, 'workflow.run_started', {

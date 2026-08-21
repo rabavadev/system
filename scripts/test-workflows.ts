@@ -24,11 +24,14 @@ import { addAgentVersion, setAgentStatus } from '../src/server/db/agent.ts'
 import { listRecentEvents } from '../src/server/db/event.ts'
 import { queryAll, type SqlDatabase } from '../src/server/db/sql.ts'
 import {
+  createWorkflowRun,
   getWorkflowById,
   getWorkflowRunById,
   getWorkflowVersion,
+  listWorkflowRunsByScope,
   listWorkflowStepRuns,
   listWorkflowVersions,
+  validateWorkflowRunScope,
 } from '../src/server/db/workflow.ts'
 import { TOOL_ADAPTERS } from '../src/server/tools/adapters/index.ts'
 import {
@@ -58,6 +61,10 @@ const BRAND_B = crypto.randomUUID()
 const PRODUCT_A = crypto.randomUUID()
 const PRODUCT_B = crypto.randomUUID()
 const PRODUCT_ARCHIVED = crypto.randomUUID()
+const NICHE_A = crypto.randomUUID()
+const ACCOUNT_A = crypto.randomUUID()
+const PLATFORM_A = crypto.randomUUID()
+const CAMPAIGN_A = crypto.randomUUID()
 const NOW = '2026-08-19T00:00:00.000Z'
 
 function shim(db: Database.Database): SqlDatabase {
@@ -137,6 +144,39 @@ function freshDb(): SqlDatabase {
     NOW,
     NOW,
   )
+  ins(
+    `INSERT INTO niche (id, brand_id, name, description, created_at, updated_at)
+     VALUES (?, ?, 'Niche A', NULL, ?, ?)`,
+    NICHE_A,
+    BRAND_A,
+    NOW,
+    NOW,
+  )
+  ins(
+    `INSERT INTO platform (id, adapter_key, name, created_at)
+     VALUES (?, 'instagram', 'Instagram', ?)`,
+    PLATFORM_A,
+    NOW,
+  )
+  ins(
+    `INSERT INTO account (id, workspace_id, platform_id, handle, status, created_at, updated_at)
+     VALUES (?, ?, ?, 'acct_a', 'active', ?, ?)`,
+    ACCOUNT_A,
+    WS_A,
+    PLATFORM_A,
+    NOW,
+    NOW,
+  )
+  ins(
+    `INSERT INTO campaign (id, workspace_id, brand_id, product_id, name, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'Campaign A', 'active', ?, ?)`,
+    CAMPAIGN_A,
+    WS_A,
+    BRAND_A,
+    PRODUCT_A,
+    NOW,
+    NOW,
+  )
   return shim(sqlite)
 }
 
@@ -171,14 +211,15 @@ function scriptedAdapter(script: ((call: number) => AIAdapterRawResponse | Error
   }
 }
 
-async function agentIds(db: SqlDatabase) {
-  const handles = await ensureBuiltinAgents(db, WS_A)
+async function agentIds(db: SqlDatabase, workspaceId = WS_A) {
+  const handles = await ensureBuiltinAgents(db, workspaceId)
   const researcher = handles.get('researcher')
   const strategist = handles.get('strategist')
   const critic = handles.get('critic')
   const analytics = handles.get('analytics')
-  assert.ok(researcher && strategist && critic && analytics)
-  return { researcher, strategist, critic, analytics }
+  const publisher = handles.get('publisher')
+  assert.ok(researcher && strategist && critic && analytics && publisher)
+  return { researcher, strategist, critic, analytics, publisher }
 }
 
 function twoAgentDefinition(researcherId: string, criticId: string) {
@@ -1487,4 +1528,462 @@ test('engine runs write zero chat messages (chat suites cover the chat path)', a
   assert.equal(run?.status, 'succeeded')
   const messages = await queryAll(db, `SELECT id FROM message`, [])
   assert.equal(messages.length, 0, 'workflow steps never create chat messages')
+})
+
+test('validateWorkflowRunScope validates targets and rejects cross-workspace / archived / invalid targets', async () => {
+  const db = freshDb()
+
+  // 1. Valid targets for all 6 scope types succeed
+  await validateWorkflowRunScope(db, WS_A, 'workspace', WS_A)
+  await validateWorkflowRunScope(db, WS_A, 'brand', BRAND_A)
+  await validateWorkflowRunScope(db, WS_A, 'niche', NICHE_A)
+  await validateWorkflowRunScope(db, WS_A, 'product', PRODUCT_A)
+  await validateWorkflowRunScope(db, WS_A, 'account', ACCOUNT_A)
+  await validateWorkflowRunScope(db, WS_A, 'campaign', CAMPAIGN_A)
+
+  // 2. Empty scope ID rejected
+  await assert.rejects(
+    () => validateWorkflowRunScope(db, WS_A, 'brand', ''),
+    /Scope target ID cannot be empty/i,
+  )
+
+  // 3. Cross-workspace targets rejected
+  await assert.rejects(
+    () => validateWorkflowRunScope(db, WS_A, 'workspace', WS_B),
+    /different workspace/i,
+  )
+  await assert.rejects(
+    () => validateWorkflowRunScope(db, WS_A, 'brand', BRAND_B),
+    /different workspace/i,
+  )
+  await assert.rejects(
+    () => validateWorkflowRunScope(db, WS_A, 'product', PRODUCT_B),
+    /different workspace/i,
+  )
+
+  // 4. Nonexistent targets rejected
+  const fakeId = crypto.randomUUID()
+  await assert.rejects(
+    () => validateWorkflowRunScope(db, WS_A, 'brand', fakeId),
+    /different workspace/i,
+  )
+  await assert.rejects(
+    () => validateWorkflowRunScope(db, WS_A, 'niche', fakeId),
+    /different workspace/i,
+  )
+  await assert.rejects(
+    () => validateWorkflowRunScope(db, WS_A, 'campaign', fakeId),
+    /different workspace/i,
+  )
+
+  // 5. Archived product rejected
+  await assert.rejects(
+    () => validateWorkflowRunScope(db, WS_A, 'product', PRODUCT_ARCHIVED),
+    /archived/i,
+  )
+})
+
+test('startWorkflowRun supports all generic scopes and rejects invalid/cross-workspace scopes', async () => {
+  const db = freshDb()
+  const { researcher, critic } = await agentIds(db)
+  const created = await createWorkflowWithVersion(db, {
+    workspaceId: WS_A,
+    name: 'Scoped Flow',
+    definition: twoAgentDefinition(researcher.agent.id, critic.agent.id),
+  })
+  assert.ok(created.ok)
+  const wfId = created.value.workflowId
+
+  // 1. Unscoped run has NULL scope
+  const unscoped = await startWorkflowRun({
+    db,
+    workspaceId: WS_A,
+    workflowId: wfId,
+    inputs: { product_id: PRODUCT_A },
+    deps: echoDeps(),
+  })
+  assert.ok(unscoped.ok)
+  const unscopedRun = await getRun(db, unscoped.runId)
+  assert.equal(unscopedRun?.scopeType, null)
+  assert.equal(unscopedRun?.scopeId, null)
+
+  // 2. Explicit scopes for brand, niche, product, account, campaign, workspace
+  const scopes: Array<{ type: 'workspace' | 'brand' | 'niche' | 'product' | 'account' | 'campaign'; id: string }> = [
+    { type: 'workspace', id: WS_A },
+    { type: 'brand', id: BRAND_A },
+    { type: 'niche', id: NICHE_A },
+    { type: 'product', id: PRODUCT_A },
+    { type: 'account', id: ACCOUNT_A },
+    { type: 'campaign', id: CAMPAIGN_A },
+  ]
+
+  for (const s of scopes) {
+    const res = await startWorkflowRun({
+      db,
+      workspaceId: WS_A,
+      workflowId: wfId,
+      inputs: { product_id: PRODUCT_A },
+      scope: s,
+      deps: echoDeps(),
+    })
+    assert.ok(res.ok)
+    const run = await getRun(db, res.runId)
+    assert.equal(run?.scopeType, s.type)
+    assert.equal(run?.scopeId, s.id)
+  }
+
+  // 3. Cross-workspace scope rejected by startWorkflowRun
+  const crossWs = await startWorkflowRun({
+    db,
+    workspaceId: WS_A,
+    workflowId: wfId,
+    inputs: { product_id: PRODUCT_A },
+    scope: { type: 'brand', id: BRAND_B },
+    deps: echoDeps(),
+  })
+  assert.equal(crossWs.ok, false)
+
+  // 4. Archived scope rejected by startWorkflowRun
+  const archivedScope = await startWorkflowRun({
+    db,
+    workspaceId: WS_A,
+    workflowId: wfId,
+    inputs: { product_id: PRODUCT_A },
+    scope: { type: 'product', id: PRODUCT_ARCHIVED },
+    deps: echoDeps(),
+  })
+  assert.equal(archivedScope.ok, false)
+})
+
+test('listWorkflowRunsByScope returns runs matching scope and excludes others', async () => {
+  const db = freshDb()
+  const { researcher, critic } = await agentIds(db)
+  const created = await createWorkflowWithVersion(db, {
+    workspaceId: WS_A,
+    name: 'Query Test Flow',
+    definition: twoAgentDefinition(researcher.agent.id, critic.agent.id),
+  })
+  assert.ok(created.ok)
+  const wfId = created.value.workflowId
+
+  // Create brand run
+  const brandRun = await startWorkflowRun({
+    db,
+    workspaceId: WS_A,
+    workflowId: wfId,
+    inputs: { product_id: PRODUCT_A },
+    scope: { type: 'brand', id: BRAND_A },
+    deps: echoDeps(),
+  })
+  assert.ok(brandRun.ok)
+
+  // Create niche run
+  const nicheRun = await startWorkflowRun({
+    db,
+    workspaceId: WS_A,
+    workflowId: wfId,
+    inputs: { product_id: PRODUCT_A },
+    scope: { type: 'niche', id: NICHE_A },
+    deps: echoDeps(),
+  })
+  assert.ok(nicheRun.ok)
+
+  // Query brand scope
+  const brandRuns = await listWorkflowRunsByScope(db, {
+    workspaceId: WS_A,
+    scopeType: 'brand',
+    scopeId: BRAND_A,
+  })
+  assert.equal(brandRuns.length, 1)
+  assert.equal(brandRuns[0].id, brandRun.runId)
+  assert.equal(brandRuns[0].scopeType, 'brand')
+  assert.equal(brandRuns[0].scopeId, BRAND_A)
+
+  // Query niche scope
+  const nicheRuns = await listWorkflowRunsByScope(db, {
+    workspaceId: WS_A,
+    scopeType: 'niche',
+    scopeId: NICHE_A,
+  })
+  assert.equal(nicheRuns.length, 1)
+  assert.equal(nicheRuns[0].id, nicheRun.runId)
+  assert.equal(nicheRuns[0].scopeType, 'niche')
+  assert.equal(nicheRuns[0].scopeId, NICHE_A)
+
+  // Query unused scope (campaign) returns empty
+  const campaignRuns = await listWorkflowRunsByScope(db, {
+    workspaceId: WS_A,
+    scopeType: 'campaign',
+    scopeId: CAMPAIGN_A,
+  })
+  assert.equal(campaignRuns.length, 0)
+})
+
+test('resumeWorkflowRun preserves scope on waiting/resumed runs', async () => {
+  const db = freshDb()
+  const { researcher } = await agentIds(db)
+  const created = await createWorkflowWithVersion(db, {
+    workspaceId: WS_A,
+    name: 'Resumable Scoped Flow',
+    definition: {
+      inputs: [],
+      entryStepId: 'step_1',
+      steps: [
+        {
+          id: 'step_1',
+          type: 'agent',
+          agent: { agentId: researcher.agent.id, versionPolicy: 'current_at_run' },
+          task: 'Do work',
+          inputs: [],
+          next: null,
+        },
+      ],
+    },
+    activate: true,
+  })
+  assert.ok(created.ok)
+
+  // Start with drive: false (so it creates run in running state without driving)
+  const started = await startWorkflowRun({
+    db,
+    workspaceId: WS_A,
+    workflowId: created.value.workflowId,
+    inputs: {},
+    scope: { type: 'campaign', id: CAMPAIGN_A },
+    deps: echoDeps(),
+    drive: false,
+  })
+  assert.ok(started.ok)
+
+  let run = await getRun(db, started.runId)
+  assert.ok(run)
+  assert.equal(run.scopeType, 'campaign')
+  assert.equal(run.scopeId, CAMPAIGN_A)
+
+  // Resume the run
+  const resumed = await resumeWorkflowRun(db, started.runId, echoDeps())
+  assert.ok(resumed.ok)
+
+  run = await getRun(db, started.runId)
+  assert.ok(run)
+  assert.equal(run.status, 'succeeded')
+  assert.equal(run.scopeType, 'campaign')
+  assert.equal(run.scopeId, CAMPAIGN_A)
+})
+
+test('resumeWorkflowAfterApproval preserves scope on approval-gated runs', async () => {
+  const db = freshDb()
+  const { researcher } = await agentIds(db)
+
+  const gatedTool: ToolDefinition = {
+    key: 'test.gated_scoped' as never,
+    name: 'Gated Scoped Tool',
+    description: 'Requires approval.',
+    category: 'system',
+    inputSchema: z.object({}),
+    outputSchema: z.object({ ok: z.boolean() }),
+    requiredCapability: 'read_context',
+    risk: ['write'],
+    executionMode: 'sync',
+    status: 'available',
+    origin: 'internal',
+    version: 1,
+    cost: 'none',
+    approval: 'required',
+  }
+  const gatedAdapter: ToolAdapter = {
+    key: 'test.gated_scoped' as never,
+    async run() {
+      return { ok: true }
+    },
+  }
+  const deps: WorkflowEngineDeps = {
+    ...echoDeps(),
+    tools: {
+      definitions: [...listToolDefinitions(), gatedTool],
+      adapters: new Map([...TOOL_ADAPTERS, ['test.gated_scoped' as never, gatedAdapter]]),
+    },
+  }
+
+  const created = await createWorkflowWithVersion(
+    db,
+    {
+      workspaceId: WS_A,
+      name: 'Approval Scoped Flow',
+      definition: {
+        inputs: [],
+        entryStepId: 'step_1',
+        steps: [
+          {
+            id: 'step_1',
+            type: 'tool',
+            toolKey: 'test.gated_scoped',
+            requestedBy: { agentId: researcher.agent.id, versionPolicy: 'current_at_run' },
+            inputs: [],
+            next: null,
+          },
+        ],
+      },
+      activate: true,
+    },
+    { toolDefinitions: deps.tools?.definitions },
+  )
+  assert.ok(created.ok)
+
+  const started = await startWorkflowRun({
+    db,
+    workspaceId: WS_A,
+    workflowId: created.value.workflowId,
+    inputs: {},
+    scope: { type: 'campaign', id: CAMPAIGN_A },
+    deps,
+    drive: true,
+  })
+  assert.ok(started.ok)
+
+  let run = await getRun(db, started.runId)
+  assert.ok(run)
+  assert.equal(run.status, 'waiting')
+  assert.equal(run.scopeType, 'campaign')
+  assert.equal(run.scopeId, CAMPAIGN_A)
+
+  // Find approval request
+  const approval = await queryAll<{ id: string }>(
+    db,
+    `SELECT id FROM approval WHERE run_id = ? AND status = 'pending'`,
+    [started.runId],
+  )
+  assert.equal(approval.length, 1)
+
+  const { decideApprovalRequest } = await import('../src/server/approval/service.ts')
+  const { resumeWorkflowAfterApproval } = await import('../src/server/workflows/index.ts')
+
+  await decideApprovalRequest(db, {
+    workspaceId: WS_A,
+    requestId: approval[0].id,
+    decision: 'approved',
+    actor: { actorType: 'user', actorId: crypto.randomUUID() },
+  })
+
+  const resumed = await resumeWorkflowAfterApproval(db, approval[0].id, deps)
+  assert.ok(resumed.ok)
+
+  run = await getRun(db, started.runId)
+  assert.ok(run)
+  assert.equal(run.status, 'succeeded')
+  assert.equal(run.scopeType, 'campaign')
+  assert.equal(run.scopeId, CAMPAIGN_A)
+})
+
+test('scope does not change after run start (immutability)', async () => {
+  const db = freshDb()
+  const { researcher } = await agentIds(db)
+  const created = await createWorkflowWithVersion(db, {
+    workspaceId: WS_A,
+    name: 'Immutability Flow',
+    definition: {
+      inputs: [],
+      entryStepId: 'step_1',
+      steps: [
+        {
+          id: 'step_1',
+          type: 'agent',
+          agent: { agentId: researcher.agent.id, versionPolicy: 'current_at_run' },
+          task: 'Execute',
+          inputs: [],
+          next: null,
+        },
+      ],
+    },
+    activate: true,
+  })
+  assert.ok(created.ok)
+
+  const started = await startWorkflowRun({
+    db,
+    workspaceId: WS_A,
+    workflowId: created.value.workflowId,
+    inputs: {},
+    scope: { type: 'brand', id: BRAND_A },
+    deps: echoDeps(),
+    drive: true,
+  })
+  assert.ok(started.ok)
+
+  const runBefore = await getRun(db, started.runId)
+  assert.ok(runBefore)
+  assert.equal(runBefore.scopeType, 'brand')
+  assert.equal(runBefore.scopeId, BRAND_A)
+
+  // Normal engine updates update status/state/output, never overwriting scope_type/scope_id
+  const runAfter = await getRun(db, started.runId)
+  assert.equal(runAfter?.scopeType, 'brand')
+  assert.equal(runAfter?.scopeId, BRAND_A)
+})
+
+test('listWorkflowRunsByScope excludes runs from another workspace with same scope ID', async () => {
+  const db = freshDb()
+  const { researcher } = await agentIds(db)
+
+  const wfA = await createWorkflowWithVersion(db, {
+    workspaceId: WS_A,
+    name: 'WFA',
+    definition: {
+      inputs: [],
+      entryStepId: 's1',
+      steps: [
+        {
+          id: 's1',
+          type: 'agent',
+          agent: { agentId: researcher.agent.id, versionPolicy: 'current_at_run' },
+          task: 'Task',
+          inputs: [],
+          next: null,
+        },
+      ],
+    },
+    activate: true,
+  })
+  assert.ok(wfA.ok)
+
+  const agentsB = await agentIds(db, WS_B)
+  const wfB = await createWorkflowWithVersion(db, {
+    workspaceId: WS_B,
+    name: 'WFB',
+    definition: {
+      inputs: [],
+      entryStepId: 's1',
+      steps: [
+        {
+          id: 's1',
+          type: 'agent',
+          agent: { agentId: agentsB.researcher.agent.id, versionPolicy: 'current_at_run' },
+          task: 'Task',
+          inputs: [],
+          next: null,
+        },
+      ],
+    },
+    activate: true,
+  })
+  assert.ok(wfB.ok)
+
+  // Start run in WS_A with brand BRAND_A
+  const runA = await startWorkflowRun({
+    db,
+    workspaceId: WS_A,
+    workflowId: wfA.value.workflowId,
+    inputs: {},
+    scope: { type: 'brand', id: BRAND_A },
+    deps: echoDeps(),
+  })
+  assert.ok(runA.ok)
+
+  // Query from WS_B for BRAND_A returns 0 runs
+  const wsBQuery = await listWorkflowRunsByScope(db, {
+    workspaceId: WS_B,
+    scopeType: 'brand',
+    scopeId: BRAND_A,
+  })
+  assert.equal(wsBQuery.length, 0)
 })

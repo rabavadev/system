@@ -74,6 +74,13 @@ const setStatusWire = z.object({
 const startRunWire = z.object({
   workflowId: z.uuid(),
   inputs: z.record(z.string(), z.unknown()).default({}),
+  scope: z
+    .object({
+      type: z.enum(['workspace', 'brand', 'niche', 'product', 'account', 'campaign']),
+      id: z.uuid(),
+    })
+    .nullable()
+    .optional(),
 })
 
 const runIdWire = z.object({ runId: z.uuid() })
@@ -346,6 +353,7 @@ export const startWorkflowRunFn = createServerFn({ method: 'POST' })
       workspaceId: workspace.id,
       workflowId: data.workflowId,
       inputs: data.inputs,
+      scope: data.scope,
       deps: engineDeps,
       drive: false,
     })

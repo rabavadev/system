@@ -1213,13 +1213,11 @@ export async function listCampaignWorkflowRuns(
      FROM workflow_run r
      JOIN workflow w ON w.id = r.workflow_id
      WHERE w.workspace_id = ?
-       AND (
-         r.context_json LIKE ?
-         OR r.input LIKE ?
-       )
+       AND r.scope_type = 'campaign'
+       AND r.scope_id = ?
      ORDER BY r.created_at DESC, r.rowid DESC
      LIMIT ?`,
-    [workspaceId, `%${campaignId}%`, `%${campaignId}%`, limit],
+    [workspaceId, campaignId, limit],
   )
 
   const items: CampaignWorkflowRunItem[] = []

@@ -45,7 +45,7 @@ const id = () => crypto.randomUUID()
 test('clean database migrates from zero; all tables exist', () => {
   const db = freshDb()
   const files = migrate(db)
-  assert.equal(files.length, 17, `expected 17 migrations, got: ${files.join(', ')}`)
+  assert.equal(files.length, 18, `expected 18 migrations, got: ${files.join(', ')}`)
 
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -678,6 +678,179 @@ test('research table enforces research_type enum and defaults to general', () =>
       db.prepare(`UPDATE research SET research_type = 'invalid_type' WHERE id = ?`).run(researchId),
     /CHECK/i,
   )
+
+  db.close()
+})
+
+test('workflow_run table enforces scope_type enum, pair invariant, and has scope index', () => {
+  const db = freshDb()
+  migrate(db)
+  const wsId = id()
+  db.prepare(
+    `INSERT INTO workspace (id, name, slug, created_at, updated_at) VALUES (?, 'WS', 'ws', ?, ?)`,
+  ).run(wsId, NOW, NOW)
+
+  const wfId = id()
+  db.prepare(
+    `INSERT INTO workflow (id, workspace_id, name, status, created_at, updated_at)
+     VALUES (?, ?, 'WF', 'active', ?, ?)`,
+  ).run(wfId, wsId, NOW, NOW)
+
+  const wfVerId = id()
+  db.prepare(
+    `INSERT INTO workflow_version (id, workflow_id, version, definition, created_at)
+     VALUES (?, ?, 1, '{}', ?)`,
+  ).run(wfVerId, wfId, NOW)
+
+  // 1. Both NULL is allowed
+  const run1Id = id()
+  db.prepare(
+    `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
+     VALUES (?, ?, ?, 'running', ?, ?, NULL, NULL)`,
+  ).run(run1Id, wfId, wfVerId, NOW, NOW)
+
+  const row1 = db.prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`).get(run1Id)
+  assert.equal(row1.scope_type, null)
+  assert.equal(row1.scope_id, null)
+
+  // 2. Both valid non-NULL is allowed for all valid scope types
+  const validScopes = ['workspace', 'brand', 'niche', 'product', 'account', 'campaign']
+  for (const sType of validScopes) {
+    const rId = id()
+    const targetId = id()
+    db.prepare(
+      `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
+       VALUES (?, ?, ?, 'running', ?, ?, ?, ?)`,
+    ).run(rId, wfId, wfVerId, NOW, NOW, sType, targetId)
+    const rRow = db.prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`).get(rId)
+    assert.equal(rRow.scope_type, sType)
+    assert.equal(rRow.scope_id, targetId)
+  }
+
+  // 3. Invalid scope_type rejected by CHECK constraint
+  assert.throws(
+    () =>
+      db.prepare(
+        `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
+         VALUES (?, ?, ?, 'running', ?, ?, 'invalid_scope', ?)`,
+      ).run(id(), wfId, wfVerId, NOW, NOW, id()),
+    /CHECK/i,
+  )
+
+  // 4. Pair invariant: scope_type set but scope_id NULL rejected
+  assert.throws(
+    () =>
+      db.prepare(
+        `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
+         VALUES (?, ?, ?, 'running', ?, ?, 'campaign', NULL)`,
+      ).run(id(), wfId, wfVerId, NOW, NOW),
+    /CHECK/i,
+  )
+
+  // 5. Pair invariant: scope_id set but scope_type NULL rejected
+  assert.throws(
+    () =>
+      db.prepare(
+        `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
+         VALUES (?, ?, ?, 'running', ?, ?, NULL, ?)`,
+      ).run(id(), wfId, wfVerId, NOW, NOW, id()),
+    /CHECK/i,
+  )
+
+  // 6. Verify composite index exists
+  const indexes = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'workflow_run'`)
+    .all()
+    .map((r) => r.name)
+  assert.ok(
+    indexes.includes('idx_workflow_run_scope'),
+    `expected idx_workflow_run_scope index to exist, got: ${indexes.join(', ')}`,
+  )
+
+  db.close()
+})
+
+test('migration 0018 safely backfills unambiguous structured activeScope and leaves ambiguous runs NULL', () => {
+  const db = freshDb()
+  // Migrate up to 0017
+  const dir = join(ROOT, 'migrations')
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+
+  for (const file of files) {
+    if (file === '0018_workflow_run_scope.sql') break
+    db.exec(readFileSync(join(dir, file), 'utf8'))
+  }
+
+  const wsId = id()
+  db.prepare(
+    `INSERT INTO workspace (id, name, slug, created_at, updated_at) VALUES (?, 'WS', 'ws', ?, ?)`,
+  ).run(wsId, NOW, NOW)
+
+  const brandId = id()
+  db.prepare(
+    `INSERT INTO brand (id, workspace_id, name, created_at, updated_at) VALUES (?, ?, 'Brand', ?, ?)`,
+  ).run(brandId, wsId, NOW, NOW)
+
+  const campaignId = id()
+  db.prepare(
+    `INSERT INTO campaign (id, workspace_id, brand_id, name, created_at, updated_at) VALUES (?, ?, ?, 'Campaign', ?, ?)`,
+  ).run(campaignId, wsId, brandId, NOW, NOW)
+
+  const wfId = id()
+  db.prepare(
+    `INSERT INTO workflow (id, workspace_id, name, status, created_at, updated_at) VALUES (?, ?, 'WF', 'active', ?, ?)`,
+  ).run(wfId, wsId, NOW, NOW)
+
+  const wfVerId = id()
+  db.prepare(
+    `INSERT INTO workflow_version (id, workflow_id, version, definition, created_at) VALUES (?, ?, 1, '{}', ?)`,
+  ).run(wfVerId, wfId, NOW)
+
+  // 1. Unambiguous structured activeScope campaign run
+  const structuredRunId = id()
+  const structuredContext = JSON.stringify({
+    activeScope: { type: 'campaign', id: campaignId },
+    campaign: { id: campaignId, name: 'Campaign' },
+  })
+  db.prepare(
+    `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, context_json, created_at, updated_at)
+     VALUES (?, ?, ?, 'succeeded', ?, ?, ?)`,
+  ).run(structuredRunId, wfId, wfVerId, structuredContext, NOW, NOW)
+
+  // 2. Ambiguous run: free text or non-activeScope JSON
+  const ambiguousRunId = id()
+  const ambiguousContext = JSON.stringify({
+    notes: `This task mentions campaign ${campaignId} in free text`,
+  })
+  db.prepare(
+    `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, context_json, created_at, updated_at)
+     VALUES (?, ?, ?, 'succeeded', ?, ?, ?)`,
+  ).run(ambiguousRunId, wfId, wfVerId, ambiguousContext, NOW, NOW)
+
+  // 3. Unscoped run: NULL context_json
+  const unscopedRunId = id()
+  db.prepare(
+    `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, context_json, created_at, updated_at)
+     VALUES (?, ?, ?, 'succeeded', NULL, ?, ?)`,
+  ).run(unscopedRunId, wfId, wfVerId, NOW, NOW)
+
+  // Apply migration 0018
+  db.exec(readFileSync(join(dir, '0018_workflow_run_scope.sql'), 'utf8'))
+
+  // Verify backfilled results
+  const row1 = db.prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`).get(structuredRunId)
+  assert.equal(row1.scope_type, 'campaign')
+  assert.equal(row1.scope_id, campaignId)
+
+  const row2 = db.prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`).get(ambiguousRunId)
+  assert.equal(row2.scope_type, null)
+  assert.equal(row2.scope_id, null)
+
+  const row3 = db.prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`).get(unscopedRunId)
+  assert.equal(row3.scope_type, null)
+  assert.equal(row3.scope_id, null)
 
   db.close()
 })

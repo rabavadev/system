@@ -31,6 +31,15 @@ export type GoalScopeType = 'workspace' | 'brand' | 'product' | 'campaign'
 /** Entities a conversation can optionally be about. NULL scope = general. */
 export type ConversationScopeType = 'brand' | 'niche' | 'product' | 'account' | 'campaign'
 
+/** Entities a workflow run can optionally be scoped to. NULL scope = general/unscoped. */
+export type WorkflowRunScopeType =
+  | 'workspace'
+  | 'brand'
+  | 'niche'
+  | 'product'
+  | 'account'
+  | 'campaign'
+
 /* ---- Commercial hierarchy ---- */
 
 export interface Workspace {
@@ -225,6 +234,8 @@ export interface WorkflowRun {
   finishedAt: IsoTimestamp | null
   createdAt: IsoTimestamp
   updatedAt: IsoTimestamp
+  scopeType: WorkflowRunScopeType | null
+  scopeId: Id | null
 }
 
 export interface WorkflowStepRun {

@@ -1141,3 +1141,273 @@ test('21. domain events emitted properly (campaign.research_started, campaign.wo
   assert.equal(payload.workflowId, workflowId)
   assert.equal(payload.runId, runResult.runId)
 })
+
+test('22. campaign workflow run stores exact scope_type and scope_id', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+  const { researcher } = await getAgents(db, base.workspaceId)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    name: 'Exact Scope Store Test',
+  })
+
+  const wfRes = await createWorkflowWithVersion(db, {
+    workspaceId: base.workspaceId,
+    name: 'Exact Scope Flow',
+    definition: {
+      inputs: [],
+      entryStepId: 'step_1',
+      steps: [
+        {
+          id: 'step_1',
+          type: 'agent',
+          agent: { agentId: researcher.agent.id, versionPolicy: 'current_at_run' },
+          task: 'Execute task',
+          inputs: [],
+          next: null,
+        },
+      ],
+    },
+    activate: true,
+  })
+  assert.ok(wfRes.ok)
+
+  const result = await startCampaignWorkflowRun(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      workflowId: wfRes.value.workflowId,
+      inputs: {},
+    },
+    echoDeps(),
+    true,
+  )
+  assert.ok(result.ok)
+
+  const run = await getWorkflowRunById(db, result.runId)
+  assert.ok(run)
+  assert.equal(run.scopeType, 'campaign')
+  assert.equal(run.scopeId, campaign.id)
+
+  // Direct SQL inspection in database
+  const dbRow = raw
+    .prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`)
+    .get(result.runId) as { scope_type: string; scope_id: string }
+  assert.equal(dbRow.scope_type, 'campaign')
+  assert.equal(dbRow.scope_id, campaign.id)
+})
+
+test('23. anti-collision: substring collision ID xabcx does NOT leak into campaign abc history', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+  const { researcher } = await getAgents(db, base.workspaceId)
+
+  const campaignA = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    name: 'Campaign A',
+  })
+
+  const campaignB = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    name: 'Campaign B',
+  })
+
+  const wfRes = await createWorkflowWithVersion(db, {
+    workspaceId: base.workspaceId,
+    name: 'Collision Check Flow',
+    definition: {
+      inputs: [{ key: 'custom_text', kind: 'text', label: 'Custom', required: false }],
+      entryStepId: 'step_1',
+      steps: [
+        {
+          id: 'step_1',
+          type: 'agent',
+          agent: { agentId: researcher.agent.id, versionPolicy: 'current_at_run' },
+          task: 'Check {inputs.custom_text}',
+          inputs: [{ key: 'custom_text', value: { source: 'workflow_input', path: 'custom_text' } }],
+          next: null,
+        },
+      ],
+    },
+    activate: true,
+  })
+  assert.ok(wfRes.ok)
+
+  // Run 1: Genuine Campaign A run
+  const resA = await startCampaignWorkflowRun(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaignA.id,
+      workflowId: wfRes.value.workflowId,
+      inputs: { custom_text: 'hello' },
+    },
+    echoDeps(),
+    true,
+  )
+  assert.ok(resA.ok)
+
+  // Run 2: Genuine Campaign B run whose input deliberately embeds campaignA.id substring ("x" + campaignA.id + "x")
+  const resB = await startCampaignWorkflowRun(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaignB.id,
+      workflowId: wfRes.value.workflowId,
+      inputs: { custom_text: `prefix_${campaignA.id}_suffix` },
+    },
+    echoDeps(),
+    true,
+  )
+  assert.ok(resB.ok)
+
+  // Run 3: An unscoped workflow run whose input also embeds campaignA.id
+  const resUnscoped = await createWorkflowWithVersion(db, {
+    workspaceId: base.workspaceId,
+    name: 'Unscoped Flow',
+    definition: {
+      inputs: [{ key: 'ref', kind: 'text', label: 'Ref', required: false }],
+      entryStepId: 's1',
+      steps: [
+        {
+          id: 's1',
+          type: 'agent',
+          agent: { agentId: researcher.agent.id, versionPolicy: 'current_at_run' },
+          task: 'Ref: {inputs.ref}',
+          inputs: [{ key: 'ref', value: { source: 'workflow_input', path: 'ref' } }],
+          next: null,
+        },
+      ],
+    },
+    activate: true,
+  })
+  assert.ok(resUnscoped.ok)
+
+  const { startWorkflowRun } = await import('../src/server/workflows/index.ts')
+  const resUnscopedRun = await startWorkflowRun({
+    db,
+    workspaceId: base.workspaceId,
+    workflowId: resUnscoped.value.workflowId,
+    inputs: { ref: `unrelated_${campaignA.id}_data` },
+    deps: echoDeps(),
+    drive: true,
+  })
+  assert.ok(resUnscopedRun.ok)
+
+  // Querying campaign A history MUST ONLY return Run 1 (resA)
+  const historyA = await listCampaignWorkflowRuns(db, base.workspaceId, campaignA.id)
+  assert.equal(historyA.length, 1)
+  assert.equal(historyA[0].id, resA.runId)
+
+  // Querying campaign B history MUST ONLY return Run 2 (resB)
+  const historyB = await listCampaignWorkflowRuns(db, base.workspaceId, campaignB.id)
+  assert.equal(historyB.length, 1)
+  assert.equal(historyB[0].id, resB.runId)
+})
+
+test('24. anti-collision: product-scoped run containing campaignId in context does NOT leak into campaign history', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+  const { researcher } = await getAgents(db, base.workspaceId)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    name: 'Campaign Anti-Leak',
+  })
+
+  const wfRes = await createWorkflowWithVersion(db, {
+    workspaceId: base.workspaceId,
+    name: 'Product Flow With Note',
+    definition: {
+      inputs: [{ key: 'note', kind: 'text', label: 'Note', required: false }],
+      entryStepId: 'step_1',
+      steps: [
+        {
+          id: 'step_1',
+          type: 'agent',
+          agent: { agentId: researcher.agent.id, versionPolicy: 'current_at_run' },
+          task: 'Note: {inputs.note}',
+          inputs: [{ key: 'note', value: { source: 'workflow_input', path: 'note' } }],
+          next: null,
+        },
+      ],
+    },
+    activate: true,
+  })
+  assert.ok(wfRes.ok)
+
+  const { startWorkflowRun } = await import('../src/server/workflows/index.ts')
+
+  // Run product-scoped workflow with input containing campaign.id
+  const prodRun = await startWorkflowRun({
+    db,
+    workspaceId: base.workspaceId,
+    workflowId: wfRes.value.workflowId,
+    inputs: { note: `Related to campaign ${campaign.id}` },
+    scope: { type: 'product', id: base.productId },
+    deps: echoDeps(),
+    drive: true,
+  })
+  assert.ok(prodRun.ok)
+
+  const run = await getWorkflowRunById(db, prodRun.runId)
+  assert.ok(run)
+  assert.equal(run.scopeType, 'product')
+  assert.equal(run.scopeId, base.productId)
+
+  // Campaign workflow runs must be empty
+  const campaignRuns = await listCampaignWorkflowRuns(db, base.workspaceId, campaign.id)
+  assert.equal(campaignRuns.length, 0)
+})
+
+test('25. anti-collision: wrong scope_type with same ID is not returned', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+  const { researcher } = await getAgents(db, base.workspaceId)
+
+  const wfRes = await createWorkflowWithVersion(db, {
+    workspaceId: base.workspaceId,
+    name: 'Scope Type Check Flow',
+    definition: {
+      inputs: [],
+      entryStepId: 'step_1',
+      steps: [
+        {
+          id: 'step_1',
+          type: 'agent',
+          agent: { agentId: researcher.agent.id, versionPolicy: 'current_at_run' },
+          task: 'Test',
+          inputs: [],
+          next: null,
+        },
+      ],
+    },
+    activate: true,
+  })
+  assert.ok(wfRes.ok)
+
+  const { startWorkflowRun } = await import('../src/server/workflows/index.ts')
+
+  // Brand-scoped run
+  const brandRun = await startWorkflowRun({
+    db,
+    workspaceId: base.workspaceId,
+    workflowId: wfRes.value.workflowId,
+    inputs: {},
+    scope: { type: 'brand', id: base.brandId },
+    deps: echoDeps(),
+    drive: true,
+  })
+  assert.ok(brandRun.ok)
+
+  // Querying brandId via listCampaignWorkflowRuns must return 0 runs because scope_type is 'brand', not 'campaign'
+  const runs = await listCampaignWorkflowRuns(db, base.workspaceId, base.brandId)
+  assert.equal(runs.length, 0)
+})
+

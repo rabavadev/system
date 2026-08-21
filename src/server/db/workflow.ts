@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type {
   Workflow,
   WorkflowRun,
+  WorkflowRunScopeType,
   WorkflowStatus,
   WorkflowStepRun,
   WorkflowVersion,
@@ -62,6 +63,8 @@ interface WorkflowRunRow {
   finished_at: string | null
   created_at: string
   updated_at: string
+  scope_type: WorkflowRunScopeType | null
+  scope_id: string | null
 }
 
 interface WorkflowStepRunRow {
@@ -124,6 +127,8 @@ function toWorkflowRun(row: WorkflowRunRow): WorkflowRun {
     finishedAt: row.finished_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    scopeType: row.scope_type ?? null,
+    scopeId: row.scope_id ?? null,
   }
 }
 
@@ -296,6 +301,152 @@ export async function listWorkflowVersions(
 
 /* ---- Runs ---- */
 
+export const WORKFLOW_RUN_SCOPE_TYPES = [
+  'workspace',
+  'brand',
+  'niche',
+  'product',
+  'account',
+  'campaign',
+] as const
+
+/**
+ * Validates that a requested workflow run scope target exists, belongs to the
+ * workspace, and is active (not archived/deleted).
+ */
+export async function validateWorkflowRunScope(
+  db: SqlDatabase,
+  workspaceId: string,
+  scopeType: WorkflowRunScopeType,
+  scopeId: string,
+): Promise<void> {
+  if (!scopeId || typeof scopeId !== 'string' || scopeId.trim().length === 0) {
+    throw new Error('Scope target ID cannot be empty.')
+  }
+
+  if (scopeType === 'workspace') {
+    if (scopeId !== workspaceId) {
+      throw new Error('The scope target belongs to a different workspace.')
+    }
+    const row = await queryFirst<{ id: string; deleted_at: string | null }>(
+      db,
+      `SELECT id, deleted_at FROM workspace WHERE id = ?`,
+      [scopeId],
+    )
+    if (!row) {
+      throw new Error('That workspace could not be found.')
+    }
+    if (row.deleted_at) {
+      throw new Error('That workspace is archived.')
+    }
+    return
+  }
+
+  if (scopeType === 'niche') {
+    const row = await queryFirst<{
+      id: string
+      workspace_id: string
+      deleted_at: string | null
+      brand_deleted_at: string | null
+    }>(
+      db,
+      `SELECT n.id, b.workspace_id, n.deleted_at, b.deleted_at AS brand_deleted_at
+       FROM niche n
+       JOIN brand b ON b.id = n.brand_id
+       WHERE n.id = ?`,
+      [scopeId],
+    )
+    if (!row || row.workspace_id !== workspaceId) {
+      throw new Error('The scope target belongs to a different workspace.')
+    }
+    if (row.deleted_at || row.brand_deleted_at) {
+      throw new Error('That item is archived.')
+    }
+    return
+  }
+
+  if (scopeType === 'product') {
+    const row = await queryFirst<{
+      id: string
+      workspace_id: string
+      status: string
+      deleted_at: string | null
+      brand_deleted_at: string | null
+    }>(
+      db,
+      `SELECT p.id, b.workspace_id, p.status, p.deleted_at, b.deleted_at AS brand_deleted_at
+       FROM product p
+       JOIN brand b ON b.id = p.brand_id
+       WHERE p.id = ?`,
+      [scopeId],
+    )
+    if (!row || row.workspace_id !== workspaceId) {
+      throw new Error('The scope target belongs to a different workspace.')
+    }
+    if (row.deleted_at || row.status === 'archived' || row.brand_deleted_at) {
+      throw new Error('That item is archived.')
+    }
+    return
+  }
+
+  if (scopeType === 'brand') {
+    const row = await queryFirst<{ id: string; workspace_id: string; deleted_at: string | null }>(
+      db,
+      `SELECT id, workspace_id, deleted_at FROM brand WHERE id = ?`,
+      [scopeId],
+    )
+    if (!row || row.workspace_id !== workspaceId) {
+      throw new Error('The scope target belongs to a different workspace.')
+    }
+    if (row.deleted_at) {
+      throw new Error('That item is archived.')
+    }
+    return
+  }
+
+  if (scopeType === 'account') {
+    const row = await queryFirst<{
+      id: string
+      workspace_id: string
+      status: string
+      deleted_at: string | null
+    }>(
+      db,
+      `SELECT id, workspace_id, status, deleted_at FROM account WHERE id = ?`,
+      [scopeId],
+    )
+    if (!row || row.workspace_id !== workspaceId) {
+      throw new Error('The scope target belongs to a different workspace.')
+    }
+    if (row.deleted_at || row.status === 'archived') {
+      throw new Error('That item is archived.')
+    }
+    return
+  }
+
+  if (scopeType === 'campaign') {
+    const row = await queryFirst<{
+      id: string
+      workspace_id: string
+      status: string
+      deleted_at: string | null
+    }>(
+      db,
+      `SELECT id, workspace_id, status, deleted_at FROM campaign WHERE id = ?`,
+      [scopeId],
+    )
+    if (!row || row.workspace_id !== workspaceId) {
+      throw new Error('The scope target belongs to a different workspace.')
+    }
+    if (row.deleted_at || row.status === 'archived') {
+      throw new Error('That item is archived.')
+    }
+    return
+  }
+
+  throw new Error(`Unsupported scope type: ${scopeType}`)
+}
+
 export interface CreateWorkflowRunData {
   workflowId: string
   workflowVersionId: string
@@ -304,6 +455,8 @@ export interface CreateWorkflowRunData {
   contextJson: string | null
   planJson: string | null
   stateJson: string | null
+  scopeType?: WorkflowRunScopeType | null
+  scopeId?: string | null
 }
 
 export async function createWorkflowRun(
@@ -312,12 +465,20 @@ export async function createWorkflowRun(
 ): Promise<WorkflowRun> {
   const id = newId()
   const now = nowIso()
+  const scopeType = data.scopeType ?? null
+  const scopeId = data.scopeId ?? null
+
+  if ((scopeType === null) !== (scopeId === null)) {
+    throw new Error('scopeType and scopeId must be set together or both null.')
+  }
+
   await execute(
     db,
     `INSERT INTO workflow_run
        (id, workflow_id, workflow_version_id, status, trigger_type, input,
-        context_json, plan_json, state_json, started_at, created_at, updated_at)
-     VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)`,
+        context_json, plan_json, state_json, started_at, created_at, updated_at,
+        scope_type, scope_id)
+     VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       data.workflowId,
@@ -330,6 +491,8 @@ export async function createWorkflowRun(
       now,
       now,
       now,
+      scopeType,
+      scopeId,
     ],
   )
   const created = await getWorkflowRunById(db, id)
@@ -352,6 +515,33 @@ export async function listWorkflowRuns(
     `SELECT * FROM workflow_run WHERE workflow_id = ?
      ORDER BY created_at DESC, rowid DESC LIMIT ?`,
     [workflowId, limit],
+  )
+  return rows.map(toWorkflowRun)
+}
+
+export interface ListWorkflowRunsByScopeParams {
+  workspaceId: string
+  scopeType: WorkflowRunScopeType
+  scopeId: string
+  limit?: number
+}
+
+export async function listWorkflowRunsByScope(
+  db: SqlDatabase,
+  params: ListWorkflowRunsByScopeParams,
+): Promise<WorkflowRun[]> {
+  const limit = Math.min(params.limit ?? 20, 100)
+  const rows = await queryAll<WorkflowRunRow>(
+    db,
+    `SELECT r.*
+     FROM workflow_run r
+     JOIN workflow w ON w.id = r.workflow_id
+     WHERE w.workspace_id = ?
+       AND r.scope_type = ?
+       AND r.scope_id = ?
+     ORDER BY r.created_at DESC, r.rowid DESC
+     LIMIT ?`,
+    [params.workspaceId, params.scopeType, params.scopeId, limit],
   )
   return rows.map(toWorkflowRun)
 }
