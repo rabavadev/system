@@ -206,11 +206,12 @@ test('chief agent is created idempotently with a versioned config', async () => 
 })
 
 test('chief policy instructions: no fake actions, no invented facts, no internals', () => {
-  assert.match(CHIEF_INSTRUCTIONS_V1, /cannot execute actions/i)
+  assert.match(CHIEF_INSTRUCTIONS_V1, /You may use only Tools explicitly exposed/i)
   assert.match(CHIEF_INSTRUCTIONS_V1, /Never invent workspace facts/i)
-  assert.match(CHIEF_INSTRUCTIONS_V1, /Never claim you did something/i)
+  assert.match(CHIEF_INSTRUCTIONS_V1, /Never claim you used a Tool/i)
   assert.match(CHIEF_INSTRUCTIONS_V1, /Never mention internal ids/i)
   assert.match(CHIEF_INSTRUCTIONS_V1, /Hypotheses/i)
+  assert.match(CHIEF_INSTRUCTIONS_V1, /Untrusted Data Policy/i)
   // Practical length, not a novel.
   assert.ok(CHIEF_INSTRUCTIONS_V1.length < 4000)
 })
