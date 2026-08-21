@@ -11,7 +11,7 @@ Navigation: src/components/layout/nav-items.ts + topbar.tsx (shows active brand)
 Auth: none yet — single seeded workspace
 Current user: n/a; active brand via cookie (src/features/workspace/server.ts)
 API client: per-feature server functions (src/features/*/server.ts)
-Schema: migrations/0001–0018 + docs/database.md
+Schema: migrations/0001–0020 + docs/database.md
 Design system: Tailwind v4 + src/components/ui/
 Shared components: src/components/ui/*, src/components/layout/*
 ```
@@ -22,24 +22,26 @@ Shared components: src/components/ui/*, src/components/layout/*
 |---|---|---|
 | Workspaces | src/server/db (workspace), seed.sql | single default workspace |
 | Brands | src/features/brands/ + src/server/db/brand.ts | active brand selection cookie in topbar |
-| Niches | src/features/niches/ + src/server/db/niche.ts | belong to brand; primary-niche rules |
+| Niches | src/features/niches/ + src/server/db/niche.ts | belong to brand; primary-niche rules; first-class conversation scope (H3B.1) |
 | Products | src/features/products/ + src/server/db/product.ts | owned by brand, grouped by niche |
-| Accounts | src/features/accounts/ + src/server/db/account.ts | multi-niche via account_niche |
+| Accounts | src/features/accounts/ + src/server/db/account.ts | multi-niche via account_niche; platform derivation for content |
 | Platforms | src/server/db/platform.ts | reference data |
 | Relationship integrity | src/server/db/relations.ts | pure module, cross-brand/archived rules |
 | Chat / conversations | src/features/chat/ + src/server/db/conversation.ts, message.ts | real workspace UI; /chat + /chat/:id; brand/niche/product/account/campaign scoped |
 | Context Engine | src/server/context/ + src/server/db/context.ts | central buildContext(request); precedence explicit>conversation>ui>workspace; /dev-context inspector |
 | AI execution | src/server/ai/ | provider-neutral executeAI; Workers AI adapter (+ optional AI Gateway); echo stub for offline dev; docs/ai-execution.md |
-| Tool Registry & Engine | src/server/tools/ + docs/tools.md | capability checks, approval gates, input/output validation, safe event logging |
-| Web Search Tool | src/server/tools/adapters/web-search.ts | Brave search provider adapter, prompt injection sanitization (H2A/H2B) |
+| Tool Registry & Engine | src/server/tools/ + docs/tools.md | capability checks, approval gates, input/output validation, safe event logging, strict tool protocol (H2A/H2A.1) |
+| Web Search Tool | src/server/tools/adapters/web-search.ts | Brave search provider adapter, prompt injection sanitization (H1A, H2A, H2B) |
 | Agent Registry | src/server/agents/ + docs/agents.md | 7 built-in agents (Chief, Researcher, Strategist, Creator, Critic, Analytics, Publisher), immutable versions |
-| Workflows | src/server/workflows/ + docs/workflows.md | declarative, versioned, resumable workflow engine with exact scope integrity (H3B.2) |
-| Approval Policy & Requests | src/server/policy/ + src/server/approval/ | auto/review/blocked policies, immutable snapshots, SHA-256 fingerprinting, deduplication, human authorization |
-| Research Workspace & Lifecycle | src/features/research/ + src/server/db/research.ts | research storage, taxonomy, freshness derivation, exact source citation & provenance (H3A.2) |
-| Campaigns & Strategy | src/features/campaigns/ + src/server/db/campaign.ts | objectives, angles, hypotheses, targets with canonical metric validation (H4A) |
-| Canonical Metrics Registry | src/server/db/metric.ts + docs/database.md | metric_definition single source of truth; 12 built-in metrics + workspace metrics |
-| Content Engine & Studio | src/features/campaigns/ + src/server/db/content.ts | drafts, candidate lifecycle (H3A.1), variants, platform derivation, human edit hash tracking |
-| Critic Reviews (Step 15B) | src/server/db/content.ts + src/features/campaigns/ | automated/interactive AI critique; content_review rows; pending dedicated final audit |
+| Workflows | src/server/workflows/ + docs/workflows.md | declarative, versioned, resumable workflow engine with exact scope integrity (H3B.2, migration 0018) |
+| Approval Policy & Requests | src/server/policy/ + src/server/approval/ | auto/review/blocked policies, immutable snapshots, SHA-256 fingerprinting, deduplication, human authorization (H1B) |
+| Research Workspace & Lifecycle | src/features/research/ + src/server/db/research.ts | research storage, taxonomy, freshness derivation, exact source citation & server provenance (H3A.2) |
+| Campaigns & Strategy | src/features/campaigns/ + src/server/db/campaign.ts | objectives, angles, hypotheses, targets with canonical metric validation (H4A, migration 0013) |
+| Canonical Metrics Registry | src/server/db/metric.ts + docs/database.md | metric_definition single source of truth; 12 built-in metrics + workspace custom metrics; dynamic validation (H4A) |
+| Creator Draft Studio (Step 15A) | src/features/campaigns/ + src/server/db/content-variant.ts | draft candidate lifecycle (`content_draft_candidate`), platform derivation, human edit hash tracking (H3A.1, migration 0016) |
+| Critic Editorial Reviews (Step 15B) | src/server/db/content-review.ts + src/features/campaigns/ | human-triggered AI critique on saved immutable variants; structured `pass`/`revise` verdicts; immutable `content_review` (migration 0015) |
+| Creator Revisions (Step 15C) | src/server/db/content-variant.ts + src/server/agents/content-draft.ts | human-controlled revisions from Critic feedback; `source_variant_id` & `source_review_id` candidate lineage; immutable variant chains (migration 0019) |
+| Content Editorial Approval (Step 15D) | src/server/db/content-approval.ts + src/features/campaigns/ | explicit human editorial gate; `content.status = 'ready'`; `content.selected_variant_id`; immutable `content_approval` audit history; zero auto-publishing (migration 0020) |
 
 ## Completed Steps & Hardening Sequence
 
@@ -54,39 +56,78 @@ Shared components: src/components/ui/*, src/components/layout/*
 - **Step 9 — Tool Registry**: Safe capability-gated internal tool execution.
 - **Step 10 — Workflow Engine**: Resumable multi-step workflows (migration 0009).
 - **Step 11 — Approval System**: Policy engine, approval requests, anti-loop resume tokens (migrations 0008, 0010, 0011).
-- **Step 12 — Research Workspace**: Research taxonomy, freshness, sources (migration 0011).
-- **Step 13 — Campaign Orchestration**: Multi-channel campaign management (migration 0012).
-- **Step 14 — Campaign Strategy & Variants**: Strategy fields, targets, content variants (migration 0013).
-- **Step 15 — Creator & Critic Studio**: Draft generation, candidate lifecycle, reviews (migrations 0014–0016).
-- **HARDENING H1A**: Execution Trace & Status Normalization.
-- **HARDENING H1B / H1B.1 / H1B.2**: Tool loop protocol, strict error mapping, event integrity.
-- **HARDENING H2A / H2A.1**: Web search runtime tooling, Brave search adapter, contract hardening.
-- **HARDENING H2B**: Content sanitization, prompt injection defense, untrusted data framing.
-- **HARDENING H3A.1**: Content draft candidate lifecycle, edit tracking, account platform derivation.
+- **Step 12 — Research Workspace**: Research taxonomy, freshness, sources (migration 0012).
+- **Step 13 — Campaign Orchestration**: Multi-channel campaign management.
+- **Step 14 — Campaign Strategy & Variants**: Strategy fields, targets, content plan (migrations 0013, 0014).
+- **Step 15A — Creator Draft Studio**: Draft candidate generation, platform derivation, hash tracking (migration 0016).
+- **Step 15B — Critic Editorial Reviews**: Structured review contract (`pass`/`revise`), immutable variant evaluation (migration 0015).
+- **Step 15C — Creator Revisions**: Human-controlled Creator revisions from Critic review feedback with lineage links (migration 0019).
+- **Step 15D — Human Content Approval & Readiness**: Human editorial gate, `selected_variant_id`, readiness status, revocation (migration 0020).
+- **HARDENING H1A**: Authoritative Web Search Runtime Configuration and Agent Wiring.
+- **HARDENING H1B / H1B.1 / H1B.2**: Tool loop protocol, strict error mapping, policy semantics, event integrity.
+- **HARDENING H2A / H2A.1**: Tool JSON Schema conversion, provider-neutral loop, strict Workers AI tool protocol.
+- **HARDENING H2B**: Content sanitization, prompt injection defense, `<external_untrusted_data>` framing.
+- **HARDENING H3A.1**: Creator draft candidate lifecycle, edit tracking, server-derived provenance.
 - **HARDENING H3A.2**: Research source citation integrity, server-derived provenance, exact-turn deduplication.
-- **HARDENING H3B.1**: Niche scope integrity in conversations (migration 0017).
-- **HARDENING H3B.2**: Exact workflow run scope integrity (migration 0018).
-- **HARDENING H4A**: Canonical metrics registry (`metric_definition`) & architecture documentation repair.
-- **HARDENING H4B**: Runtime verification & environment readiness (PENDING).
-- **STEP 15B Final Audit**: Dedicated post-hardening audit of Critic review system (PENDING).
+- **HARDENING H3B.1**: First-class Niche scope integrity in conversations (migration 0017).
+- **HARDENING H3B.2**: Exact generic workflow run scope integrity (migration 0018).
+- **HARDENING H4A**: Canonical metrics registry (`metric_definition`), dynamic campaign target validation.
+- **HARDENING H4A.1**: Architecture documentation synchronization across migrations 0001–0020.
+- **HARDENING H4B**: Runtime verification & external environment readiness (PENDING).
+- **STEP 15E**: Publishing engine / platform connectors (FUTURE PHASE).
+
+## Content Lifecycle & Publishing Boundary
+
+```text
+Campaign Content Item (draft)
+  → Creator Draft Candidate (content_draft_candidate: uncommitted, server-derived provenance)
+  → Human Reviews & Saves Variant (content_variant: immutable V1, tracks human_edited hash diff)
+  → Human Triggers Critic Review (content_review: immutable critique, verdict pass | revise)
+  → [Optional] Human Triggers Creator Revision (content_draft_candidate with source lineage)
+  → [Optional] Human Reviews & Saves Revised Variant (content_variant: immutable V2, parent_variant_id = V1)
+  → Human Final Editorial Approval (content_approval: approved, content.status = 'ready', content.selected_variant_id = variant_id)
+  → [Optional] Human Revocation (content_approval: revoked, content.status = 'draft', content.selected_variant_id = null)
+```
+
+### Critical Invariants:
+1. **READY != PUBLISHED**: Marking content as `ready` is an internal editorial status signifying approval. It performs **ZERO** external network calls, interacts with **NO** platform APIs, and schedules **NO** automated publishing jobs.
+2. **Publisher Agent Status**: The `Publisher` agent is explicitly `disabled` (`status: 'disabled'`).
+3. **Platform Publish Tool**: The `platform.publish` tool is an unavailable stub (`Not available yet`).
+4. **Human Primacy**: Critic verdict `pass` never auto-approves content. Critic verdict `revise` warns the human operator in the UI, requiring explicit confirmation (`critic_override = 1`) to approve.
+
+## Approval System Disambiguation
+
+The architecture contains two distinct approval subsystems that serve separate purposes:
+
+1. **Tool / Workflow Approval Policy (`approval_policy`, `approval_request`)**:
+   - Modes: `auto`, `review`, `blocked`.
+   - Governs sensitive agent and workflow tool executions (e.g. `web.search`, `workflow.run`, external writes).
+   - Generates approval requests with action snapshots, SHA-256 fingerprinting, and resume tokens.
+2. **Human Content Editorial Approval (`content_approval`, `selected_variant_id`, `content.status = 'ready'`)**:
+   - Governs editorial readiness of content variants for campaign publishing.
+   - Binds to an exact immutable `content_variant` row and updates `content.status` to `'ready'` (or back to `'draft'` on revocation).
+   - Records an append-only audit trail in `content_approval`.
 
 ## Truthful Verification Status
 
-| Capability / Runtime Feature | Verification Status | Notes |
+| Capability / Runtime Area | Verification Status | Notes |
 |---|---|---|
-| Unit & Integration Tests (19 suites) | **VERIFIED** | All automated tests run and pass in local Node / SQLite environment |
-| Database Migrations (0001–0018) | **VERIFIED** | Verified through `npm run db:test` |
+| Unit & Integration Tests (21 suites) | **VERIFIED** | All automated tests run and pass in local Node / SQLite environment |
+| Database Migrations (0001–0020) | **VERIFIED** | Verified through `npm run db:test` (20/20 tests pass) |
 | Context Engine & Ranking | **VERIFIED** | Verified through `npm run test:context` |
 | Policy & Approval Engine | **VERIFIED** | Verified through `npm run test:policy`, `test:approvals`, `test:approvals-ux` |
 | Campaign Strategy & Metrics | **VERIFIED** | Verified through `npm run test:campaign-strategy`, `test:campaigns` |
 | Content Candidate Lifecycle | **VERIFIED** | Verified through `npm run test:creator-draft` |
+| Critic Editorial Review System | **VERIFIED** | Verified through `npm run test:critic-review` |
+| Creator Revision Lineage System | **VERIFIED** | Verified through `npm run test:creator-revision` |
+| Human Content Approval Gate | **VERIFIED** | Verified through `npm run test:content-approval` |
 | Research Source Provenance | **VERIFIED** | Verified through `npm run test:research` |
 | Workflow Run Scope Integrity | **VERIFIED** | Verified through `npm run test:workflows` |
-| Workers AI Live Tool Calling | **NOT VERIFIED** | Protocol implemented & unit tested; live remote tool-calling execution pending H4B |
-| Brave Live Web Search | **NOT VERIFIED** | Adapter implemented & mock-tested; live remote API calls pending H4B |
-| Cloudflare Deployed Runtime Smoke | **NOT VERIFIED** | Local Workers runtime verified; remote production deploy pending H4B |
-| Browser End-to-End Smoke | **NOT VERIFIED** | Component & server function tests verified; full browser E2E pending H4B |
-| STEP 15B Final Dedicated Audit | **PENDING** | Review system implemented & tested; scheduled after H4B |
+| Local Workers Runtime & Vite Build | **VERIFIED** | Verified through `npm run build` and local development server |
+| Workers AI Live Remote Generation | **NOT CONFIGURED** | Offline Echo / test adapter used in automated suites; live Workers AI binding requires Cloudflare deployment |
+| Workers AI Live Tool Calling | **NOT VERIFIED** | Protocol implemented & unit tested; live remote tool execution pending H4B |
+| Brave Live Web Search | **NOT CONFIGURED** | Adapter implemented & mock-tested; live remote API calls require `BRAVE_SEARCH_API_KEY` |
+| Browser End-to-End Sessions | **NOT VERIFIED** | UI components and server functions verified; full browser E2E session validation pending H4B |
 
 ## Architecture Decisions
 
@@ -106,6 +147,8 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Untrusted external content framing | all external/web/tool inputs wrapped in `<external_untrusted_data>` markers to prevent prompt injection | H2B |
 | Candidate draft lifecycle with hash comparison | enables tracking whether human modified AI-generated text before saving as variant | H3A.1, migration 0016 |
 | Server-derived research provenance | research sources derive author, model, execution id from server message context rather than client | H3A.2 |
+| Immutable variant revision lineage | Creator revisions track `source_variant_id` and `source_review_id` without mutating prior variants | STEP 15C, migration 0019 |
+| Human editorial gate for publish readiness | explicit human sign-off on exact variant ID; separates readiness from automated publishing | STEP 15D, migration 0020 |
 
 ## Known Technical Debt & Limitations
 
@@ -114,4 +157,3 @@ Shared components: src/components/ui/*, src/components/layout/*
 | No auth/multi-user | medium | post-hardening phase |
 | Remote Cloudflare Workflows binding | low | currently uses inline runtime; binding can be attached in Cloudflare |
 | Live API keys (Brave, Workers AI remote) | low | configured via environment variables in `.dev.vars` / Cloudflare secrets |
-

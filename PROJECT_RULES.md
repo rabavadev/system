@@ -17,9 +17,9 @@ Package manager: npm 10+ (Node 22+, enforced via engines)
 UI/styling: Tailwind CSS v4, lucide-react icons, own ui primitives
 State: TanStack Query
 Backend: TanStack Start server functions
-Database: Cloudflare D1 (SQLite), wrangler migrations in migrations/ (0001–0018)
+Database: Cloudflare D1 (SQLite), wrangler migrations in migrations/ (0001–0020)
 Auth: single default workspace (dev seed); workspace scoping server-side
-Testing: 19 specialized node test suites + scripts/test-db.mjs
+Testing: 21 specialized node test suites + scripts/test-db.mjs
 Deployment: wrangler deploy
 ```
 
@@ -49,6 +49,8 @@ npm run test:campaign-content # campaign content & variants suite
 npm run test:campaign-orchestration # campaign workflow orchestration suite
 npm run test:creator-draft # Creator draft candidate suite
 npm run test:critic-review # Critic review suite
+npm run test:creator-revision # Creator revision suite
+npm run test:content-approval # Human content approval suite
 npm run build             # production build
 npm run cf-typegen        # regenerate worker-configuration.d.ts (gitignored)
 npm run db:migrate:local  # apply migrations to local D1
@@ -64,7 +66,7 @@ Navigation: src/components/layout/nav-items.ts + topbar.tsx
 Auth state: n/a yet — single workspace from seed
 Current-user state: n/a; active brand selection via cookie (src/features/workspace/server.ts)
 API client: TanStack Start server functions per feature (src/features/*/server.ts)
-Database/schema source: migrations/ (0001–0018, immutable) + docs/database.md
+Database/schema source: migrations/ (0001–0020, immutable) + docs/database.md
 Design token source: Tailwind v4 theme (src/styles), ui primitives in src/components/ui/
 Shared component library: src/components/ui/ + src/components/layout/
 ```

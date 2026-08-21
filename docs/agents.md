@@ -53,12 +53,16 @@ Specialist instructions = `AGENT_BASE_POLICY` (shared rules, written once in
 `src/server/agents/definitions.ts`) + a role-specific brief, concatenated at
 definition time so each stored version is self-contained.
 
-## Creator Draft Lifecycle (H3A.1)
+## Creator Draft & Revision Lifecycle (H3A.1, STEP 15C)
 
-1. **Generation**: The Creator agent generates structured drafts (`headline`, `body`, `hook`, `call_to_action`).
+1. **Draft Generation (Step 15A)**: The Creator agent generates structured drafts (`headline`, `body`, `hook`, `call_to_action`).
 2. **Draft Candidate**: Stored in `content_draft_candidate` with `generated_hash` (SHA-256) and server-derived provenance.
 3. **Platform Derivation**: Platform is derived directly from the selected Account — never guessed or defaulted alphabetically.
 4. **Human Editing & Saving**: When the user edits and saves as a `content_variant`, the server compares the saved text hash with `generated_hash` to record `human_edited = true/false`.
+5. **Critic Editorial Review (Step 15B)**: Critic evaluates saved immutable variants and produces structured reviews (`pass` | `revise`).
+6. **Creator Revision (Step 15C)**: When Critic verdict is `revise`, the human operator can trigger a Creator revision. Creator takes the immutable source variant text + Critic review recommendations to generate a new candidate with `source_variant_id` and `source_review_id`, which saves to a new immutable variant linked via `parent_variant_id`.
+7. **Human Editorial Approval (Step 15D)**: Explicit human sign-off on an exact variant ID transitions `content.status` to `'ready'` and designates `content.selected_variant_id`.
+
 
 ## Research & Source Provenance (H3A.2)
 

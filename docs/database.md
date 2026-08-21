@@ -11,28 +11,30 @@ npm run db:test            # fresh-DB migration + constraint test suite
 npm run db:migrate:remote  # production (after setting a real database_id)
 ```
 
-## Migration Index (0001–0018)
+## Migration Index (0001–0020)
 
 | Migration | Purpose | Key Tables / Columns |
 |---|---|---|
 | `0001_core_business.sql` | Core domain entities | `workspace`, `brand`, `niche`, `product`, `account`, `platform`, `platform_connection`, `account_niche` |
 | `0002_agents_workflows_conversations.sql` | Agent & workflow engine base, chat | `agent`, `agent_version`, `workflow`, `workflow_version`, `workflow_run`, `workflow_step_run`, `conversation`, `message` |
-| `0003_events_audit.sql` | Observability & auditing | `event`, `audit_log` |
-| `0004_memory_facts_learnings.sql` | Structured memory & goals | `memory`, `goal` |
+| `0003_memory_research.sql` | Memory facts, goals & research base | `memory`, `goal`, `research` |
+| `0004_campaigns_content.sql` | Campaigns, content & publishing base | `campaign`, `campaign_account`, `content`, `content_variant`, `post`, `file_asset`, `content_variant_asset` |
 | `0005_experiments_analytics.sql` | Experimentation & metric registry | `experiment`, `experiment_variant`, `experiment_result`, `metric_definition`, `metric_observation`, `platform_metric_raw` |
-| `0006_research_market_intelligence.sql` | Market intelligence storage | `research` |
+| `0006_files_approvals_events_audit.sql` | Observability, approvals & audit | `approval`, `event`, `audit_log` |
 | `0007_conversation_scope.sql` | Conversation scoping | `conversation.scope_type`, `conversation.scope_id` (brand, product, account, campaign) |
-| `0008_approvals.sql` | Autonomy policy & requests | `approval_policy`, `approval_request` |
-| `0009_workflow_engine.sql` | Engine extensions | Workflow step indexes & run plan metadata |
-| `0010_content_engine.sql` | Approval policy model | Strict policy schemas, scope-based rule evaluation |
-| `0011_research_sources.sql` | Sources & approvals | `research_source`, immutable approval request snapshots & SHA-256 fingerprinting |
-| `0012_campaign_extensions.sql` | Campaigns & publishing | `campaign`, `campaign_account`, `content`, `content_variant`, `post`, `file_asset`, `content_variant_asset` |
-| `0013_content_variants.sql` | Campaign strategy & targets | `campaign.objective`, `campaign.strategy_json`, `campaign_target`, `content_variant` enhancements |
-| `0014_agent_versions.sql` | Versioning enhancements | Agent version configuration tracking |
-| `0015_content_reviews.sql` | Critic review system | `content_review` (critique, suggestions, review metadata) |
-| `0016_content_draft_candidate.sql` | Creator draft lifecycle | `content_draft_candidate` (uncommitted draft candidates, generated vs saved hash tracking) |
-| `0017_conversation_niche_scope.sql` | Conversation niche scope | Extended `conversation.scope_type` check constraint to include `'niche'` |
-| `0018_workflow_run_scope.sql` | Exact workflow run scope | `workflow_run.scope_type`, `workflow_run.scope_id`, composite index `idx_workflow_run_scope` |
+| `0008_agent_registry.sql` | Agent registry & versioning | `agent`, `agent_version` extensions |
+| `0009_workflow_engine.sql` | Engine extensions | `workflow_run.plan_json`, `workflow_run.state_json` |
+| `0010_approval_policy.sql` | Autonomy policy model | `approval_policy` |
+| `0011_approval_requests.sql` | Action snapshots & fingerprinting | `approval_request` with SHA-256 fingerprinting |
+| `0012_research_type.sql` | Research taxonomy & sources | `research.research_type`, `research_source` |
+| `0013_campaign_strategy.sql` | Campaign strategy & targets | `campaign.objective`, `campaign.strategy_json`, `campaign_target` |
+| `0014_campaign_content_plan.sql` | Content plan extensions | `content.channel`, `content.pillar`, `content.content_type` |
+| `0015_content_review.sql` | Critic editorial reviews (STEP 15B) | `content_review` (immutable review history with `pass`/`revise` verdict) |
+| `0016_content_draft_candidate.sql` | Creator draft candidates (H3A.1) | `content_draft_candidate` (uncommitted draft candidates, server-derived provenance, generated hash) |
+| `0017_conversation_niche_scope.sql` | Conversation niche scope (H3B.1) | Widened `conversation.scope_type` CHECK constraint to include `'niche'` |
+| `0018_workflow_run_scope.sql` | Exact workflow run scope (H3B.2) | `workflow_run.scope_type`, `workflow_run.scope_id`, composite index `idx_workflow_run_scope` |
+| `0019_content_draft_revision.sql` | Content draft revision lineage (STEP 15C) | `content_draft_candidate.source_variant_id`, `content_draft_candidate.source_review_id` |
+| `0020_content_approval.sql` | Content approval & publish readiness (STEP 15D) | `content_approval`, `content.selected_variant_id` with composite indexes |
 
 ## Conventions
 
@@ -44,7 +46,7 @@ npm run db:migrate:remote  # production (after setting a real database_id)
   (`nowIso()`). No local display time is ever stored. Timezone conversion is
   a presentation concern; scheduling compares UTC instants.
 - **Soft deletion**: business entities carry `deleted_at`. Historical tables
-  (workflow runs, metric observations, events, audit) are never deleted at
+  (workflow runs, metric observations, events, audit, reviews, approvals) are never deleted at
   all. Hard deletes are further blocked by `ON DELETE RESTRICT` on parents
   that own history.
 - **JSON columns** (`*_json` in domain types) store raw JSON text, parsed at
@@ -68,7 +70,11 @@ erDiagram
   campaign ||--o{ content : contains
   content ||--o{ content_variant : adapts
   content ||--o{ content_draft_candidate : drafts
+  content ||--o| content_variant : selects
   content_variant ||--o{ content_review : reviews
+  content_variant ||--o{ content_approval : approves
+  content_variant ||--o{ content_draft_candidate : source_variant
+  content_review ||--o{ content_draft_candidate : source_review
   platform ||--o{ content_variant : targets
   content_variant ||--o{ post : published_as
   content_variant }o--o{ file_asset : content_variant_asset
@@ -99,17 +105,48 @@ erDiagram
 Several tables point at "some entity of some type" via
 `(scope_type, scope_id)` or `(subject_type, subject_id)` — goals, memory,
 research, approvals, metric observations, experiment variants, events, audit.
-Conversations carry an optional `(scope_type, scope_id)` (brand, niche, product,
-account or campaign; both NULL = a general workspace conversation).
 
-Workflow runs carry explicit, exact `(scope_type, scope_id)` (migration 0018)
-with a composite index `idx_workflow_run_scope(workspace_id, scope_type, scope_id)`.
-This allows precise querying of historical workflow executions per campaign or
-other entity without fuzzy JSON text matching.
+- **Conversations**: carry an optional `(scope_type, scope_id)` supporting `brand`, `niche`, `product`, `account`, or `campaign` (both NULL = general workspace conversation). Niche scope is a first-class scope (migration 0017) and is never coerced to Brand.
+- **Workflow Runs**: carry explicit, exact `(scope_type, scope_id)` (migration 0018) with a composite index `idx_workflow_run_scope(scope_type, scope_id, created_at DESC)`. This allows precise querying of historical workflow executions per campaign or other entity without fuzzy JSON substring matching.
 
 These are deliberately **not** foreign keys. Referential integrity for these
 links is enforced in the repository layer, and the `event`/`audit_log` records
 provide traceability when a target is archived.
+
+## Content Lifecycle: Candidates, Variants, Reviews, and Approvals
+
+The content pipeline uses a multi-table structure preserving strict immutability and provenance:
+
+1. **`content_draft_candidate`** (`0016`, `0019`):
+   - Ephemeral/uncommitted AI draft candidate generated by Creator.
+   - Contains server-derived provenance (`creator_agent_id`, `creator_agent_version_id`, `ai_execution_id`, `provider`, `model`), SHA-256 `generated_hash`, and optional `source_variant_id` / `source_review_id` for revisions.
+   - Points to `saved_variant_id` when saved by a human.
+2. **`content_variant`** (`0004`, `0013`):
+   - Persisted, immutable version of content copy and structure.
+   - Contains `variant_number`, `body`, `headline`, `hook`, `call_to_action`, `parent_variant_id`, and `provenance_json` (recording `human_edited = true/false` via hash comparison).
+   - Saved variants are byte-for-byte immutable once created.
+3. **`content_review`** (`0015`):
+   - Immutable review record generated by Critic evaluating an exact saved `content_variant_id`.
+   - Stores structured verdict (`pass` | `revise`), `review_json` (summary, strengths, issues, recommended changes), and Critic agent provenance.
+   - Foreign keys to `workspace`, `content`, `content_variant`, `agent`, `agent_version` with `ON DELETE RESTRICT`.
+   - A `pass` verdict does **not** auto-approve content.
+4. **`content_approval`** (`0020`):
+   - Immutable audit trail of human editorial approval and revocation events.
+   - Stores `status` (`approved` | `revoked`), `actor_type` (`user` | `system`), `critic_override` (`0` | `1`), and optional `note`.
+   - Approving sets `content.status = 'ready'` and `content.selected_variant_id = variant.id`.
+   - Revoking sets `content.status = 'draft'` and `content.selected_variant_id = NULL`.
+5. **`content.selected_variant_id`** (`0020`):
+   - Foreign key referencing `content_variant(id) ON DELETE SET NULL`.
+   - Designates the single active approved variant designated for publication readiness.
+
+## Approval System Disambiguation
+
+The schema distinguishes between two separate approval mechanisms:
+
+- **Agent/Tool Approval Policies (`approval_policy`, `approval_request`)**:
+  Manages execution authorization for tool operations (e.g. `web.search`, `workflow.run`, external writes) using `auto`, `review`, and `blocked` policy modes.
+- **Content Editorial Approvals (`content_approval`)**:
+  Manages human editorial sign-off marking content items as `ready` for publishing with an approved `selected_variant_id`.
 
 ## Canonical Metrics Registry
 
@@ -139,4 +176,3 @@ route loader / UI  →  server function (src/features/*/server.ts)
 Writes are validated with zod schemas colocated in each repository
 (`createMemoryInput`, `createCampaignInput`, …), mirroring the SQL CHECK
 constraints so bad payloads fail with useful errors before touching D1.
-
