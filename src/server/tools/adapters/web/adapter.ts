@@ -8,7 +8,7 @@ import type {
 } from './types.ts'
 
 export interface WebSearchAdapterOptions {
-  client?: WebSearchProviderClient
+  client?: WebSearchProviderClient | null
   getClient?: () => WebSearchProviderClient | null
 }
 
@@ -50,8 +50,17 @@ function normalizeResult(raw: RawSearchResult, retrievedAt: string): WebSearchRe
 }
 
 export function createWebSearchAdapter(options: WebSearchAdapterOptions = {}): ToolAdapter {
+  const getClient = (): WebSearchProviderClient | null => {
+    if (options.client !== undefined) return options.client
+    if (options.getClient) return options.getClient()
+    return null
+  }
+
   return {
     key: 'web.search',
+    isConfigured(): boolean {
+      return getClient() !== null
+    },
     async run({ args }): Promise<WebSearchOutput> {
       const parsedArgs = args as {
         query: string
@@ -70,7 +79,7 @@ export function createWebSearchAdapter(options: WebSearchAdapterOptions = {}): T
       const limit =
         typeof parsedArgs.limit === 'number' ? Math.min(Math.max(1, parsedArgs.limit), 10) : 5
 
-      const client = options.client ?? options.getClient?.()
+      const client = getClient()
       if (!client) {
         throw new ToolError('not_configured', 'Web Search needs setup before it can be used.')
       }
@@ -109,17 +118,4 @@ export function createWebSearchAdapter(options: WebSearchAdapterOptions = {}): T
   }
 }
 
-/** Global default adapter instance using dynamic provider lookup */
-let activeProviderClient: WebSearchProviderClient | null = null
-
-export function setActiveWebSearchClient(client: WebSearchProviderClient | null): void {
-  activeProviderClient = client
-}
-
-export function getActiveWebSearchClient(): WebSearchProviderClient | null {
-  return activeProviderClient
-}
-
-export const webSearchAdapter: ToolAdapter = createWebSearchAdapter({
-  getClient: () => activeProviderClient,
-})
+export const webSearchAdapter: ToolAdapter = createWebSearchAdapter()

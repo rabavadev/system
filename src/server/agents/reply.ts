@@ -6,6 +6,7 @@ import { buildContext, ContextError, type ContextPackage } from '../context/inde
 import { emitEventSafe } from '../db/event.ts'
 import { appendMessage, findMessageByClientRequestId } from '../db/message.ts'
 import type { SqlDatabase } from '../db/sql.ts'
+import type { ExecuteToolDeps } from '../tools/index.ts'
 import { resolveChatAgent } from './registry.ts'
 import { agentFailureMessage, agentUnavailableMessage, executeAgentTask } from './task.ts'
 
@@ -38,6 +39,8 @@ export interface AgentReplyInput {
   clientRequestId?: string
   /** Test seam: inject adapters instead of the Worker runtime. */
   deps: ExecuteAIDeps
+  /** Test seam: inject tool adapters instead of default runtime. */
+  toolDeps?: ExecuteToolDeps
 }
 
 export type AgentReply =
@@ -122,6 +125,7 @@ export async function runAgentReply(input: AgentReplyInput): Promise<AgentReply>
     eventSubject: { subjectType: 'conversation', subjectId: conversationId },
     metadata: { conversationId },
     deps,
+    ...(input.toolDeps ? { toolDeps: input.toolDeps } : {}),
   })
 
   if (!result.ok) {

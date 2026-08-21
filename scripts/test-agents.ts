@@ -53,7 +53,14 @@ import {
 import { createConversation, getConversationById } from '../src/server/db/conversation.ts'
 import { appendUserMessage, listMessages } from '../src/server/db/message.ts'
 import type { SqlDatabase } from '../src/server/db/sql.ts'
-import { MockWebSearchClient, setActiveWebSearchClient } from '../src/server/tools/index.ts'
+import {
+  createWebSearchAdapter,
+  type ExecuteToolDeps,
+  MockWebSearchClient,
+  type ToolAdapter,
+  ToolError,
+  type ToolKey,
+} from '../src/server/tools/index.ts'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -152,6 +159,7 @@ async function sendTo(
   agentId: string | null,
   text: string,
   adapter: AIProviderAdapter,
+  toolDeps?: ExecuteToolDeps,
 ) {
   await appendUserMessage(db, { conversationId, content: text })
   return runAgentReply({
@@ -161,6 +169,7 @@ async function sendTo(
     agentId,
     userText: text,
     deps: depsFor(adapter),
+    ...(toolDeps ? { toolDeps } : {}),
   })
 }
 
@@ -804,7 +813,11 @@ test('STEP 13B: Researcher executes web.search via generic AI tool calling loop'
       ],
     },
   })
-  setActiveWebSearchClient(mockClient)
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
   let turn = 0
   const { adapter, calls } = recordingAdapter((input) => {
@@ -847,6 +860,7 @@ test('STEP 13B: Researcher executes web.search via generic AI tool calling loop'
     researcher.id,
     'What eco coffee packaging exists?',
     adapter,
+    toolDeps,
   )
 
   assert.ok(reply.ok)
@@ -869,8 +883,6 @@ test('STEP 13B: Researcher executes web.search via generic AI tool calling loop'
   const persistedMeta = JSON.parse(reply.message.providerMetadataJson)
   assert.equal(persistedMeta.sources?.length, 1)
   assert.equal(persistedMeta.toolCalls?.length, 1)
-
-  setActiveWebSearchClient(null)
 })
 
 test('STEP 13B: Tool calling loop is bounded to maximum 3 tool calls', async () => {
@@ -878,7 +890,11 @@ test('STEP 13B: Tool calling loop is bounded to maximum 3 tool calls', async () 
   const mockClient = new MockWebSearchClient({
     results: [{ title: 'Generic Result', url: 'https://example.com/res' }],
   })
-  setActiveWebSearchClient(mockClient)
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
   let callCount = 0
   const { adapter } = recordingAdapter((input) => {
@@ -910,14 +926,19 @@ test('STEP 13B: Tool calling loop is bounded to maximum 3 tool calls', async () 
   const conversation = await createConversation(db, { workspaceId: WS })
   const researcher = await builtinByName(db, 'Researcher')
 
-  const reply = await sendTo(db, conversation.id, researcher.id, 'Search repeatedly.', adapter)
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    researcher.id,
+    'Search repeatedly.',
+    adapter,
+    toolDeps,
+  )
 
   assert.ok(reply.ok)
   // Max 3 tool calls executed in loop
   assert.equal(reply.execution.toolCalls?.length, 3)
   assert.equal(reply.message.content, 'Here is the summary after 3 searches.')
-
-  setActiveWebSearchClient(null)
 })
 
 test('STEP 13B: Non-permitted agent model call to web.search is rejected with capability_denied', async () => {
@@ -925,7 +946,11 @@ test('STEP 13B: Non-permitted agent model call to web.search is rejected with ca
   const mockClient = new MockWebSearchClient({
     results: [{ title: 'Secret', url: 'https://secret.com' }],
   })
-  setActiveWebSearchClient(mockClient)
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
   let turn = 0
   const { adapter } = recordingAdapter((input) => {
@@ -965,6 +990,7 @@ test('STEP 13B: Non-permitted agent model call to web.search is rejected with ca
     chief.id,
     'Search the web for competitors.',
     adapter,
+    toolDeps,
   )
 
   assert.ok(reply.ok)
@@ -974,14 +1000,18 @@ test('STEP 13B: Non-permitted agent model call to web.search is rejected with ca
   assert.equal(reply.execution.toolCalls?.length, 1)
   assert.equal(reply.execution.toolCalls[0].status, 'failed')
   assert.equal(reply.execution.toolCalls[0].error, 'capability_denied')
-
-  setActiveWebSearchClient(null)
 })
 
-test('STEP 13B: Search failure (e.g. not_configured) is handled gracefully by model loop', async () => {
+test('STEP 13B: Search provider error (e.g. not_configured) is handled gracefully by model loop', async () => {
   const db = freshDb()
-  // No active search client
-  setActiveWebSearchClient(null)
+  const mockClient = new MockWebSearchClient({
+    error: new ToolError('not_configured', 'Web search provider is not configured.'),
+  })
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
   let turn = 0
   const { adapter } = recordingAdapter((input) => {
@@ -1014,11 +1044,38 @@ test('STEP 13B: Search failure (e.g. not_configured) is handled gracefully by mo
   const conversation = await createConversation(db, { workspaceId: WS })
   const researcher = await builtinByName(db, 'Researcher')
 
-  const reply = await sendTo(db, conversation.id, researcher.id, 'Search web.', adapter)
+  const reply = await sendTo(db, conversation.id, researcher.id, 'Search web.', adapter, toolDeps)
 
   assert.ok(reply.ok)
   assert.match(reply.message.content, /not configured/)
   assert.equal(reply.execution.toolCalls?.length, 1)
   assert.equal(reply.execution.toolCalls[0].status, 'failed')
   assert.equal(reply.execution.toolCalls[0].error, 'not_configured')
+})
+
+test('STEP 13B: Unconfigured web.search is not advertised in model tool definitions', async () => {
+  const db = freshDb()
+  let modelReceivedTools: unknown = null
+
+  const { adapter } = recordingAdapter((input) => {
+    modelReceivedTools = input.tools
+    return {
+      content: 'I did not receive web.search since it is unconfigured.',
+      finishReason: 'stop',
+      usage: { inputTokens: 15, outputTokens: 10, totalTokens: 25 },
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  // Execute without configured toolDeps -> web.search unconfigured
+  const reply = await sendTo(db, conversation.id, researcher.id, 'Help me research.', adapter)
+
+  assert.ok(reply.ok)
+  const toolDefs = (modelReceivedTools ?? []) as Array<{ key: string }>
+  assert.ok(
+    !toolDefs.some((t) => t.key === 'web.search'),
+    'Unconfigured web.search must not be sent to the model',
+  )
 })

@@ -1,7 +1,5 @@
 export {
   createWebSearchAdapter,
-  getActiveWebSearchClient,
-  setActiveWebSearchClient,
   webSearchAdapter,
 } from './adapter.ts'
 export { type BraveClientOptions, BraveSearchClient } from './brave.ts'

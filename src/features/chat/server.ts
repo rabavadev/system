@@ -28,6 +28,7 @@ import {
 } from '~/server/db/message'
 import type { SqlDatabase } from '~/server/db/sql'
 import { getDefaultWorkspace } from '~/server/db/workspace'
+import { resolveToolsRuntime } from '~/server/tools/adapters/web/runtime'
 import type { Message } from '~/types/domain'
 
 /**
@@ -308,6 +309,7 @@ export const sendMessageFn = createServerFn({ method: 'POST' })
       uiBrandId: getCookie(ACTIVE_BRAND_COOKIE) ?? null,
       ...(data.clientRequestId ? { clientRequestId: `${data.clientRequestId}:reply` } : {}),
       deps: resolveAiRuntime().deps,
+      toolDeps: resolveToolsRuntime(),
     })
 
     if (!reply.ok) {

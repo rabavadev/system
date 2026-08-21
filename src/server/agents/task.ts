@@ -10,7 +10,13 @@ import type {
 import type { ContextPackage } from '../context/index.ts'
 import { emitEventSafe } from '../db/event.ts'
 import { newId, type SqlDatabase } from '../db/sql.ts'
-import { executeTool, getAvailableTools, type ToolCaller, type ToolKey } from '../tools/index.ts'
+import {
+  type ExecuteToolDeps,
+  executeTool,
+  getAvailableTools,
+  type ToolCaller,
+  type ToolKey,
+} from '../tools/index.ts'
 import type { AgentHandle } from './registry.ts'
 
 /**
@@ -47,6 +53,8 @@ export interface AgentTaskInput {
   metadata?: Record<string, string | number | boolean | null>
   /** Test seam: inject adapters instead of the Worker runtime. */
   deps: ExecuteAIDeps
+  /** Test seam: inject tool adapters instead of default runtime. */
+  toolDeps?: ExecuteToolDeps
 }
 
 export type AgentTaskResult =
@@ -142,7 +150,7 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
     capabilities: config.capabilities,
   }
 
-  const availableTools = getAvailableTools(caller)
+  const availableTools = getAvailableTools(caller, input.toolDeps)
   const modelTools: AIToolDefinition[] = availableTools.map((t) => ({
     key: t.key,
     name: t.name,
@@ -279,17 +287,20 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
       const conversationId =
         typeof metaObj?.conversationId === 'string' ? metaObj.conversationId : undefined
 
-      const toolExecResult = await executeTool({
-        db,
-        workspaceId,
-        toolKey: call.toolKey as ToolKey,
-        args: call.args,
-        caller,
-        context: {
-          ...(conversationId ? { conversationId } : {}),
-          taskText: task,
+      const toolExecResult = await executeTool(
+        {
+          db,
+          workspaceId,
+          toolKey: call.toolKey as ToolKey,
+          args: call.args,
+          caller,
+          context: {
+            ...(conversationId ? { conversationId } : {}),
+            taskText: task,
+          },
         },
-      })
+        input.toolDeps,
+      )
 
       const durationMs = Math.max(0, Date.now() - toolStart)
 

@@ -24,7 +24,6 @@ import {
   getAvailableTools,
   listToolDefinitions,
   MockWebSearchClient,
-  setActiveWebSearchClient,
   TOOL_KEYS,
   type ToolAdapter,
   type ToolCaller,
@@ -393,8 +392,32 @@ test('available-tool filtering follows capability, status and adapter presence',
   assert.ok(!chiefTools.includes('platform.publish'))
   assert.ok(!chiefTools.includes('web.search'), 'Chief does not have web_search capability')
 
-  const researcherTools = getAvailableTools(RESEARCHER).map((t) => t.key)
-  assert.ok(researcherTools.includes('web.search'), 'Researcher has web_search capability')
+  // When web.search adapter is unconfigured by default, it is omitted from available tools
+  const researcherToolsUnconfigured = getAvailableTools(RESEARCHER).map((t) => t.key)
+  assert.ok(
+    !researcherToolsUnconfigured.includes('web.search'),
+    'Unconfigured web.search is not advertised',
+  )
+
+  // When web.search adapter is configured, it is included for Researcher
+  const configuredToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: new MockWebSearchClient() })],
+    ]),
+  }
+  const researcherToolsConfigured = getAvailableTools(RESEARCHER, configuredToolDeps).map(
+    (t) => t.key,
+  )
+  assert.ok(
+    researcherToolsConfigured.includes('web.search'),
+    'Configured web.search is available for Researcher',
+  )
+
+  const chiefToolsConfigured = getAvailableTools(CHIEF, configuredToolDeps).map((t) => t.key)
+  assert.ok(
+    !chiefToolsConfigured.includes('web.search'),
+    'Chief lacks capability even when web.search is configured',
+  )
 
   const creatorTools = getAvailableTools(
     caller(['read_context', 'read_memory', 'create_draft']),
@@ -697,9 +720,25 @@ test('web.search tool metadata is registered with correct category, risk, capabi
   assert.equal(webSearch.outputSchema.safeParse(validOutput).success, true)
 })
 
+test('web.search adapter reports isConfigured correctly based on client options', () => {
+  const unconfigured1 = createWebSearchAdapter()
+  assert.equal(unconfigured1.isConfigured?.(), false)
+
+  const unconfigured2 = createWebSearchAdapter({ client: null })
+  assert.equal(unconfigured2.isConfigured?.(), false)
+
+  const unconfigured3 = createWebSearchAdapter({ getClient: () => null })
+  assert.equal(unconfigured3.isConfigured?.(), false)
+
+  const configured1 = createWebSearchAdapter({ client: new MockWebSearchClient() })
+  assert.equal(configured1.isConfigured?.(), true)
+
+  const configured2 = createWebSearchAdapter({ getClient: () => new MockWebSearchClient() })
+  assert.equal(configured2.isConfigured?.(), true)
+})
+
 test('web.search tool returns not_configured when no provider client is active', async () => {
   const db = freshDb()
-  setActiveWebSearchClient(null)
 
   const result = await executeTool({
     db,
@@ -734,15 +773,21 @@ test('web.search executes with MockWebSearchClient and returns normalized result
       },
     ],
   })
-  setActiveWebSearchClient(mockClient)
 
-  const result = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'typescript modular architecture', limit: 5 },
-    caller: RESEARCHER,
-  })
+  const result = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'typescript modular architecture', limit: 5 },
+      caller: RESEARCHER,
+    },
+    {
+      adapters: new Map<ToolKey, ToolAdapter>([
+        ['web.search', createWebSearchAdapter({ client: mockClient })],
+      ]),
+    },
+  )
 
   assert.equal(result.ok, true)
   const data = result.data as {
@@ -776,55 +821,66 @@ test('web.search executes with MockWebSearchClient and returns normalized result
   assert.equal(data.results[1].snippet, 'Effective type-level modeling in enterprise apps.')
   assert.equal(data.results[1].publisher, 'ts.dev')
   assert.equal(data.results[1].publishedAt, null)
-
-  setActiveWebSearchClient(null)
 })
 
 test('web.search rejects empty or whitespace-only query', async () => {
   const db = freshDb()
   const mockClient = new MockWebSearchClient({ results: [] })
-  setActiveWebSearchClient(mockClient)
+  const deps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
-  const resEmpty = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: '' },
-    caller: RESEARCHER,
-  })
+  const resEmpty = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: '' },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
   assert.equal(resEmpty.ok, false)
   assert.equal(resEmpty.error?.code, 'invalid_input')
 
-  const resWhitespace = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: '    ' },
-    caller: RESEARCHER,
-  })
+  const resWhitespace = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: '    ' },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
   assert.equal(resWhitespace.ok, false)
   assert.equal(resWhitespace.error?.code, 'invalid_input')
-
-  setActiveWebSearchClient(null)
 })
 
 test('web.search rejects oversized query (> 300 characters)', async () => {
   const db = freshDb()
   const mockClient = new MockWebSearchClient({ results: [] })
-  setActiveWebSearchClient(mockClient)
+  const deps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
   const longQuery = 'x'.repeat(301)
-  const result = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: longQuery },
-    caller: RESEARCHER,
-  })
+  const result = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: longQuery },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
   assert.equal(result.ok, false)
   assert.equal(result.error?.code, 'invalid_input')
-
-  setActiveWebSearchClient(null)
 })
 
 test('web.search enforces limit bounds and defaults', async () => {
@@ -839,44 +895,55 @@ test('web.search enforces limit bounds and defaults', async () => {
       { title: 'R6', url: 'https://e.com/6' },
     ],
   })
-  setActiveWebSearchClient(mockClient)
+  const deps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
   // Default limit is 5
-  const resDefault = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'test' },
-    caller: RESEARCHER,
-  })
+  const resDefault = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'test' },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
   assert.equal(resDefault.ok, true)
   const defaultData = resDefault.data as { results: unknown[] }
   assert.equal(defaultData.results.length, 5)
 
   // Explicit limit 2
-  const res2 = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'test', limit: 2 },
-    caller: RESEARCHER,
-  })
+  const res2 = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'test', limit: 2 },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
   assert.equal(res2.ok, true)
   const data2 = res2.data as { results: unknown[] }
   assert.equal(data2.results.length, 2)
 
   // Invalid limit rejected by schema validation
-  const resInvalid = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'test', limit: 0 },
-    caller: RESEARCHER,
-  })
+  const resInvalid = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'test', limit: 0 },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
   assert.equal(resInvalid.ok, false)
   assert.equal(resInvalid.error?.code, 'invalid_input')
-
-  setActiveWebSearchClient(null)
 })
 
 test('web.search leaves missing metadata fields as null and does not fabricate data', async () => {
@@ -892,15 +959,22 @@ test('web.search leaves missing metadata fields as null and does not fabricate d
       },
     ],
   })
-  setActiveWebSearchClient(mockClient)
+  const deps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
-  const result = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'minimal' },
-    caller: RESEARCHER,
-  })
+  const result = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'minimal' },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
 
   assert.equal(result.ok, true)
   const data = result.data as {
@@ -922,8 +996,6 @@ test('web.search leaves missing metadata fields as null and does not fabricate d
   assert.equal(item.publisher, 'minimal.test') // derived strictly from URL hostname
   assert.equal(item.publishedAt, null) // not fabricated
   assert.ok(item.retrievedAt)
-
-  setActiveWebSearchClient(null)
 })
 
 test('web.search discards unsafe URL schemes (javascript, file, data, ftp)', async () => {
@@ -939,23 +1011,28 @@ test('web.search discards unsafe URL schemes (javascript, file, data, ftp)', asy
       { title: 'Malformed URL', url: 'not-a-valid-url' },
     ],
   })
-  setActiveWebSearchClient(mockClient)
+  const deps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
-  const result = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'security test', limit: 10 },
-    caller: RESEARCHER,
-  })
+  const result = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'security test', limit: 10 },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
 
   assert.equal(result.ok, true)
   const data = result.data as { results: Array<{ title: string; url: string }> }
   assert.equal(data.results.length, 2)
   assert.equal(data.results[0].url, 'http://example.com/safe')
   assert.equal(data.results[1].url, 'https://example.com/safe')
-
-  setActiveWebSearchClient(null)
 })
 
 test('web.search hides raw provider payloads from tool output', async () => {
@@ -969,15 +1046,22 @@ test('web.search hides raw provider payloads from tool output', async () => {
       },
     ],
   })
-  setActiveWebSearchClient(mockClient)
+  const deps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
-  const result = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'test extra' },
-    caller: RESEARCHER,
-  })
+  const result = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'test extra' },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
 
   assert.equal(result.ok, true)
   const data = result.data as Record<string, unknown>
@@ -994,8 +1078,6 @@ test('web.search hides raw provider payloads from tool output', async () => {
     'retrievedAt',
   ])
   assert.deepEqual(new Set(Object.keys(item)), expectedItemKeys)
-
-  setActiveWebSearchClient(null)
 })
 
 test('web.search prevents secret leakage in execution events and logs', async () => {
@@ -1003,15 +1085,22 @@ test('web.search prevents secret leakage in execution events and logs', async ()
   const mockClient = new MockWebSearchClient({
     results: [{ title: 'Secret Test', url: 'https://secret.example.com' }],
   })
-  setActiveWebSearchClient(mockClient)
+  const deps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
-  await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'find private keys' },
-    caller: RESEARCHER,
-  })
+  await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'find private keys' },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
 
   const events = await listRecentEvents(db, WS_A, 'tool.execution.', 5)
   assert.ok(events.length >= 1)
@@ -1021,28 +1110,31 @@ test('web.search prevents secret leakage in execution events and logs', async ()
   assert.ok(!payload.includes('X-Subscription-Token'))
   assert.ok(!payload.includes('BRAVE_API_KEY'))
   assert.ok(!payload.includes('WEB_SEARCH_API_KEY'))
-
-  setActiveWebSearchClient(null)
 })
 
 test('web.search enforces required capability (web_search)', async () => {
   const db = freshDb()
   const mockClient = new MockWebSearchClient({ results: [] })
-  setActiveWebSearchClient(mockClient)
+  const deps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
 
   const noCapabilityCaller = caller(['read_context', 'read_memory', 'read_research']) // missing web_search
-  const result = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'unauthorized search' },
-    caller: noCapabilityCaller,
-  })
+  const result = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'unauthorized search' },
+      caller: noCapabilityCaller,
+    },
+    deps,
+  )
 
   assert.equal(result.ok, false)
   assert.equal(result.error?.code, 'capability_denied')
-
-  setActiveWebSearchClient(null)
 })
 
 test('web.search approval requirement blocks execution without approval', async () => {
@@ -1121,20 +1213,25 @@ test('web.search provider errors are normalized to provider_error', async () => 
   const errorClient = new MockWebSearchClient({
     error: new ToolError('provider_error', 'Upstream search provider 500 error'),
   })
-  setActiveWebSearchClient(errorClient)
+  const deps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: errorClient })],
+    ]),
+  }
 
-  const result = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'failing query' },
-    caller: RESEARCHER,
-  })
+  const result = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'failing query' },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
 
   assert.equal(result.ok, false)
   assert.equal(result.error?.code, 'provider_error')
-
-  setActiveWebSearchClient(null)
 })
 
 test('web.search rate limits are normalized to rate_limited', async () => {
@@ -1142,20 +1239,25 @@ test('web.search rate limits are normalized to rate_limited', async () => {
   const rateLimitedClient = new MockWebSearchClient({
     error: new ToolError('rate_limited', 'Too many search requests'),
   })
-  setActiveWebSearchClient(rateLimitedClient)
+  const deps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: rateLimitedClient })],
+    ]),
+  }
 
-  const result = await executeTool({
-    db,
-    workspaceId: WS_A,
-    toolKey: 'web.search',
-    args: { query: 'rate limited query' },
-    caller: RESEARCHER,
-  })
+  const result = await executeTool(
+    {
+      db,
+      workspaceId: WS_A,
+      toolKey: 'web.search',
+      args: { query: 'rate limited query' },
+      caller: RESEARCHER,
+    },
+    deps,
+  )
 
   assert.equal(result.ok, false)
   assert.equal(result.error?.code, 'rate_limited')
-
-  setActiveWebSearchClient(null)
 })
 
 test('MockWebSearchClient records search parameters accurately offline', async () => {

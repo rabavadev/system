@@ -2,10 +2,8 @@ export {
   type BraveClientOptions,
   BraveSearchClient,
   createWebSearchAdapter,
-  getActiveWebSearchClient,
   MockWebSearchClient,
   type MockWebSearchOptions,
-  setActiveWebSearchClient,
   webSearchAdapter,
 } from './adapters/web/index.ts'
 export type {

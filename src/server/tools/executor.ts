@@ -363,6 +363,13 @@ export function getAvailableTools(
 ): ToolDescriptor[] {
   const adapters = deps.adapters ?? TOOL_ADAPTERS
   return filterToolsForCaller(caller, deps.definitions ?? listToolDefinitions()).filter(
-    (descriptor) => adapters.has(descriptor.key),
+    (descriptor) => {
+      const adapter = adapters.get(descriptor.key)
+      if (!adapter) return false
+      if (typeof adapter.isConfigured === 'function') {
+        return adapter.isConfigured()
+      }
+      return true
+    },
   )
 }

@@ -160,6 +160,8 @@ export interface ToolExecutionResult {
 /** The adapter contract. Implementations live in adapters/* and never leak SDKs. */
 export interface ToolAdapter {
   readonly key: ToolKey
+  /** Optional check whether runtime dependencies/configuration are present. */
+  isConfigured?(): boolean
   run(input: {
     db: import('../db/sql.ts').SqlDatabase
     workspaceId: Id

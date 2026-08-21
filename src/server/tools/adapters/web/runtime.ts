@@ -1,19 +1,24 @@
 import { env } from 'cloudflare:workers'
+import type { ToolAdapter, ToolKey } from '../../types.ts'
+import { TOOL_ADAPTERS } from '../index.ts'
+import { createWebSearchAdapter } from './adapter.ts'
 import { BraveSearchClient } from './brave.ts'
 import type { WebSearchProviderClient } from './types.ts'
 
-interface WebSearchEnvShape {
+export interface WebSearchEnvShape {
   WEB_SEARCH_API_KEY?: string
   BRAVE_API_KEY?: string
   WEB_SEARCH_PROVIDER?: string
   WEB_SEARCH_ENDPOINT?: string
 }
 
-export function resolveWebSearchRuntime(): {
+export interface WebSearchRuntimeResult {
   client: WebSearchProviderClient | null
   status: { configured: boolean; provider: string; detail: string }
-} {
-  const bindings = env as unknown as WebSearchEnvShape
+}
+
+export function resolveWebSearchRuntime(customEnv?: WebSearchEnvShape): WebSearchRuntimeResult {
+  const bindings = (customEnv ?? (env as unknown as WebSearchEnvShape)) || {}
   const providerKey = bindings.WEB_SEARCH_PROVIDER ?? 'brave'
   const apiKey = bindings.WEB_SEARCH_API_KEY ?? bindings.BRAVE_API_KEY ?? ''
 
@@ -39,7 +44,7 @@ export function resolveWebSearchRuntime(): {
       status: {
         configured: true,
         provider: 'brave',
-        detail: 'Brave Search API configured and available.',
+        detail: 'Brave Search API configured.',
       },
     }
   }
@@ -51,5 +56,18 @@ export function resolveWebSearchRuntime(): {
       provider: providerKey,
       detail: `Unsupported search provider '${providerKey}'.`,
     },
+  }
+}
+
+export function resolveToolsRuntime(customEnv?: WebSearchEnvShape): {
+  adapters: ReadonlyMap<ToolKey, ToolAdapter>
+} {
+  const searchRuntime = resolveWebSearchRuntime(customEnv)
+  const adapters = new Map<ToolKey, ToolAdapter>([
+    ...TOOL_ADAPTERS.entries(),
+    ['web.search', createWebSearchAdapter({ client: searchRuntime.client })],
+  ])
+  return {
+    adapters,
   }
 }
