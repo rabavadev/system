@@ -314,6 +314,7 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
         conversationId: conversationId ?? null,
         executionId,
         summary: `${agent.name} requests ${prepared.definition.name}`,
+        ...(prepared.definition.approval === 'required' ? { minimumMode: 'review' as const } : {}),
         payload: {
           toolKey: call.toolKey,
           args: prepared.parsedArgs,
@@ -371,31 +372,7 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
         continue
       }
 
-      // 5. Handle hard tool guard if definition requires approval
-      if (prepared.definition.approval === 'required') {
-        const durationMs = Math.max(0, Date.now() - toolStart)
-        currentMessages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          toolKey: call.toolKey,
-          content: JSON.stringify({
-            error: 'approval_required',
-            message: `${prepared.definition.name} needs approval before it can run.`,
-          }),
-        })
-        toolTraces.push({
-          toolKey: call.toolKey,
-          callNumber: toolCallCount,
-          args: call.args,
-          resultCount: 0,
-          status: 'failed',
-          durationMs,
-          error: 'approval_required',
-        })
-        continue
-      }
-
-      // 6. AUTO mode: execute authorized tool
+      // 5. AUTO mode: execute authorized tool
       const toolExecResult = await executeTool(
         {
           db,

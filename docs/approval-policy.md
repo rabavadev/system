@@ -44,6 +44,7 @@ Platform-neutral action taxonomy:
 | `workflow.create` | Create workflows | `workflow` | `review` | Create new workflows or draft versions. |
 | `workflow.modify` | Change workflows | `workflow` | `review` | Save new versions of existing workflows. |
 | `memory.verify` | Verify learned memory | `memory` | `review` | Graduate candidate hypotheses to verified facts. |
+| `external.read` | Read external services | `external` | `review` | Search or read information from connected external services. |
 | `external.write` | Outside service changes | `external` | `review` | Mutating actions on external platform connections. |
 | `content.publish` | Publish content | `content` | `review` | Publish posts and media to platforms. |
 | `account.modify` | Modify account settings | `account` | `review` | Modify platform account configurations. |

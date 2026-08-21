@@ -866,7 +866,7 @@ test('STEP 13B: Researcher executes web.search via generic AI tool calling loop'
     workspaceId: WS,
     scopeType: 'workspace',
     scopeId: WS,
-    actionKey: 'external.write',
+    actionKey: 'external.read',
     mode: 'auto',
   })
 
@@ -945,7 +945,7 @@ test('STEP 13B: Tool calling loop is bounded to maximum 3 tool calls', async () 
     workspaceId: WS,
     scopeType: 'workspace',
     scopeId: WS,
-    actionKey: 'external.write',
+    actionKey: 'external.read',
     mode: 'auto',
   })
 
@@ -970,7 +970,7 @@ test('STEP 13B: Non-permitted agent model call to web.search is rejected with ca
     workspaceId: WS,
     scopeType: 'workspace',
     scopeId: WS,
-    actionKey: 'external.write',
+    actionKey: 'external.read',
     mode: 'auto',
   })
   const mockClient = new MockWebSearchClient({
@@ -1038,7 +1038,7 @@ test('STEP 13B: Search provider error (e.g. not_configured) is handled gracefull
     workspaceId: WS,
     scopeType: 'workspace',
     scopeId: WS,
-    actionKey: 'external.write',
+    actionKey: 'external.read',
     mode: 'auto',
   })
   const mockClient = new MockWebSearchClient({
@@ -1127,7 +1127,7 @@ test('H1B: Direct Agent Tool AUTO executes adapter and returns results', async (
     workspaceId: WS,
     scopeType: 'workspace',
     scopeId: WS,
-    actionKey: 'external.write',
+    actionKey: 'external.read',
     mode: 'auto',
   })
 
@@ -1199,7 +1199,7 @@ test('H1B: Direct Agent Tool AUTO executes adapter and returns results', async (
 
 test('H1B: Direct Agent Tool REVIEW creates Approval Request and does NOT execute adapter', async () => {
   const db = freshDb()
-  // Default policy for external.write is review
+  // Default policy for external.read is review
   let adapterCalled = false
   const mockClient = new MockWebSearchClient({
     results: [{ title: 'Should Not Run', url: 'https://example.com/never' }],
@@ -1274,7 +1274,9 @@ test('H1B: Direct Agent Tool REVIEW creates Approval Request and does NOT execut
   assert.equal(req.origin, 'agent')
   assert.equal(req.requestedByType, 'agent')
   assert.equal(req.requestedById, researcher.id)
-  assert.equal(req.actionKey, 'external.write')
+  assert.equal(req.actionKey, 'external.read')
+  assert.deepEqual(req.risks, ['read', 'external'])
+  assert.equal(req.risk, 'read')
   assert.equal(req.conversationId, conversation.id)
   assert.ok(req.executionId, 'Execution ID must be populated')
   assert.equal(req.status, 'pending')
@@ -1296,7 +1298,7 @@ test('H1B: Duplicate identical pending request is deduplicated', async () => {
   // Calling createApprovalRequest with identical fingerprint and executionId deduplicates
   const res1 = await createApprovalRequest(db, {
     workspaceId: WS,
-    actionKey: 'external.write',
+    actionKey: 'external.read',
     origin: 'agent',
     requestedByType: 'agent',
     requestedById: researcher.id,
@@ -1306,11 +1308,12 @@ test('H1B: Duplicate identical pending request is deduplicated', async () => {
       toolKey: 'web.search',
       args: { query: 'dedup query', limit: 5 },
     },
+    risk: ['read', 'external'],
   })
 
   const res2 = await createApprovalRequest(db, {
     workspaceId: WS,
-    actionKey: 'external.write',
+    actionKey: 'external.read',
     origin: 'agent',
     requestedByType: 'agent',
     requestedById: researcher.id,
@@ -1320,6 +1323,7 @@ test('H1B: Duplicate identical pending request is deduplicated', async () => {
       toolKey: 'web.search',
       args: { query: 'dedup query', limit: 5 },
     },
+    risk: ['read', 'external'],
   })
 
   assert.equal(res1.created, true)
@@ -1341,7 +1345,7 @@ test('H1B: Direct Agent Tool BLOCKED returns canonical blocked result and create
     workspaceId: WS,
     scopeType: 'workspace',
     scopeId: WS,
-    actionKey: 'external.write',
+    actionKey: 'external.read',
     mode: 'blocked',
   })
 
@@ -1418,7 +1422,7 @@ test('H1B: Capability denial happens before policy check even if policy is AUTO'
     workspaceId: WS,
     scopeType: 'workspace',
     scopeId: WS,
-    actionKey: 'external.write',
+    actionKey: 'external.read',
     mode: 'auto',
   })
 
@@ -1601,10 +1605,68 @@ test('H1B: Inactive agent cannot execute Tool request or create Approval Request
 
 test('H1B: Tool -> ActionKey mapping is shared and consistent across Workflows and Agents', async () => {
   assert.equal(resolveActionKeyForTool('web.search'), 'workspace.read')
-  const webDef = (await import('../src/server/tools/definitions.ts')).TOOL_DEFINITIONS.find(
-    (d) => d.key === 'web.search',
+  const defs = (await import('../src/server/tools/definitions.ts')).TOOL_DEFINITIONS
+  const webDef = defs.find((d) => d.key === 'web.search')
+  const postsDef = defs.find((d) => d.key === 'platform.get_posts')
+  const analyticsDef = defs.find((d) => d.key === 'platform.get_analytics')
+  const publishDef = defs.find((d) => d.key === 'platform.publish')
+  const imageDef = defs.find((d) => d.key === 'image.generate')
+  const memoryDef = defs.find((d) => d.key === 'memory.list_relevant')
+
+  // 1. web.search maps to external.read
+  assert.equal(resolveActionKeyForTool('web.search', webDef), 'external.read')
+  // 2. platform.get_posts maps to external.read
+  assert.equal(resolveActionKeyForTool('platform.get_posts', postsDef), 'external.read')
+  // 3. platform.get_analytics maps to external.read
+  assert.equal(resolveActionKeyForTool('platform.get_analytics', analyticsDef), 'external.read')
+  // 4. platform.publish remains content.publish
+  assert.equal(resolveActionKeyForTool('platform.publish', publishDef), 'content.publish')
+  // 5. external write tool remains external.write
+  assert.equal(resolveActionKeyForTool('image.generate', imageDef), 'external.write')
+  // 6. destructive remains destructive.delete
+  assert.equal(
+    resolveActionKeyForTool('custom.delete', {
+      key: 'files.read' as unknown as ToolKey,
+      name: 'Delete',
+      description: 'delete',
+      category: 'workspace',
+      inputSchema: null as any,
+      outputSchema: null as any,
+      requiredCapability: 'read_context',
+      risk: ['destructive'],
+      executionMode: 'sync',
+      status: 'available',
+      origin: 'internal',
+      version: 1,
+      cost: 'none',
+      summarizeInput: () => ({}),
+    }),
+    'destructive.delete',
   )
-  assert.equal(resolveActionKeyForTool('web.search', webDef), 'external.write')
+  // 7. pure internal read remains workspace.read
+  assert.equal(resolveActionKeyForTool('memory.list_relevant', memoryDef), 'workspace.read')
+  // 8. approval:'required' alone on read tool does NOT turn it into external.write
+  assert.equal(
+    resolveActionKeyForTool('custom.read_gated', {
+      key: 'files.read' as unknown as ToolKey,
+      name: 'Gated Read',
+      description: 'gated read',
+      category: 'workspace',
+      inputSchema: null as any,
+      outputSchema: null as any,
+      requiredCapability: 'read_context',
+      risk: ['read'],
+      executionMode: 'sync',
+      status: 'available',
+      origin: 'internal',
+      version: 1,
+      cost: 'none',
+      approval: 'required',
+      summarizeInput: () => ({}),
+    }),
+    'workspace.read',
+  )
+  // 12. Workflow and Agent resolver return same mapping
   assert.equal(resolveActionKeyForTool('platform.publish'), 'content.publish')
   assert.equal(resolveActionKeyForTool('workflow.run'), 'workflow.run')
   assert.equal(resolveActionKeyForTool('image.generate'), 'external.write')
@@ -1618,12 +1680,13 @@ test('H1B: Agent cannot decide its own Approval Request (Anti-Self-Approval)', a
   // Create an approval request
   const approvalRes = await createApprovalRequest(db, {
     workspaceId: WS,
-    actionKey: 'external.write',
+    actionKey: 'external.read',
     origin: 'agent',
     requestedByType: 'agent',
     requestedById: researcher.id,
     summary: 'Researcher web search',
     payload: { toolKey: 'web.search', query: 'self approve test' },
+    risk: ['read', 'external'],
   })
 
   assert.ok(approvalRes.request)
@@ -1716,4 +1779,291 @@ test('H1B: Zero API key or secret leakage in snapshot, trace, or event metadata'
     assert.ok(!payload.includes('BRAVE_API_KEY'))
     assert.ok(!payload.includes('WEB_SEARCH_API_KEY'))
   }
+})
+
+/* ========================================================================= */
+/* HARDENING H1B.1: Hard Tool Approval Elevation and Multi-Risk Preservation */
+/* ========================================================================= */
+
+test('H1B.1: Hard-required tool under Policy AUTO elevates to REVIEW and creates real DB request', async () => {
+  const db = freshDb()
+  const { TOOL_DEFINITIONS } = await import('../src/server/tools/definitions.ts')
+
+  // Policy for content.publish is AUTO
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'content.publish',
+    mode: 'auto',
+  })
+
+  let adapterCalled = false
+  const toolDeps: ExecuteToolDeps = {
+    definitions: TOOL_DEFINITIONS.map((d) =>
+      d.key === 'platform.publish' ? { ...d, status: 'available' } : d,
+    ),
+    adapters: new Map<ToolKey, ToolAdapter>([
+      [
+        'platform.publish',
+        {
+          key: 'platform.publish',
+          isConfigured: () => true,
+          async run() {
+            adapterCalled = true
+            return { ok: true, output: { publishedId: 'pub-1', url: 'https://example.com' } }
+          },
+        },
+      ],
+    ]),
+  }
+
+  const sampleAccountId = crypto.randomUUID()
+  const sampleContentVariantId = crypto.randomUUID()
+
+  const { adapter } = recordingAdapter((input) => {
+    const isFirst = !input.messages.some((m) => m.role === 'tool')
+    if (isFirst) {
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-hard-publish',
+            toolKey: 'platform.publish',
+            args: {
+              accountId: sampleAccountId,
+              contentVariantId: sampleContentVariantId,
+            },
+          },
+        ],
+        finishReason: 'tool_calls',
+      }
+    }
+    return {
+      content: 'Publishing requires user approval.',
+      finishReason: 'stop',
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const publisher = await builtinByName(db, 'Publisher')
+  await setAgentStatus(db, publisher.id, 'active')
+
+  const reply = await sendTo(db, conversation.id, publisher.id, 'Publish post.', adapter, toolDeps)
+
+  assert.ok(reply.ok)
+  // 24. Adapter NOT called
+  assert.equal(adapterCalled, false, 'Hard-gated tool adapter MUST NOT run without approval')
+
+  // 25. Trace says approval_required
+  assert.equal(reply.execution.toolCalls?.length, 1)
+  assert.equal(reply.execution.toolCalls[0].status, 'failed')
+  assert.equal(reply.execution.toolCalls[0].error, 'approval_required')
+
+  // 23. Real Approval Request created in database
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(approvals.length, 1, 'Real Approval Request MUST exist in database')
+  const req = approvals[0]
+
+  // 26, 27. Request linked to execution and conversation
+  assert.equal(req.actionKey, 'content.publish')
+  assert.equal(req.conversationId, conversation.id)
+  assert.ok(req.executionId)
+  assert.equal(req.status, 'pending')
+  assert.deepEqual(req.risks, ['write', 'external'])
+  assert.equal(req.risk, 'write')
+  assert.match(req.summary, /Publisher requests Publish content/i)
+})
+
+test('H1B.1: Hard-required tool under Policy BLOCKED remains BLOCKED and creates NO request', async () => {
+  const db = freshDb()
+  const { TOOL_DEFINITIONS } = await import('../src/server/tools/definitions.ts')
+
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'content.publish',
+    mode: 'blocked',
+  })
+
+  let adapterCalled = false
+  const toolDeps: ExecuteToolDeps = {
+    definitions: TOOL_DEFINITIONS.map((d) =>
+      d.key === 'platform.publish' ? { ...d, status: 'available' } : d,
+    ),
+    adapters: new Map<ToolKey, ToolAdapter>([
+      [
+        'platform.publish',
+        {
+          key: 'platform.publish',
+          isConfigured: () => true,
+          async run() {
+            adapterCalled = true
+            return { ok: true, output: {} }
+          },
+        },
+      ],
+    ]),
+  }
+
+  const sampleAccountId = crypto.randomUUID()
+  const sampleContentVariantId = crypto.randomUUID()
+
+  const { adapter } = recordingAdapter((input) => {
+    const isFirst = !input.messages.some((m) => m.role === 'tool')
+    if (isFirst) {
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call-blocked-publish',
+            toolKey: 'platform.publish',
+            args: {
+              accountId: sampleAccountId,
+              contentVariantId: sampleContentVariantId,
+            },
+          },
+        ],
+        finishReason: 'tool_calls',
+      }
+    }
+    return { content: 'Publish is blocked.', finishReason: 'stop' }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const publisher = await builtinByName(db, 'Publisher')
+  await setAgentStatus(db, publisher.id, 'active')
+
+  const reply = await sendTo(db, conversation.id, publisher.id, 'Publish post.', adapter, toolDeps)
+
+  assert.ok(reply.ok)
+  // 31. Adapter NOT called
+  assert.equal(adapterCalled, false)
+  assert.equal(reply.execution.toolCalls?.[0]?.status, 'failed')
+  assert.equal(reply.execution.toolCalls?.[0]?.error, 'blocked')
+
+  // 30. No approval request created
+  const approvals = await listApprovalRequests(db, { workspaceId: WS })
+  assert.equal(approvals.length, 0, 'Blocked hard-required tool must NOT create approval request')
+})
+
+test('H1B.1: Approval Request preserves multi-risk array in database and backward compatibility', async () => {
+  const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.write',
+    mode: 'review',
+  })
+
+  // 14. image tool retains write + external + sensitive
+  const resImage = await createApprovalRequest(db, {
+    workspaceId: WS,
+    actionKey: 'external.write',
+    origin: 'agent',
+    payload: { prompt: 'Generate logo' },
+    risk: ['write', 'external', 'sensitive'],
+  })
+  assert.ok(resImage.request)
+  assert.deepEqual(resImage.request.risks, ['write', 'external', 'sensitive'])
+  assert.equal(resImage.request.risk, 'write')
+
+  // 16. Legacy single-string row in DB loads cleanly into risks array
+  const legacyId = crypto.randomUUID()
+  const now = '2026-08-20T00:00:00.000Z'
+  await db
+    .prepare(
+      `INSERT INTO approval (
+        id, workspace_id, action_key, origin, requested_by_type, requested_by_id,
+        subject_type, subject_id, summary, reason, resolved_mode, policy_source,
+        risk, snapshot_json, fingerprint, status, expires_at, decision,
+        decided_by_type, decided_by_id, decision_note, decided_at,
+        workflow_id, run_id, step_id, execution_id, conversation_id,
+        created_at, updated_at
+      ) VALUES (?, ?, 'content.publish', 'agent', 'agent', NULL, NULL, NULL, 'Legacy request', 'Legacy reason', 'review', 'system_default', 'write', '{}', 'fp-legacy', 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+    )
+    .bind(legacyId, WS, now, now)
+    .run()
+
+  const loadedLegacy = await getApprovalRequest(db, { workspaceId: WS, id: legacyId })
+  assert.ok(loadedLegacy)
+  assert.deepEqual(loadedLegacy.risks, ['write'])
+  assert.equal(loadedLegacy.risk, 'write')
+
+  // 18, 19. Malformed stored risk string normalizes without crashing
+  const malformedId = crypto.randomUUID()
+  await db
+    .prepare(
+      `INSERT INTO approval (
+        id, workspace_id, action_key, origin, requested_by_type, requested_by_id,
+        subject_type, subject_id, summary, reason, resolved_mode, policy_source,
+        risk, snapshot_json, fingerprint, status, expires_at, decision,
+        decided_by_type, decided_by_id, decision_note, decided_at,
+        workflow_id, run_id, step_id, execution_id, conversation_id,
+        created_at, updated_at
+      ) VALUES (?, ?, 'content.publish', 'agent', 'agent', NULL, NULL, NULL, 'Malformed request', 'Malformed reason', 'review', 'system_default', '["invalid_risk", "write", 123]', '{}', 'fp-malformed', 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+    )
+    .bind(malformedId, WS, now, now)
+    .run()
+
+  const loadedMalformed = await getApprovalRequest(db, { workspaceId: WS, id: malformedId })
+  assert.ok(loadedMalformed)
+  assert.deepEqual(loadedMalformed.risks, ['write'])
+  assert.equal(loadedMalformed.risk, 'write')
+})
+
+test('H1B.1: executeTool static guard prevents direct unauthorized execution of hard-gated tools', async () => {
+  const db = freshDb()
+  const { executeTool } = await import('../src/server/tools/executor.ts')
+  const { TOOL_DEFINITIONS } = await import('../src/server/tools/definitions.ts')
+  const pubDef = TOOL_DEFINITIONS.find((d) => d.key === 'platform.publish')
+  assert.equal(pubDef?.approval, 'required')
+
+  const sampleAccountId = crypto.randomUUID()
+  const sampleContentVariantId = crypto.randomUUID()
+  const sampleAgentId = crypto.randomUUID()
+  const sampleVersionId = crypto.randomUUID()
+
+  // Call executeTool without approvalGranted
+  const res = await executeTool(
+    {
+      db,
+      workspaceId: WS,
+      toolKey: 'platform.publish',
+      args: {
+        accountId: sampleAccountId,
+        contentVariantId: sampleContentVariantId,
+      },
+      caller: {
+        agentId: sampleAgentId,
+        agentName: 'Publisher',
+        agentStatus: 'active',
+        agentVersionId: sampleVersionId,
+        capabilities: ['publish'],
+      },
+      approvalGranted: false,
+    },
+    {
+      definitions: TOOL_DEFINITIONS.map((d) =>
+        d.key === 'platform.publish' ? { ...d, status: 'available' } : d,
+      ),
+      adapters: new Map([
+        [
+          'platform.publish',
+          {
+            key: 'platform.publish',
+            isConfigured: () => true,
+            async run() {
+              return { ok: true, output: {} }
+            },
+          },
+        ],
+      ]),
+    },
+  )
+
+  assert.equal(res.ok, false)
+  assert.equal(res.error?.code, 'approval_required')
 })

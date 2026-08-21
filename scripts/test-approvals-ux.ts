@@ -702,3 +702,27 @@ test('18. Existing approval/workflow integration remains green', async () => {
   const policies = await listApprovalPolicies(db, WS_A)
   assert.ok(Array.isArray(policies))
 })
+
+test('19. Approval UI DTO preserves multi-risk array for badge display', async () => {
+  const db = freshDb()
+  const created = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'external.read',
+    origin: 'agent',
+    payload: { query: 'Search test' },
+    risk: ['read', 'external'],
+  })
+  assert.ok(created.request)
+
+  const requests = await listApprovalRequests(db, { workspaceId: WS_A })
+  assert.equal(requests.length, 1)
+  assert.deepEqual(requests[0].risks, ['read', 'external'])
+  assert.equal(requests[0].risk, 'read')
+})
+
+test('20. Autonomy overview includes external.read action with review default', async () => {
+  assert.ok(ACTION_DEFINITIONS['external.read'])
+  assert.equal(ACTION_DEFINITIONS['external.read'].defaultMode, 'review')
+  assert.deepEqual(ACTION_DEFINITIONS['external.read'].inherentRisks, ['read', 'external'])
+  assert.equal(ACTION_DEFINITIONS['external.read'].category, 'external')
+})

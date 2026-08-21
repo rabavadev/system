@@ -4,16 +4,16 @@ import type { ActionKey } from './types.ts'
 /**
  * Resolves a platform-neutral ActionKey for a tool execution (direct Agent or Workflow step).
  *
- * Deterministic mapping rules:
- * - Direct tool mappings:
- *   - 'platform.publish' -> 'content.publish'
- *   - 'workflow.run' -> 'workflow.run'
- *   - 'image.generate' -> 'external.write'
- * - Risk-based derivations:
- *   - Destructive risk -> 'destructive.delete'
- *   - Write/External risk -> 'external.write' (or 'content.publish' for publishing)
- *   - Read risk -> 'workspace.read'
- * - Default safe fallback: 'workspace.read'
+ * Conceptual precedence:
+ * 1. Known direct mappings ('platform.publish', 'workflow.run', 'image.generate')
+ * 2. Destructive risk -> 'destructive.delete'
+ * 3. Platform write/publish -> 'content.publish'
+ * 4. External write mutation -> 'external.write'
+ * 5. External read (external without write) -> 'external.read'
+ * 6. Plain internal read -> 'workspace.read'
+ * 7. Safe fallback -> 'workspace.read'
+ *
+ * Note: Approval requirement ('approval: required') does NOT determine action semantics.
  */
 export function resolveActionKeyForTool(
   toolKey: string,
@@ -37,12 +37,14 @@ export function resolveActionKeyForTool(
     if (definition.category === 'platform' && risks.includes('write')) {
       return 'content.publish'
     }
-    if (
-      risks.includes('write') ||
-      risks.includes('external') ||
-      definition.approval === 'required'
-    ) {
+    if (risks.includes('write') && risks.includes('external')) {
       return 'external.write'
+    }
+    if (risks.includes('write')) {
+      return 'external.write'
+    }
+    if (risks.includes('external')) {
+      return 'external.read'
     }
     if (risks.includes('read')) {
       return 'workspace.read'

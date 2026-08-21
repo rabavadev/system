@@ -547,3 +547,69 @@ test('18. action keys, modes, and scopes remain platform-neutral', () => {
     assert.ok(['auto', 'review', 'blocked'].includes(mode))
   }
 })
+
+// 19. external.read default mode is REVIEW
+test('19. external.read default mode is review and inherent risks are read + external', () => {
+  assert.equal(getSystemDefaultMode('external.read'), 'review')
+  assert.equal(deriveModeFromRisk(['read', 'external']), 'review')
+})
+
+// 20. setting external.read AUTO does NOT affect external.write
+test('20. setting external.read AUTO does not affect external.write', async () => {
+  const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS_A,
+    scopeType: 'workspace',
+    scopeId: WS_A,
+    actionKey: 'external.read',
+    mode: 'auto',
+  })
+
+  const readRes = await resolveApprovalPolicy(db, {
+    action: 'external.read',
+    workspaceId: WS_A,
+    origin: 'agent',
+  })
+  assert.equal(readRes.mode, 'auto')
+
+  const writeRes = await resolveApprovalPolicy(db, {
+    action: 'external.write',
+    workspaceId: WS_A,
+    origin: 'agent',
+  })
+  assert.equal(
+    writeRes.mode,
+    'review',
+    'external.write MUST remain review when external.read is set to auto',
+  )
+})
+
+// 21. setting external.write AUTO does NOT affect external.read
+test('21. setting external.write AUTO does not affect external.read', async () => {
+  const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS_A,
+    scopeType: 'workspace',
+    scopeId: WS_A,
+    actionKey: 'external.write',
+    mode: 'auto',
+  })
+
+  const writeRes = await resolveApprovalPolicy(db, {
+    action: 'external.write',
+    workspaceId: WS_A,
+    origin: 'agent',
+  })
+  assert.equal(writeRes.mode, 'auto')
+
+  const readRes = await resolveApprovalPolicy(db, {
+    action: 'external.read',
+    workspaceId: WS_A,
+    origin: 'agent',
+  })
+  assert.equal(
+    readRes.mode,
+    'review',
+    'external.read MUST remain review when external.write is set to auto',
+  )
+})

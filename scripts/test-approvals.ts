@@ -827,3 +827,128 @@ test('29. decided historical requests remain permanently queryable and immutable
   assert.equal(record.status, 'approved')
   assert.equal(record.decisionNote, 'Permanent historical record')
 })
+
+// 30. Multi-risk array is persisted and preserved without data loss
+test('30. multi-risk array is stored as JSON and parsed back into risks array', async () => {
+  const db = freshDb()
+  const created = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'external.read',
+    origin: 'agent',
+    payload: { query: 'Search query' },
+    risk: ['read', 'external'],
+  })
+
+  assert.ok(created.request)
+  assert.deepEqual(created.request.risks, ['read', 'external'])
+  assert.equal(created.request.risk, 'read')
+
+  // Verify in database query directly
+  const row = await db
+    .prepare(`SELECT risk FROM approval WHERE id = ?`)
+    .bind(created.request.id)
+    .first<{ risk: string }>()
+  assert.equal(row?.risk, '["read","external"]')
+
+  const loaded = await getApprovalWithExpiryCheck(db, {
+    workspaceId: WS_A,
+    id: created.request.id,
+  })
+  assert.ok(loaded)
+  assert.deepEqual(loaded.risks, ['read', 'external'])
+  assert.equal(loaded.risk, 'read')
+})
+
+// 31. Legacy single-string risk row in DB backward compatibility
+test('31. legacy single-string risk in DB loads cleanly into risks array and risk accessor', async () => {
+  const db = freshDb()
+  const legacyId = crypto.randomUUID()
+  const now = '2026-08-20T00:00:00.000Z'
+  await db
+    .prepare(
+      `INSERT INTO approval (
+        id, workspace_id, action_key, origin, requested_by_type, requested_by_id,
+        subject_type, subject_id, summary, reason, resolved_mode, policy_source,
+        risk, snapshot_json, fingerprint, status, expires_at, decision,
+        decided_by_type, decided_by_id, decision_note, decided_at,
+        workflow_id, run_id, step_id, execution_id, conversation_id,
+        created_at, updated_at
+      ) VALUES (?, ?, 'content.publish', 'agent', 'agent', NULL, NULL, NULL, 'Legacy request', 'Legacy reason', 'review', 'system_default', 'write', '{}', 'fp-legacy', 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+    )
+    .bind(legacyId, WS_A, now, now)
+    .run()
+
+  const loaded = await getApprovalWithExpiryCheck(db, {
+    workspaceId: WS_A,
+    id: legacyId,
+  })
+  assert.ok(loaded)
+  assert.deepEqual(loaded.risks, ['write'])
+  assert.equal(loaded.risk, 'write')
+})
+
+// 32. Malformed risk values are filtered so only canonical ToolRisk values survive
+test('32. malformed or unknown risk values are safely filtered without crashing', async () => {
+  const db = freshDb()
+  const malformedId = crypto.randomUUID()
+  const now = '2026-08-20T00:00:00.000Z'
+  await db
+    .prepare(
+      `INSERT INTO approval (
+        id, workspace_id, action_key, origin, requested_by_type, requested_by_id,
+        subject_type, subject_id, summary, reason, resolved_mode, policy_source,
+        risk, snapshot_json, fingerprint, status, expires_at, decision,
+        decided_by_type, decided_by_id, decision_note, decided_at,
+        workflow_id, run_id, step_id, execution_id, conversation_id,
+        created_at, updated_at
+      ) VALUES (?, ?, 'content.publish', 'agent', 'agent', NULL, NULL, NULL, 'Malformed request', 'Malformed reason', 'review', 'system_default', '["bogus_risk", "sensitive", 999]', '{}', 'fp-malformed', 'pending', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+    )
+    .bind(malformedId, WS_A, now, now)
+    .run()
+
+  const loaded = await getApprovalWithExpiryCheck(db, {
+    workspaceId: WS_A,
+    id: malformedId,
+  })
+  assert.ok(loaded)
+  assert.deepEqual(loaded.risks, ['sensitive'])
+  assert.equal(loaded.risk, 'sensitive')
+})
+
+// 33. Hard-gated minimumMode elevates AUTO policy to REVIEW
+test('33. minimumMode elevates policy from AUTO to REVIEW and creates a pending request', async () => {
+  const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS_A,
+    scopeType: 'workspace',
+    scopeId: WS_A,
+    actionKey: 'workspace.read',
+    mode: 'auto',
+  })
+
+  // Without minimumMode, AUTO returns no request
+  const autoRes = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'workspace.read',
+    origin: 'agent',
+    payload: { key: 'context' },
+  })
+  assert.equal(autoRes.status, 'auto')
+  assert.equal(autoRes.created, false)
+  assert.equal(autoRes.request, null)
+
+  // With minimumMode: 'review', AUTO is elevated to REVIEW
+  const elevatedRes = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'workspace.read',
+    origin: 'agent',
+    minimumMode: 'review',
+    payload: { key: 'context' },
+    risk: ['read'],
+  })
+  assert.equal(elevatedRes.status, 'pending')
+  assert.equal(elevatedRes.created, true)
+  assert.ok(elevatedRes.request)
+  assert.equal(elevatedRes.request.resolvedMode, 'review')
+  assert.equal(elevatedRes.request.policySource, 'hard_security')
+})

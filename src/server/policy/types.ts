@@ -24,6 +24,7 @@ export const ACTION_KEYS = [
   'workflow.create',
   'workflow.modify',
   'memory.verify',
+  'external.read',
   'external.write',
   'content.publish',
   'account.modify',
@@ -80,6 +81,15 @@ export const ACTION_DEFINITIONS: Record<ActionKey, ActionDefinition> = {
     category: 'memory',
     defaultMode: 'review',
     inherentRisks: ['write'],
+  },
+  'external.read': {
+    key: 'external.read',
+    label: 'Read external services',
+    description:
+      'Search or read information from connected external services without changing them.',
+    category: 'external',
+    defaultMode: 'review',
+    inherentRisks: ['read', 'external'],
   },
   'external.write': {
     key: 'external.write',

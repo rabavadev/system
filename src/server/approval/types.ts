@@ -41,6 +41,7 @@ export interface ApprovalRequestRecord {
   reason: string
   resolvedMode: PolicyMode
   policySource: PolicySource
+  risks: readonly ToolRisk[]
   risk: ToolRisk | null
   snapshotJson: string
   fingerprint: string
@@ -72,6 +73,7 @@ export interface CreateApprovalRequestInput {
   summary?: string
   risk?: readonly ToolRisk[] | ToolRisk | null
   target?: PolicyResolutionRequest['target']
+  minimumMode?: PolicyMode | null | undefined
   payload: Record<string, unknown>
   expiresAt?: string | null
   workflowId?: string | null

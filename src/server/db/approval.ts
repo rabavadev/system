@@ -7,7 +7,7 @@ import type {
   ListApprovalsFilter,
 } from '../approval/types.ts'
 import type { ActionKey, PolicyMode, PolicySource } from '../policy/types.ts'
-import type { ToolRisk } from '../tools/types.ts'
+import { TOOL_RISKS, type ToolRisk } from '../tools/types.ts'
 import { execute, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
 
 export interface ApprovalRow {
@@ -42,7 +42,43 @@ export interface ApprovalRow {
   updated_at: string
 }
 
+/**
+ * Safely normalizes stored risk representation (JSON array or legacy single string)
+ * into a valid, deduplicated array of canonical ToolRisk values.
+ */
+export function normalizeStoredRisks(raw: unknown): readonly ToolRisk[] {
+  if (!raw) return []
+  if (Array.isArray(raw)) {
+    const valid = raw.filter(
+      (r): r is ToolRisk => typeof r === 'string' && (TOOL_RISKS as readonly string[]).includes(r),
+    )
+    return Array.from(new Set(valid))
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim()
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        if (Array.isArray(parsed)) {
+          const valid = parsed.filter(
+            (r): r is ToolRisk =>
+              typeof r === 'string' && (TOOL_RISKS as readonly string[]).includes(r),
+          )
+          return Array.from(new Set(valid))
+        }
+      } catch {
+        // safe fallback
+      }
+    }
+    if ((TOOL_RISKS as readonly string[]).includes(trimmed)) {
+      return [trimmed as ToolRisk]
+    }
+  }
+  return []
+}
+
 export function toApprovalRecord(row: ApprovalRow): ApprovalRequestRecord {
+  const risks = normalizeStoredRisks(row.risk)
   return {
     id: row.id,
     workspaceId: row.workspace_id,
@@ -56,7 +92,8 @@ export function toApprovalRecord(row: ApprovalRow): ApprovalRequestRecord {
     reason: row.reason,
     resolvedMode: row.resolved_mode as PolicyMode,
     policySource: row.policy_source as PolicySource,
-    risk: (row.risk as ToolRisk) ?? null,
+    risks,
+    risk: risks[0] ?? null,
     snapshotJson: row.snapshot_json,
     fingerprint: row.fingerprint,
     status: row.status as ApprovalStatus,
@@ -195,7 +232,11 @@ export async function insertApprovalRequest(
       record.reason,
       record.resolvedMode,
       record.policySource,
-      record.risk ? (Array.isArray(record.risk) ? record.risk[0] : String(record.risk)) : null,
+      record.risks && record.risks.length > 0
+        ? JSON.stringify(record.risks)
+        : record.risk
+          ? JSON.stringify([record.risk])
+          : null,
       record.snapshotJson,
       record.fingerprint,
       record.status,

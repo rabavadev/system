@@ -141,7 +141,8 @@ function ApprovalCard({
   const Icon = getActionIcon(request.actionKey)
   const isPending = request.status === 'pending'
   const expiryLabel = formatExpiryTime(request.expiresAt)
-  const riskInfo = request.risk ? RISK_BADGES[request.risk] : null
+  const displayRisks =
+    request.risks && request.risks.length > 0 ? request.risks : request.risk ? [request.risk] : []
 
   // Extract key payload highlights
   const payloadEntries = Object.entries(request.sanitizedPayload).filter(
@@ -161,7 +162,14 @@ function ApprovalCard({
               <Badge tone={STATUS_TONE[request.status] ?? 'neutral'}>
                 {STATUS_LABEL[request.status] ?? request.status}
               </Badge>
-              {riskInfo && <Badge tone={riskInfo.tone}>{riskInfo.label}</Badge>}
+              {displayRisks.map((r) => {
+                const badge = RISK_BADGES[r]
+                return badge ? (
+                  <Badge key={r} tone={badge.tone}>
+                    {badge.label}
+                  </Badge>
+                ) : null
+              })}
             </div>
             <p className="mt-0.5 text-xs text-zinc-600">{request.summary}</p>
           </div>
@@ -309,7 +317,8 @@ function ApprovalDetailModal({
   const [decisionNote, setDecisionNote] = useState('')
   const isPending = request.status === 'pending'
   const Icon = getActionIcon(request.actionKey)
-  const riskInfo = request.risk ? RISK_BADGES[request.risk] : null
+  const displayRisks =
+    request.risks && request.risks.length > 0 ? request.risks : request.risk ? [request.risk] : []
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/40 p-4 overflow-y-auto">
@@ -319,14 +328,14 @@ function ApprovalDetailModal({
         aria-label={request.actionLabel}
         className="w-full max-w-2xl rounded-xl border border-zinc-200 bg-white shadow-xl max-h-[90vh] flex flex-col"
       >
-        {/* Header */}
-        <div className="flex items-center justify-between border-b border-zinc-100 px-6 py-4">
+        {/* Modal Header */}
+        <div className="flex items-start justify-between border-b border-zinc-200 px-6 py-4">
           <div className="flex items-center gap-3">
-            <div className="flex size-9 items-center justify-center rounded-lg bg-zinc-100 text-zinc-700">
-              <Icon className="size-5" strokeWidth={1.75} />
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-zinc-100 text-zinc-700">
+              <Icon className="size-4" strokeWidth={1.75} />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h2 className="text-base font-semibold text-zinc-900">{request.actionLabel}</h2>
                 <Badge tone={STATUS_TONE[request.status] ?? 'neutral'}>
                   {STATUS_LABEL[request.status] ?? request.status}
@@ -399,10 +408,17 @@ function ApprovalDetailModal({
                 Security & Risk
               </h4>
               <div className="space-y-1.5 text-xs text-zinc-700">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-zinc-400">Risk rating:</span>
-                  {riskInfo ? (
-                    <Badge tone={riskInfo.tone}>{riskInfo.label}</Badge>
+                  {displayRisks.length > 0 ? (
+                    displayRisks.map((r) => {
+                      const badge = RISK_BADGES[r]
+                      return badge ? (
+                        <Badge key={r} tone={badge.tone}>
+                          {badge.label}
+                        </Badge>
+                      ) : null
+                    })
                   ) : (
                     <Badge tone="neutral">Standard</Badge>
                   )}
@@ -871,6 +887,7 @@ export function ApprovalsPage() {
               <option value="workflow.run">workflow.run</option>
               <option value="workflow.create">workflow.create</option>
               <option value="memory.verify">memory.verify</option>
+              <option value="external.read">external.read</option>
               <option value="external.write">external.write</option>
               <option value="account.modify">account.modify</option>
               <option value="destructive.delete">destructive.delete</option>

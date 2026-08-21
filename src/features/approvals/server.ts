@@ -33,6 +33,7 @@ export interface ApprovalRequestItem {
   reason: string
   resolvedMode: string
   policySource: string
+  risks: string[]
   risk: string | null
   sanitizedPayload: Record<string, string>
   snapshotJson: string
@@ -158,6 +159,12 @@ async function enrichApprovalRecord(
     reason: record.reason,
     resolvedMode: record.resolvedMode,
     policySource: record.policySource,
+    risks:
+      record.risks && record.risks.length > 0
+        ? [...record.risks]
+        : record.risk
+          ? [record.risk]
+          : [],
     risk: record.risk,
     sanitizedPayload,
     snapshotJson: record.snapshotJson,

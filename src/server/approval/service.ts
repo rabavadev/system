@@ -4,13 +4,20 @@ import {
   getApprovalRequest,
   getApprovalRequestById,
   insertApprovalRequest,
+  normalizeStoredRisks,
   updateApprovalDecision,
 } from '../db/approval.ts'
 import { writeAuditLog } from '../db/audit.ts'
 import { emitEventSafe } from '../db/event.ts'
 import { newId, nowIso, queryFirst, type SqlDatabase } from '../db/sql.ts'
 import { resolveApprovalPolicy } from '../policy/resolver.ts'
-import { ACTION_DEFINITIONS, ACTION_KEYS, type ActionKey } from '../policy/types.ts'
+import {
+  ACTION_DEFINITIONS,
+  ACTION_KEYS,
+  type ActionKey,
+  type PolicyMode,
+  type PolicySource,
+} from '../policy/types.ts'
 import {
   computeSnapshotFingerprint,
   createSafeActionSnapshot,
@@ -80,22 +87,33 @@ export async function createApprovalRequest(
     ...(input.target !== undefined ? { target: input.target } : {}),
   })
 
+  let effectiveMode: PolicyMode = policyResult.mode
+  let effectiveSource: PolicySource = policyResult.source
+  let effectiveReason = policyResult.reason
+
+  // Check if minimumMode (e.g. hard tool approval requirement) elevates AUTO to REVIEW
+  if (effectiveMode === 'auto' && input.minimumMode === 'review') {
+    effectiveMode = 'review'
+    effectiveSource = 'hard_security'
+    effectiveReason = 'Tool definition requires human approval'
+  }
+
   // 4. Handle AUTO and BLOCKED outcomes
-  if (policyResult.mode === 'auto') {
+  if (effectiveMode === 'auto') {
     return {
       status: 'auto',
       created: false,
       request: null,
-      reason: policyResult.reason,
+      reason: effectiveReason,
     }
   }
 
-  if (policyResult.mode === 'blocked') {
+  if (effectiveMode === 'blocked') {
     return {
       status: 'blocked',
       created: false,
       request: null,
-      reason: policyResult.reason,
+      reason: effectiveReason,
     }
   }
 
@@ -142,6 +160,8 @@ export async function createApprovalRequest(
     }
   }
 
+  const risks = normalizeStoredRisks(input.risk)
+
   const record: ApprovalRequestRecord = {
     id,
     workspaceId: input.workspaceId,
@@ -152,10 +172,11 @@ export async function createApprovalRequest(
     subjectType: input.subjectType ?? (input.brandId ? 'brand' : null),
     subjectId: input.subjectId ?? input.brandId ?? null,
     summary,
-    reason: policyResult.reason,
+    reason: effectiveReason,
     resolvedMode: 'review',
-    policySource: policyResult.source,
-    risk: (Array.isArray(input.risk) ? (input.risk[0] ?? null) : input.risk) ?? null,
+    policySource: effectiveSource,
+    risks,
+    risk: risks[0] ?? null,
     snapshotJson,
     fingerprint,
     status: 'pending',
