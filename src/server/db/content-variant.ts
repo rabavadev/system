@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { ContentStatus } from '~/types/domain'
 import {
   composeContentDraftTask,
+  computeDraftHash,
   type GeneratedContentDraft,
   parseContentDraftOutput,
 } from '../agents/content-draft.ts'
@@ -9,6 +10,7 @@ import { ensureBuiltinAgents } from '../agents/registry.ts'
 import { executeAgentTask } from '../agents/task.ts'
 import type { ExecuteAIDeps } from '../ai/executor.ts'
 import { buildContext } from '../context/engine.ts'
+import { getAgentById, getAgentVersion } from './agent.ts'
 import { writeAuditLog } from './audit.ts'
 import { type ContentRow, getCampaignContentDetail, toCampaignContentItem } from './content.ts'
 import { emitEventSafe } from './event.ts'
@@ -16,13 +18,18 @@ import { IntegrityError } from './relations.ts'
 import { execute, newId, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
 
 export interface DraftProvenance {
+  candidateId?: string | null
   agentId: string
   agentName: string
   agentVersionId: string
   versionNumber: number
   executionId: string
-  model: string
+  model: string | null
+  provider?: string | null
   createdAt: string
+  humanEdited?: boolean
+  generatedHash?: string | null
+  savedHash?: string | null
 }
 
 export interface ContentVariantMetadata {
@@ -61,6 +68,25 @@ export interface ContentVariantRow {
   updated_at: string
   deleted_at: string | null
   platform_name?: string | null
+}
+
+export interface ContentDraftCandidateRow {
+  id: string
+  workspace_id: string
+  campaign_id: string
+  content_id: string
+  account_id: string
+  platform_id: string
+  creator_agent_id: string
+  creator_agent_version_id: string
+  ai_execution_id: string
+  provider: string | null
+  model: string | null
+  generated_json: string
+  generated_hash: string
+  created_at: string
+  saved_at: string | null
+  saved_variant_id: string | null
 }
 
 export function toContentVariantDetail(row: ContentVariantRow): ContentVariantDetail {
@@ -102,6 +128,7 @@ export type GenerateContentDraftInput = z.input<typeof generateContentDraftInput
 export type GenerateContentDraftResult =
   | {
       ok: true
+      candidateId: string
       draft: GeneratedContentDraft
       provenance: DraftProvenance
     }
@@ -112,8 +139,9 @@ export type GenerateContentDraftResult =
     }
 
 /**
- * Generate a candidate draft using the platform-neutral Creator agent and Campaign Context.
- * Does NOT immediately persist to the database. Human review is required before saving.
+ * Generate a candidate draft using the Creator agent and Campaign Context.
+ * Stores a server-authoritative candidate record in content_draft_candidate.
+ * Does NOT immediately persist to content_variant. Human review/save is required.
  */
 export async function generateCampaignContentDraft(
   db: SqlDatabase,
@@ -147,9 +175,50 @@ export async function generateCampaignContentDraft(
     throw new IntegrityError('Content item not found or is archived.')
   }
 
+  // 3. Verify target Account exists (required for platform drafts)
+  if (!contentRow.target_account_id) {
+    return {
+      ok: false,
+      errorCode: 'account_required',
+      message: 'Choose an account before generating a platform draft.',
+    }
+  }
+
+  const accountRow = await queryFirst<{
+    id: string
+    workspace_id: string
+    platform_id: string
+    status: string
+    deleted_at: string | null
+  }>(
+    db,
+    `SELECT id, workspace_id, platform_id, status, deleted_at FROM account WHERE id = ? AND workspace_id = ?`,
+    [contentRow.target_account_id, data.workspaceId],
+  )
+  if (!accountRow || accountRow.deleted_at !== null || accountRow.status === 'archived') {
+    return {
+      ok: false,
+      errorCode: 'invalid_account',
+      message: 'Target account is invalid, foreign, or archived.',
+    }
+  }
+
+  const platformRow = await queryFirst<{ id: string; name: string }>(
+    db,
+    `SELECT id, name FROM platform WHERE id = ?`,
+    [accountRow.platform_id],
+  )
+  if (!platformRow) {
+    return {
+      ok: false,
+      errorCode: 'invalid_platform',
+      message: 'Target account platform is invalid or missing.',
+    }
+  }
+
   const contentItem = toCampaignContentItem(contentRow)
 
-  // 3. Resolve Creator Agent Handle
+  // 4. Resolve Creator Agent Handle
   const agentMap = await ensureBuiltinAgents(db, data.workspaceId)
   const creatorHandle = agentMap.get('creator')
   if (!creatorHandle) {
@@ -163,17 +232,17 @@ export async function generateCampaignContentDraft(
     }
   }
 
-  // 4. Gather Campaign Context through the canonical Context Engine
+  // 5. Gather Campaign Context through the canonical Context Engine
   const pkg = await buildContext(db, {
     workspaceId: data.workspaceId,
     campaignId: data.campaignId,
   })
 
-  // 5. Compose the draft task
-  const platformName = contentItem.platformName ?? null
+  // 6. Compose the draft task
+  const platformName = platformRow.name
   const task = composeContentDraftTask(contentItem, platformName)
 
-  // 6. Execute Creator Agent Task
+  // 7. Execute Creator Agent Task
   const result = await executeAgentTask({
     db,
     workspaceId: data.workspaceId,
@@ -198,21 +267,71 @@ export async function generateCampaignContentDraft(
     }
   }
 
-  // 7. Parse structured draft response
-  const draft = parseContentDraftOutput(result.content)
+  // 8. Parse structured draft response strictly
+  let draft: GeneratedContentDraft
+  try {
+    draft = parseContentDraftOutput(result.content)
+  } catch (err) {
+    return {
+      ok: false,
+      errorCode: 'malformed_response',
+      message:
+        err instanceof Error
+          ? err.message
+          : 'Creator generated a malformed or invalid draft format.',
+    }
+  }
 
-  // 8. Construct generation provenance
+  // 9. Compute deterministic canonical hash of generated draft
+  const generatedHash = computeDraftHash(draft)
+  const candidateId = newId()
+  const now = nowIso()
+  const model = result.execution.model ?? null
+  const provider = result.execution.provider ?? null
+
+  // 10. Persist candidate record server-side
+  await execute(
+    db,
+    `INSERT INTO content_draft_candidate (
+      id, workspace_id, campaign_id, content_id, account_id, platform_id,
+      creator_agent_id, creator_agent_version_id, ai_execution_id, provider, model,
+      generated_json, generated_hash, created_at, saved_at, saved_variant_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+    [
+      candidateId,
+      data.workspaceId,
+      data.campaignId,
+      data.contentId,
+      accountRow.id,
+      platformRow.id,
+      creatorHandle.agent.id,
+      creatorHandle.version.id,
+      result.execution.executionId,
+      provider,
+      model,
+      JSON.stringify(draft),
+      generatedHash,
+      now,
+    ],
+  )
+
+  // 11. Construct generation provenance
   const provenance: DraftProvenance = {
+    candidateId,
     agentId: creatorHandle.agent.id,
     agentName: creatorHandle.agent.name,
     agentVersionId: creatorHandle.version.id,
     versionNumber: creatorHandle.version.version,
     executionId: result.execution.executionId,
-    model: result.execution.model ?? 'default',
-    createdAt: nowIso(),
+    model,
+    provider,
+    createdAt: now,
+    humanEdited: false,
+    generatedHash,
+    savedHash: generatedHash,
   }
 
-  // 9. Emit domain event (safe audit log)
+  // 12. Emit domain event (safe metadata only)
   await emitEventSafe(db, {
     workspaceId: data.workspaceId,
     eventType: 'content.draft_generated',
@@ -221,16 +340,18 @@ export async function generateCampaignContentDraft(
     subjectType: 'content',
     subjectId: data.contentId,
     payloadJson: JSON.stringify({
+      candidateId,
       campaignId: data.campaignId,
       contentId: data.contentId,
       executionId: result.execution.executionId,
       agentVersionId: creatorHandle.version.id,
-      model: result.execution.model,
+      model,
     }),
   })
 
   return {
     ok: true,
+    candidateId,
     draft,
     provenance,
   }
@@ -240,31 +361,21 @@ export const saveContentDraftInput = z.object({
   workspaceId: z.string().uuid(),
   campaignId: z.string().uuid(),
   contentId: z.string().uuid(),
+  candidateId: z.string().uuid(),
   draft: z.object({
-    headline: z.string().nullable().optional(),
-    body: z.string().min(1, 'Draft body cannot be empty'),
-    callToAction: z.string().nullable().optional(),
-    creativeDirection: z.string().nullable().optional(),
-    notes: z.string().nullable().optional(),
+    headline: z.string().max(300).nullable().optional(),
+    body: z.string().min(1, 'Draft body cannot be empty').max(20000),
+    callToAction: z.string().max(500).nullable().optional(),
+    creativeDirection: z.string().max(2000).nullable().optional(),
+    notes: z.string().max(2000).nullable().optional(),
   }),
-  provenance: z
-    .object({
-      agentId: z.string().uuid(),
-      agentName: z.string(),
-      agentVersionId: z.string().uuid(),
-      versionNumber: z.number(),
-      executionId: z.string().uuid(),
-      model: z.string(),
-      createdAt: z.string(),
-    })
-    .nullable()
-    .optional(),
 })
 
 export type SaveContentDraftInput = z.input<typeof saveContentDraftInput>
 
 /**
- * Explicitly persist a reviewed content draft to content_variant, and update the content item status to 'draft'.
+ * Explicitly persist a reviewed content draft to content_variant.
+ * Derives provenance authoritatively from the server-side candidate record.
  */
 export async function saveCampaignContentDraft(
   db: SqlDatabase,
@@ -302,17 +413,78 @@ export async function saveCampaignContentDraft(
     throw new IntegrityError('Content item not found or is archived.')
   }
 
-  // 3. Resolve Platform ID for the variant
-  let platformId = contentRow.platform_id
-  if (!platformId) {
-    const defaultPlatform = await queryFirst<{ id: string }>(
-      db,
-      `SELECT id FROM platform ORDER BY name ASC LIMIT 1`,
+  if (!contentRow.target_account_id) {
+    throw new IntegrityError(
+      'Content item must have a target account before saving a platform variant.',
     )
-    if (!defaultPlatform) {
-      throw new IntegrityError('No platforms registered in database.')
-    }
-    platformId = defaultPlatform.id
+  }
+
+  // 3. Load and Validate Candidate
+  const candidate = await queryFirst<ContentDraftCandidateRow>(
+    db,
+    `SELECT * FROM content_draft_candidate WHERE id = ?`,
+    [data.candidateId],
+  )
+  if (!candidate || candidate.workspace_id !== data.workspaceId) {
+    throw new IntegrityError('Candidate draft not found in this workspace.')
+  }
+  if (candidate.campaign_id !== data.campaignId) {
+    throw new IntegrityError('Candidate draft does not belong to this campaign.')
+  }
+  if (candidate.content_id !== data.contentId) {
+    throw new IntegrityError('Candidate draft does not belong to this content item.')
+  }
+  if (candidate.saved_at !== null || candidate.saved_variant_id !== null) {
+    throw new IntegrityError('Candidate draft has already been saved.')
+  }
+
+  // 4. Validate Account & Platform consistency
+  const accountRow = await queryFirst<{
+    id: string
+    workspace_id: string
+    platform_id: string
+    status: string
+    deleted_at: string | null
+  }>(
+    db,
+    `SELECT id, workspace_id, platform_id, status, deleted_at FROM account WHERE id = ? AND workspace_id = ?`,
+    [candidate.account_id, data.workspaceId],
+  )
+  if (!accountRow || accountRow.deleted_at !== null || accountRow.status === 'archived') {
+    throw new IntegrityError('Target account is invalid or archived.')
+  }
+
+  const platformId = accountRow.platform_id
+  const platformRow = await queryFirst<{ id: string; name: string }>(
+    db,
+    `SELECT id, name FROM platform WHERE id = ?`,
+    [platformId],
+  )
+  if (!platformRow) {
+    throw new IntegrityError('Platform not found for target account.')
+  }
+
+  // 5. Compare hashes to determine human editing lineage
+  const savedHash = computeDraftHash(data.draft)
+  const humanEdited = savedHash !== candidate.generated_hash
+
+  // 6. Fetch authoritative creator agent and version metadata
+  const creatorAgent = await getAgentById(db, candidate.creator_agent_id)
+  const creatorVersion = await getAgentVersion(db, candidate.creator_agent_version_id)
+
+  const provenance: DraftProvenance = {
+    candidateId: candidate.id,
+    agentId: candidate.creator_agent_id,
+    agentName: creatorAgent?.name ?? 'Creator',
+    agentVersionId: candidate.creator_agent_version_id,
+    versionNumber: creatorVersion?.version ?? 1,
+    executionId: candidate.ai_execution_id,
+    model: candidate.model,
+    provider: candidate.provider,
+    createdAt: candidate.created_at,
+    humanEdited,
+    generatedHash: candidate.generated_hash,
+    savedHash,
   }
 
   const variantId = newId()
@@ -321,10 +493,10 @@ export async function saveCampaignContentDraft(
     callToAction: data.draft.callToAction?.trim() || null,
     creativeDirection: data.draft.creativeDirection?.trim() || null,
     notes: data.draft.notes?.trim() || null,
-    provenance: data.provenance ?? null,
+    provenance,
   }
 
-  // 4. Insert into content_variant
+  // 7. Insert into content_variant
   await execute(
     db,
     `INSERT INTO content_variant (
@@ -341,7 +513,14 @@ export async function saveCampaignContentDraft(
     ],
   )
 
-  // 5. Update content item status to 'draft' if currently 'idea' or 'planned'
+  // 8. Mark candidate as saved / consumed
+  await execute(
+    db,
+    `UPDATE content_draft_candidate SET saved_at = ?, saved_variant_id = ? WHERE id = ?`,
+    [now, variantId, candidate.id],
+  )
+
+  // 9. Update content item status to 'draft' if currently 'idea' or 'planned'
   if (contentRow.status === 'idea' || contentRow.status === 'planned') {
     await execute(db, `UPDATE content SET status = 'draft', updated_at = ? WHERE id = ?`, [
       now,
@@ -349,7 +528,7 @@ export async function saveCampaignContentDraft(
     ])
   }
 
-  // 6. Write Audit Log
+  // 10. Write Audit Log (safe metadata)
   await writeAuditLog(db, {
     workspaceId: data.workspaceId,
     actorType: 'user',
@@ -359,14 +538,15 @@ export async function saveCampaignContentDraft(
     newValueJson: JSON.stringify({
       contentId: data.contentId,
       platformId,
-      headline: data.draft.headline,
-      hasProvenance: !!data.provenance,
-      agentId: data.provenance?.agentId ?? null,
-      agentVersionId: data.provenance?.agentVersionId ?? null,
+      candidateId: candidate.id,
+      humanEdited,
+      agentId: candidate.creator_agent_id,
+      agentVersionId: candidate.creator_agent_version_id,
+      executionId: candidate.ai_execution_id,
     }),
   })
 
-  // 7. Emit Domain Event
+  // 11. Emit Domain Event
   await emitEventSafe(db, {
     workspaceId: data.workspaceId,
     eventType: 'content.draft_saved',
@@ -377,13 +557,15 @@ export async function saveCampaignContentDraft(
       campaignId: data.campaignId,
       contentId: data.contentId,
       variantId,
-      agentId: data.provenance?.agentId ?? null,
-      agentVersionId: data.provenance?.agentVersionId ?? null,
-      executionId: data.provenance?.executionId ?? null,
+      candidateId: candidate.id,
+      humanEdited,
+      agentId: candidate.creator_agent_id,
+      agentVersionId: candidate.creator_agent_version_id,
+      executionId: candidate.ai_execution_id,
     }),
   })
 
-  // 8. Fetch updated content item & saved variant
+  // 12. Fetch updated content item & saved variant
   const updatedContent = await getCampaignContentDetail(db, data.workspaceId, data.contentId)
   if (!updatedContent) {
     throw new Error('Failed to retrieve updated content item.')

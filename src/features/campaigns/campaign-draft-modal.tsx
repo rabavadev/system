@@ -77,6 +77,7 @@ export function CampaignDraftModal({
   const [isLoadingVariants, setIsLoadingVariants] = useState(true)
 
   // Draft state (candidate or edited)
+  const [candidateId, setCandidateId] = useState<string | null>(null)
   const [draft, setDraft] = useState<GeneratedContentDraft>({
     headline: '',
     body: '',
@@ -156,6 +157,11 @@ export function CampaignDraftModal({
   }, [contentItem.id])
 
   const handleGenerate = () => {
+    if (!contentItem.targetAccountId) {
+      setError('Choose an account for this content plan item before generating a platform draft.')
+      return
+    }
+
     setError(null)
     setSuccessMessage(null)
     setCandidateReview(null)
@@ -174,6 +180,7 @@ export function CampaignDraftModal({
           return
         }
 
+        setCandidateId(result.candidateId)
         setDraft({
           headline: result.draft.headline ?? '',
           body: result.draft.body ?? '',
@@ -196,6 +203,11 @@ export function CampaignDraftModal({
       return
     }
 
+    if (!candidateId) {
+      setError('A generation candidate is required to save a draft.')
+      return
+    }
+
     setError(null)
     startSaving(async () => {
       try {
@@ -203,6 +215,7 @@ export function CampaignDraftModal({
           data: {
             campaignId: campaign.id,
             contentId: contentItem.id,
+            candidateId,
             draft: {
               headline: draft.headline?.trim() || null,
               body: draft.body.trim(),
@@ -210,11 +223,11 @@ export function CampaignDraftModal({
               creativeDirection: draft.creativeDirection?.trim() || null,
               notes: draft.notes?.trim() || null,
             },
-            provenance: provenance ?? undefined,
           },
         })
 
         setSavedVariantId(saved.variant.id)
+        setProvenance(saved.variant.provenance)
         setIsCandidate(false)
         setIsSaved(true)
         setSuccessMessage('Draft saved successfully to content variant!')
@@ -363,17 +376,27 @@ export function CampaignDraftModal({
           /* Empty / Initial State */
           <div className="py-8 text-center space-y-3 border-2 border-dashed border-zinc-200 rounded-xl bg-zinc-50/30">
             <Bot className="size-8 text-zinc-400 mx-auto" />
-            <div className="space-y-1">
-              <p className="text-xs font-medium text-zinc-800">No draft created yet</p>
-              <p className="text-xs text-zinc-500 max-w-sm mx-auto">
-                Ask the platform-neutral <strong>Creator</strong> agent to generate a draft using
-                this campaign's strategy, brief, and positioning.
-              </p>
-            </div>
+            {!contentItem.targetAccountId ? (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-amber-800">Target account required</p>
+                <p className="text-xs text-zinc-500 max-w-sm mx-auto">
+                  Please assign a target account to this content plan item before generating a
+                  platform-specific draft with Creator.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <p className="text-xs font-medium text-zinc-800">No draft created yet</p>
+                <p className="text-xs text-zinc-500 max-w-sm mx-auto">
+                  Ask the platform-neutral <strong>Creator</strong> agent to generate a draft using
+                  this campaign's strategy, brief, and positioning.
+                </p>
+              </div>
+            )}
             <Button
               variant="primary"
               onClick={handleGenerate}
-              disabled={isGenerating}
+              disabled={isGenerating || !contentItem.targetAccountId}
               className="mt-2"
             >
               <Sparkles className="size-3.5 mr-1.5" />
@@ -465,7 +488,14 @@ export function CampaignDraftModal({
             {provenance && (
               <div className="rounded-lg border border-zinc-100 bg-zinc-50 p-2.5 text-[11px] text-zinc-500 space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-zinc-700">Generation Provenance</span>
+                  <span className="font-semibold text-zinc-700">
+                    Generation Provenance
+                    {provenance.humanEdited && (
+                      <span className="ml-1.5 font-normal text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">
+                        Edited before save
+                      </span>
+                    )}
+                  </span>
                   <span className="font-mono">
                     {provenance.createdAt.slice(0, 19).replace('T', ' ')}
                   </span>
@@ -477,9 +507,11 @@ export function CampaignDraftModal({
                       {provenance.agentName} (v{provenance.versionNumber})
                     </strong>
                   </span>
-                  <span>
-                    Model: <span className="font-mono">{provenance.model}</span>
-                  </span>
+                  {provenance.model && (
+                    <span>
+                      Model: <span className="font-mono">{provenance.model}</span>
+                    </span>
+                  )}
                   <span>
                     Execution:{' '}
                     <span className="font-mono">{provenance.executionId.slice(0, 8)}...</span>

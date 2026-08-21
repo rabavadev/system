@@ -5,7 +5,7 @@ const SECRET_KEY_PATTERN =
  * Standard synchronous SHA-256 implementation in pure TypeScript/JavaScript.
  * Platform-independent: works in Cloudflare Workers, Node.js, and browser runtimes.
  */
-function sha256Hex(ascii: string): string {
+export function sha256Hex(ascii: string): string {
   function rightRotate(value: number, amount: number): number {
     return (value >>> amount) | (value << (32 - amount))
   }

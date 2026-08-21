@@ -1,38 +1,38 @@
 /**
- * STEP 15B: Critic Editorial Review for Saved Campaign Content Variants Test Suite
+ * STEP 15B: Critic Editorial Review for Content Plan Draft Variants Test Suite
  *
  * Verifies:
- * 1. saved variant can be reviewed
- * 2. unsaved candidate cannot be reviewed
- * 3. archived content rejected
- * 4. wrong workspace rejected
- * 5. exact variant ID used
+ * 1. Saved variant can be reviewed
+ * 2. Unsaved candidate cannot be reviewed
+ * 3. Archived content rejected
+ * 4. Wrong workspace rejected
+ * 5. Exact variant ID used
  * 6. Campaign context reaches Critic
- * 7. audience reaches Critic
- * 8. strategy reaches Critic
- * 9. content brief reaches Critic
- * 10. exact saved draft reaches Critic
+ * 7. Audience reaches Critic
+ * 8. Strategy reaches Critic
+ * 9. Content brief reaches Critic
+ * 10. Exact saved draft reaches Critic
  * 11. Critic lacks web_search
  * 12. Critic executes no Tools
- * 13. structured review returned
+ * 13. Structured review returned
  * 14. Pass verdict accepted
  * 15. Revise verdict accepted
- * 16. invalid verdict normalized
- * 17. invalid severity normalized
- * 18. malformed review handled safely
- * 19. generation does not persist review
+ * 16. Invalid verdict normalized
+ * 17. Invalid severity normalized
+ * 18. Malformed review handled safely
+ * 19. Generation does not persist review
  * 20. Save explicitly persists review
- * 21. review references exact variant
+ * 21. Review references exact variant
  * 22. Critic provenance preserved
- * 23. second review creates history, not overwrite
+ * 23. Second review creates history, not overwrite
  * 24. Critic cannot alter original variant
- * 25. content does not become Ready automatically
- * 26. content does not become Published
- * 27. factual verification issue supported
- * 28. provider failure creates no fake review
- * 29. no Creator execution occurs
- * 30. events/audit safe (content.review_generated, content.review_saved)
- * 31. existing Creator/Campaign/Agent/AI tests stay green
+ * 25. Content does not become Ready automatically
+ * 26. Content does not become Published
+ * 27. Factual verification issue supported
+ * 28. Provider failure creates no fake review
+ * 29. No Creator execution occurs
+ * 30. Events/audit safe (content.review_generated, content.review_saved)
+ * 31. Existing Creator/Campaign/Agent/AI tests stay green
  */
 
 import assert from 'node:assert/strict'
@@ -60,6 +60,7 @@ import {
   saveCampaignContentReview,
 } from '../src/server/db/content-review.ts'
 import {
+  generateCampaignContentDraft,
   getLatestContentVariant,
   listContentVariants,
   saveCampaignContentDraft,
@@ -195,6 +196,53 @@ function seedBaseline(raw: Database.Database) {
   }
 }
 
+function mockDraftDeps(draft?: {
+  headline?: string | null
+  body?: string
+  callToAction?: string | null
+}) {
+  const content = JSON.stringify({
+    headline: draft?.headline ?? 'Default Headline',
+    body: draft?.body ?? 'Manual compliance spreadsheets lead to failed audits.',
+    callToAction: draft?.callToAction ?? 'Click here',
+    creativeDirection: 'Infographic style',
+    notes: '#SOC2',
+  })
+  return mockAiDeps(content)
+}
+
+async function seedDraftVariant(
+  db: SqlDatabase,
+  workspaceId: string,
+  campaignId: string,
+  contentId: string,
+  draftData?: {
+    headline?: string | null
+    body: string
+    callToAction?: string | null
+    creativeDirection?: string | null
+    notes?: string | null
+  },
+) {
+  const gen = await generateCampaignContentDraft(
+    db,
+    { workspaceId, campaignId, contentId },
+    mockDraftDeps(draftData),
+  )
+  if (!gen.ok) throw new Error(`Draft candidate generation failed: ${gen.message}`)
+  return saveCampaignContentDraft(db, {
+    workspaceId,
+    campaignId,
+    contentId,
+    candidateId: gen.candidateId,
+    draft: draftData ?? {
+      headline: gen.draft.headline ?? 'Default Headline',
+      body: gen.draft.body || 'Manual compliance spreadsheets lead to failed audits.',
+      callToAction: gen.draft.callToAction ?? 'Click here',
+    },
+  })
+}
+
 test('1. saved variant can be reviewed', async () => {
   const { db, raw } = freshDb()
   const base = seedBaseline(raw)
@@ -202,6 +250,7 @@ test('1. saved variant can be reviewed', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'SOC2 Launch Campaign',
     objective: 'conversions',
     positioning: 'Fastest compliance platform for dev teams',
@@ -211,6 +260,7 @@ test('1. saved variant can be reviewed', async () => {
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Top 5 Audit Mistakes',
     contentType: 'post',
     purpose: 'education',
@@ -218,15 +268,10 @@ test('1. saved variant can be reviewed', async () => {
     brief: 'Explain common mistakes teams make when preparing for SOC2 audits.',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: {
-      headline: 'Stop Tracking SOC2 in Spreadsheets',
-      body: 'Manual compliance spreadsheets lead to failed audits. Automated evidence collection saves time and prevents engineer burnout.',
-      callToAction: 'Download our free guide.',
-    },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    headline: 'Stop Tracking SOC2 in Spreadsheets',
+    body: 'Manual compliance spreadsheets lead to failed audits. Automated evidence collection saves time and prevents engineer burnout.',
+    callToAction: 'Download our free guide.',
   })
 
   const mockReviewResponse = JSON.stringify({
@@ -268,12 +313,14 @@ test('2. unsaved candidate cannot be reviewed', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Unsaved Review Guard Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Unsaved Candidate Piece',
     contentType: 'post',
   })
@@ -304,21 +351,20 @@ test('3. archived content rejected', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Archived Content Critic Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'To Be Archived',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Archived variant body' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Archived variant body',
   })
 
   // Soft delete content item
@@ -350,21 +396,20 @@ test('4. wrong workspace rejected', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Wrong Workspace Critic Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Workspace Isolation Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Some body' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Some body',
   })
 
   await assert.rejects(
@@ -391,30 +436,26 @@ test('5. exact variant ID used', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Exact Variant ID Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Versioned Item',
     contentType: 'post',
   })
 
   // Variant 1
-  const { variant: v1 } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'First draft body' },
+  const { variant: v1 } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'First draft body',
   })
 
   // Variant 2
-  const { variant: v2 } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Second revised draft body' },
+  const { variant: v2 } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Second revised draft body',
   })
 
   assert.notEqual(v1.id, v2.id)
@@ -450,6 +491,7 @@ test('6. Campaign context reaches Critic', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Critic Context Flow',
     objective: 'revenue',
     positioning: 'Zero-trust infrastructure compliance',
@@ -472,6 +514,7 @@ test('7. audience reaches Critic', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Audience Review Flow',
     audienceDetails: {
       summary: 'DevSecOps engineers and CISOs',
@@ -496,6 +539,7 @@ test('8. strategy reaches Critic', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Strategy Critic Flow',
     objective: 'leads',
     positioning: 'Continuous cloud security scanner',
@@ -545,6 +589,7 @@ test('9. content brief reaches Critic', () => {
     creativeDirection: 'Infographic preview',
     notes: 'Include security tags',
     status: 'draft' as const,
+    provenance: null,
     createdAt: NOW,
     updatedAt: NOW,
     deletedAt: null,
@@ -582,12 +627,14 @@ test('10. exact saved draft reaches Critic', () => {
     id: crypto.randomUUID(),
     contentId: item.id,
     platformId: crypto.randomUUID(),
+    platformName: 'LinkedIn',
     body: 'Unique Draft Text 987654321',
     headline: 'Hook 12345',
     callToAction: 'Action 54321',
     creativeDirection: 'Visual 777',
     notes: 'Note 999',
     status: 'draft' as const,
+    provenance: null,
     createdAt: NOW,
     updatedAt: NOW,
     deletedAt: null,
@@ -662,21 +709,20 @@ test('12. Critic executes no Tools', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Tool-Free Critic Campaign',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Tool-Free Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Clean text without tools' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Clean text without tools',
   })
 
   const result = await generateCampaignContentReview(
@@ -772,21 +818,20 @@ test('19. generation does not persist review', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Unpersisted Review Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Unpersisted Review Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Candidate draft copy.' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Candidate draft copy.',
   })
 
   const result = await generateCampaignContentReview(
@@ -819,21 +864,20 @@ test('20. Save explicitly persists review', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Save Review Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Save Review Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Draft to review.' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Draft to review.',
   })
 
   const savedReview = await saveCampaignContentReview(db, {
@@ -868,21 +912,20 @@ test('21. review references exact variant', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Variant Reference Integrity',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Referenced Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Referenced body text.' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Referenced body text.',
   })
 
   const savedReview = await saveCampaignContentReview(db, {
@@ -915,21 +958,20 @@ test('22. Critic provenance preserved', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Critic Provenance Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Critic Provenance Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Body for provenance check.' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Body for provenance check.',
   })
 
   const genResult = await generateCampaignContentReview(
@@ -970,54 +1012,61 @@ test('23. second review creates history, not overwrite', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'History Accumulation Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'History Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Draft subject to multiple reviews.' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Draft subject to multiple reviews.',
   })
 
   // Review 1
-  const r1 = await saveCampaignContentReview(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    contentVariantId: variant.id,
-    verdict: 'revise',
-    review: {
+  const r1 = await saveCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
       verdict: 'revise',
-      summary: 'Review 1: Needs stronger hook.',
-      strengths: [],
-      issues: [],
-      recommendedChanges: [],
+      review: {
+        verdict: 'revise',
+        summary: 'Review 1: Needs stronger hook.',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      },
     },
-  })
+    '2026-08-20T10:00:01.000Z',
+  )
 
   // Review 2
-  const r2 = await saveCampaignContentReview(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    contentVariantId: variant.id,
-    verdict: 'pass',
-    review: {
+  const r2 = await saveCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
       verdict: 'pass',
-      summary: 'Review 2: Hook is now acceptable.',
-      strengths: ['Good hook'],
-      issues: [],
-      recommendedChanges: [],
+      review: {
+        verdict: 'pass',
+        summary: 'Review 2: Hook is now acceptable.',
+        strengths: ['Good hook'],
+        issues: [],
+        recommendedChanges: [],
+      },
     },
-  })
+    '2026-08-20T10:00:02.000Z',
+  )
 
   assert.notEqual(r1.id, r2.id)
 
@@ -1039,25 +1088,22 @@ test('24. Critic cannot alter original variant', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Draft Immutability Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Immutable Draft Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: {
-      headline: 'Original Headline',
-      body: 'Original draft body copy that must remain pristine.',
-      callToAction: 'Original CTA',
-    },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    headline: 'Original Headline',
+    body: 'Original draft body copy that must remain pristine.',
+    callToAction: 'Original CTA',
   })
 
   await saveCampaignContentReview(db, {
@@ -1089,21 +1135,20 @@ test('25. content does not become Ready automatically', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'No Auto-Ready Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'No Auto Ready Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Some copy' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Some copy',
   })
 
   // Pass review
@@ -1135,21 +1180,20 @@ test('26. content does not become Published', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'No Auto-Publish Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'No Auto Publish Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Some copy' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Some copy',
   })
 
   await saveCampaignContentReview(db, {
@@ -1200,21 +1244,20 @@ test('28. provider failure creates no fake review', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Provider Failure Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Provider Failure Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Draft text' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Draft text',
   })
 
   const result = await generateCampaignContentReview(
@@ -1248,21 +1291,20 @@ test('29. no Creator execution occurs', async () => {
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'No Creator Execution Flow',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'No Creator Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Draft before review' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Draft before review',
   })
 
   await generateCampaignContentReview(
@@ -1288,21 +1330,20 @@ test('30. events/audit safe (content.review_generated, content.review_saved)', a
   const campaign = await createCampaign(db, {
     workspaceId: base.workspaceId,
     brandId: base.brandId,
+    accountIds: [base.accountId],
     name: 'Audit Event Review Test',
   })
 
   const item = await createCampaignContent(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
+    targetAccountId: base.accountId,
     title: 'Audit Event Review Item',
     contentType: 'post',
   })
 
-  const { variant } = await saveCampaignContentDraft(db, {
-    workspaceId: base.workspaceId,
-    campaignId: campaign.id,
-    contentId: item.id,
-    draft: { body: 'Audit body' },
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Audit body',
   })
 
   const genResult = await generateCampaignContentReview(

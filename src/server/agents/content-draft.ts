@@ -1,11 +1,48 @@
+import { z } from 'zod'
 import type { CampaignContentItem } from '~/types/domain'
+import { sha256Hex } from '../approval/snapshot.ts'
 
-export interface GeneratedContentDraft {
+export const generatedContentDraftSchema = z.object({
+  headline: z.string().max(300).nullable().optional(),
+  body: z.string().min(1, 'Body cannot be empty').max(20000),
+  callToAction: z.string().max(500).nullable().optional(),
+  creativeDirection: z.string().max(2000).nullable().optional(),
+  notes: z.string().max(2000).nullable().optional(),
+})
+
+export type GeneratedContentDraft = {
   headline: string | null
   body: string
   callToAction: string | null
   creativeDirection: string | null
   notes: string | null
+}
+
+export class CreatorDraftParseError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CreatorDraftParseError'
+  }
+}
+
+/**
+ * Computes deterministic canonical SHA-256 hash of structured draft content.
+ */
+export function computeDraftHash(draft: {
+  headline?: string | null | undefined
+  body: string
+  callToAction?: string | null | undefined
+  creativeDirection?: string | null | undefined
+  notes?: string | null | undefined
+}): string {
+  const canonical = JSON.stringify({
+    headline: draft.headline?.trim() || null,
+    body: draft.body.trim(),
+    callToAction: draft.callToAction?.trim() || null,
+    creativeDirection: draft.creativeDirection?.trim() || null,
+    notes: draft.notes?.trim() || null,
+  })
+  return sha256Hex(canonical)
 }
 
 /**
@@ -71,72 +108,53 @@ export function composeContentDraftTask(
 }
 
 /**
- * Robustly parses the structured draft output from the Creator agent's response.
- * Handles pure JSON, fenced markdown JSON (```json ... ```), or plain text fallback.
+ * Robustly parses and strictly validates the structured draft output from the Creator agent's response.
+ * Accepts pure JSON or fenced markdown JSON (```json ... ```).
+ * Rejects malformed JSON, non-object shapes, missing body, invalid types, or oversized fields.
  */
 export function parseContentDraftOutput(rawOutput: string): GeneratedContentDraft {
   const trimmed = (rawOutput ?? '').trim()
   if (!trimmed) {
-    return {
-      headline: null,
-      body: '',
-      callToAction: null,
-      creativeDirection: null,
-      notes: null,
-    }
+    throw new CreatorDraftParseError('Creator output is empty')
   }
 
   // 1. Try finding JSON within markdown code fences
   const jsonMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
   const jsonCandidate = jsonMatch?.[1] ? jsonMatch[1].trim() : trimmed
 
-  // 2. Try parsing JSON
+  // 2. Parse JSON
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(jsonCandidate)
-    if (parsed && typeof parsed === 'object') {
-      const headline =
-        typeof parsed.headline === 'string' && parsed.headline.trim().length > 0
-          ? parsed.headline.trim()
-          : null
-      const body =
-        typeof parsed.body === 'string' && parsed.body.trim().length > 0
-          ? parsed.body.trim()
-          : typeof parsed.content === 'string' && parsed.content.trim().length > 0
-            ? parsed.content.trim()
-            : trimmed
-      const callToAction =
-        typeof parsed.callToAction === 'string' && parsed.callToAction.trim().length > 0
-          ? parsed.callToAction.trim()
-          : typeof parsed.cta === 'string' && parsed.cta.trim().length > 0
-            ? parsed.cta.trim()
-            : null
-      const creativeDirection =
-        typeof parsed.creativeDirection === 'string' && parsed.creativeDirection.trim().length > 0
-          ? parsed.creativeDirection.trim()
-          : null
-      const notes =
-        typeof parsed.notes === 'string' && parsed.notes.trim().length > 0
-          ? parsed.notes.trim()
-          : null
-
-      return {
-        headline,
-        body,
-        callToAction,
-        creativeDirection,
-        notes,
-      }
-    }
+    parsed = JSON.parse(jsonCandidate)
   } catch {
-    // Not valid JSON, proceed to text fallback
+    throw new CreatorDraftParseError('Creator output is not valid JSON')
   }
 
-  // 3. Fallback: treat the entire raw output as the body
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new CreatorDraftParseError('Creator output must be a JSON object')
+  }
+
+  const rawObj = parsed as Record<string, unknown>
+  const candidateObj = {
+    headline: rawObj['headline'] ?? null,
+    body: rawObj['body'] ?? rawObj['content'],
+    callToAction: rawObj['callToAction'] ?? rawObj['cta'] ?? null,
+    creativeDirection: rawObj['creativeDirection'] ?? null,
+    notes: rawObj['notes'] ?? null,
+  }
+
+  const result = generatedContentDraftSchema.safeParse(candidateObj)
+  if (!result.success) {
+    throw new CreatorDraftParseError(
+      `Invalid Creator draft schema: ${result.error.issues[0]?.message ?? result.error.message}`,
+    )
+  }
+
   return {
-    headline: null,
-    body: trimmed,
-    callToAction: null,
-    creativeDirection: null,
-    notes: null,
+    headline: result.data.headline?.trim() || null,
+    body: result.data.body.trim(),
+    callToAction: result.data.callToAction?.trim() || null,
+    creativeDirection: result.data.creativeDirection?.trim() || null,
+    notes: result.data.notes?.trim() || null,
   }
 }

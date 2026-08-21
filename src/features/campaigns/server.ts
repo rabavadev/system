@@ -404,6 +404,7 @@ export const saveCampaignContentDraftFn = createServerFn({ method: 'POST' })
     z.object({
       campaignId: z.uuid(),
       contentId: z.uuid(),
+      candidateId: z.uuid(),
       draft: z.object({
         headline: z.string().nullable().optional(),
         body: z.string().min(1, 'Draft body cannot be empty'),
@@ -411,18 +412,6 @@ export const saveCampaignContentDraftFn = createServerFn({ method: 'POST' })
         creativeDirection: z.string().nullable().optional(),
         notes: z.string().nullable().optional(),
       }),
-      provenance: z
-        .object({
-          agentId: z.string().uuid(),
-          agentName: z.string(),
-          agentVersionId: z.string().uuid(),
-          versionNumber: z.number(),
-          executionId: z.string().uuid(),
-          model: z.string(),
-          createdAt: z.string(),
-        })
-        .nullable()
-        .optional(),
     }),
   )
   .handler(
@@ -436,8 +425,8 @@ export const saveCampaignContentDraftFn = createServerFn({ method: 'POST' })
         workspaceId: workspace.id,
         campaignId: data.campaignId,
         contentId: data.contentId,
+        candidateId: data.candidateId,
         draft: data.draft,
-        provenance: data.provenance,
       })
     },
   )
