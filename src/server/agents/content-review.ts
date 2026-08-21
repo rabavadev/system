@@ -1,3 +1,4 @@
+import { z } from 'zod'
 import type {
   CampaignContentItem,
   IssueSeverity,
@@ -7,12 +8,33 @@ import type {
 import { sha256Hex } from '../approval/snapshot.ts'
 import type { ContentVariantDetail } from '../db/content-variant.ts'
 
-export interface GeneratedContentReview {
+export const generatedContentReviewSchema = z.object({
+  verdict: z.enum(['pass', 'revise']),
+  summary: z.string().min(1, 'Summary cannot be empty').max(5000),
+  strengths: z.array(z.string().min(1, 'Strength item cannot be empty')),
+  issues: z.array(
+    z.object({
+      category: z.string().min(1, 'Category cannot be empty'),
+      severity: z.enum(['low', 'medium', 'high']),
+      message: z.string().min(1, 'Message cannot be empty'),
+    }),
+  ),
+  recommendedChanges: z.array(z.string().min(1, 'Recommended change cannot be empty')),
+})
+
+export type GeneratedContentReview = {
   verdict: ReviewVerdict
   summary: string
   strengths: string[]
   issues: ReviewIssue[]
   recommendedChanges: string[]
+}
+
+export class CriticReviewParseError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CriticReviewParseError'
+  }
 }
 
 /**
@@ -110,43 +132,17 @@ export function composeContentReviewTask(
   return sections.join('\n')
 }
 
-function normalizeSeverity(raw: unknown): IssueSeverity {
-  if (typeof raw === 'string') {
-    const s = raw.toLowerCase().trim()
-    if (s === 'high') return 'high'
-    if (s === 'low') return 'low'
-  }
-  return 'medium'
-}
-
-function normalizeVerdict(raw: unknown): ReviewVerdict {
-  if (typeof raw === 'string') {
-    const v = raw.toLowerCase().trim()
-    if (v === 'pass' || v === 'approved' || v === 'accept') return 'pass'
-  }
-  return 'revise'
-}
-
 /**
- * Safely parse structured Critic review response.
- * Resilient against markdown code fences, malformed keys, or missing arrays.
+ * Strictly parses and validates the structured Critic review output.
+ * Accepts pure JSON or fenced markdown JSON (```json ... ```).
+ * Rejects malformed JSON, non-object shapes, invalid verdicts (only 'pass' or 'revise'),
+ * invalid severity levels, empty summaries/messages, or missing arrays.
+ * Never fabricates fields from unstructured plain text.
  */
 export function parseContentReviewOutput(rawOutput: string): GeneratedContentReview {
-  const trimmed = rawOutput.trim()
+  const trimmed = (rawOutput ?? '').trim()
   if (!trimmed) {
-    return {
-      verdict: 'revise',
-      summary: 'No review output was provided by the Critic agent.',
-      strengths: [],
-      issues: [
-        {
-          category: 'general',
-          severity: 'high',
-          message: 'Critic output was empty.',
-        },
-      ],
-      recommendedChanges: ['Re-run editorial review with the Critic agent.'],
-    }
+    throw new CriticReviewParseError('Critic output is empty')
   }
 
   // 1. Try finding JSON within markdown code fences
@@ -154,90 +150,33 @@ export function parseContentReviewOutput(rawOutput: string): GeneratedContentRev
   const jsonCandidate = jsonMatch?.[1] ? jsonMatch[1].trim() : trimmed
 
   // 2. Try parsing JSON
+  let parsed: unknown
   try {
-    const parsed = JSON.parse(jsonCandidate)
-    if (parsed && typeof parsed === 'object') {
-      const verdict = normalizeVerdict(parsed.verdict)
-      const summary =
-        typeof parsed.summary === 'string' && parsed.summary.trim().length > 0
-          ? parsed.summary.trim()
-          : verdict === 'pass'
-            ? 'Draft meets editorial requirements.'
-            : 'Draft requires revisions before moving forward.'
-
-      const strengths: string[] = []
-      if (Array.isArray(parsed.strengths)) {
-        for (const item of parsed.strengths) {
-          if (typeof item === 'string' && item.trim().length > 0) {
-            strengths.push(item.trim())
-          }
-        }
-      }
-
-      const issues: ReviewIssue[] = []
-      if (Array.isArray(parsed.issues)) {
-        for (const item of parsed.issues) {
-          if (item && typeof item === 'object') {
-            const msg =
-              typeof item.message === 'string' && item.message.trim().length > 0
-                ? item.message.trim()
-                : typeof item.issue === 'string'
-                  ? item.issue.trim()
-                  : 'Unspecified issue'
-            const cat =
-              typeof item.category === 'string' && item.category.trim().length > 0
-                ? item.category.trim()
-                : 'general'
-            const sev = normalizeSeverity(item.severity)
-            issues.push({ category: cat, severity: sev, message: msg })
-          } else if (typeof item === 'string' && item.trim().length > 0) {
-            issues.push({ category: 'general', severity: 'medium', message: item.trim() })
-          }
-        }
-      }
-
-      const recommendedChanges: string[] = []
-      if (Array.isArray(parsed.recommendedChanges)) {
-        for (const item of parsed.recommendedChanges) {
-          if (typeof item === 'string' && item.trim().length > 0) {
-            recommendedChanges.push(item.trim())
-          }
-        }
-      } else if (Array.isArray(parsed.recommendations)) {
-        for (const item of parsed.recommendations) {
-          if (typeof item === 'string' && item.trim().length > 0) {
-            recommendedChanges.push(item.trim())
-          }
-        }
-      }
-
-      return {
-        verdict,
-        summary,
-        strengths,
-        issues,
-        recommendedChanges,
-      }
-    }
+    parsed = JSON.parse(jsonCandidate)
   } catch {
-    // Fallback if model returned plain text instead of JSON
+    throw new CriticReviewParseError('Critic output is not valid JSON')
   }
 
-  // 3. Fallback extraction for plain text
-  const isPass = /\b(pass|passed|ready|strong|no major issues)\b/i.test(trimmed)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new CriticReviewParseError('Critic output must be a JSON object')
+  }
+
+  const result = generatedContentReviewSchema.safeParse(parsed)
+  if (!result.success) {
+    throw new CriticReviewParseError(
+      `Invalid Critic review schema: ${result.error.issues[0]?.message ?? result.error.message}`,
+    )
+  }
+
   return {
-    verdict: isPass ? 'pass' : 'revise',
-    summary: trimmed.slice(0, 300),
-    strengths: isPass ? ['Overall copy aligns well with campaign direction.'] : [],
-    issues: isPass
-      ? []
-      : [
-          {
-            category: 'general',
-            severity: 'medium',
-            message: 'See Critic feedback summary for detailed recommendations.',
-          },
-        ],
-    recommendedChanges: isPass ? [] : ['Review critic summary and refine draft copy.'],
+    verdict: result.data.verdict,
+    summary: result.data.summary.trim(),
+    strengths: result.data.strengths.map((s) => s.trim()),
+    issues: result.data.issues.map((i) => ({
+      category: i.category.trim(),
+      severity: i.severity,
+      message: i.message.trim(),
+    })),
+    recommendedChanges: result.data.recommendedChanges.map((r) => r.trim()),
   }
 }

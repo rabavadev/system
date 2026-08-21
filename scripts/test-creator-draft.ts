@@ -1679,7 +1679,15 @@ test('40. Critic can still review resulting saved variant', async () => {
       contentId: item.id,
       contentVariantId: saveResult.variant.id,
     },
-    mockAiDeps(JSON.stringify({ verdict: 'pass', summary: 'Approved draft' })),
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'pass',
+        summary: 'Approved draft',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
   )
 
   assert.equal(reviewResult.ok, true)

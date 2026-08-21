@@ -73,8 +73,8 @@ Shared components: src/components/ui/*, src/components/layout/*
 - **HARDENING H3B.2**: Exact generic workflow run scope integrity (migration 0018).
 - **HARDENING H4A**: Canonical metrics registry (`metric_definition`), dynamic campaign target validation.
 - **HARDENING H4A.1**: Architecture documentation synchronization across migrations 0001–0020.
-- **HARDENING H4B / H4B.1**: Real runtime & browser verification closure.
-- **HARDENING P1**: Server-authoritative Critic review candidate architecture (`content_review_candidate`, migration 0021) and strict server-side Critic editorial override enforcement.
+- **HARDENING H4B / H4B.1**: Real runtime verification and interactive UI flows checked; automated browser E2E session suite not configured.
+- **HARDENING P1 / P1.1**: Server-authoritative Critic review candidate architecture (`content_review_candidate`, migration 0021), strict Zod parsing with zero fallback fabrication, deterministic sorting on timestamp ties, and strict server-side Critic editorial override enforcement.
 - **STEP 15E**: Publishing engine / platform connectors (FUTURE PHASE).
 
 ## Content Lifecycle & Publishing Boundary
@@ -120,7 +120,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Policy & Approval Engine | **VERIFIED** | Verified through `npm run test:policy`, `test:approvals`, `test:approvals-ux` |
 | Campaign Strategy & Metrics | **VERIFIED** | Verified through `npm run test:campaign-strategy`, `test:campaigns` |
 | Content Candidate Lifecycle | **VERIFIED** | Verified through `npm run test:creator-draft` |
-| Critic Editorial Review System | **VERIFIED** | Verified through `npm run test:critic-review` (candidate architecture & server-authoritative save) |
+| Critic Editorial Review System | **VERIFIED** | Verified through `npm run test:critic-review` (candidate architecture, strict Zod parsing, server-authoritative save) |
 | Creator Revision Lineage System | **VERIFIED** | Verified through `npm run test:creator-revision` |
 | Human Content Approval Gate | **VERIFIED** | Verified through `npm run test:content-approval` (strict server-side override enforcement) |
 | Research Source Provenance | **VERIFIED** | Verified through `npm run test:research` |
@@ -129,7 +129,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Workers AI Live Remote Generation | **NOT CONFIGURED** | Offline Echo / test adapter used in automated suites; live Workers AI binding requires Cloudflare deployment |
 | Workers AI Live Tool Calling | **NOT VERIFIED** | Protocol implemented & unit tested; live remote tool execution pending H4B |
 | Brave Live Web Search | **NOT CONFIGURED** | Adapter implemented & mock-tested; live remote API calls require `BRAVE_SEARCH_API_KEY` |
-| Browser End-to-End Sessions | **VERIFIED** | Verified during H4B.1 browser interaction pass |
+| Browser End-to-End Sessions | **NOT VERIFIED** | Interactive UI components and server functions verified; full automated browser E2E session suite not configured |
 
 ## Architecture Decisions
 

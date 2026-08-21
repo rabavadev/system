@@ -989,7 +989,15 @@ test('34. revise + no override => rejected with zero side effects', async () => 
       contentId: contentItem.id,
       contentVariantId: variant.id,
     },
-    mockAiDeps(JSON.stringify({ verdict: 'revise', summary: 'Need changes' })),
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'revise',
+        summary: 'Need changes',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
   )
   assert.equal(reviewGen.ok, true)
   if (!reviewGen.ok) throw new Error('review failed')
@@ -1036,7 +1044,15 @@ test('35. revise + overrideCritic=false => rejected', async () => {
       contentId: contentItem.id,
       contentVariantId: variant.id,
     },
-    mockAiDeps(JSON.stringify({ verdict: 'revise', summary: 'Need changes' })),
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'revise',
+        summary: 'Need changes',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
   )
   assert.equal(reviewGen.ok, true)
   if (!reviewGen.ok) throw new Error('review failed')
@@ -1075,7 +1091,15 @@ test('36. revise + note only (without overrideCritic=true) => rejected', async (
       contentId: contentItem.id,
       contentVariantId: variant.id,
     },
-    mockAiDeps(JSON.stringify({ verdict: 'revise', summary: 'Need changes' })),
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'revise',
+        summary: 'Need changes',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
   )
   assert.equal(reviewGen.ok, true)
   if (!reviewGen.ok) throw new Error('review failed')
@@ -1119,7 +1143,15 @@ test('37-38. revise + overrideCritic=true => accepted, critic_override=1 stored,
       contentId: contentItem.id,
       contentVariantId: variant.id,
     },
-    mockAiDeps(JSON.stringify({ verdict: 'revise', summary: 'Need changes' })),
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'revise',
+        summary: 'Need changes',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
   )
   assert.equal(reviewGen.ok, true)
   if (!reviewGen.ok) throw new Error('review failed')

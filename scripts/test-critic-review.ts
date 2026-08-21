@@ -43,6 +43,7 @@ import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 
 import {
+  CriticReviewParseError,
   composeContentReviewTask,
   parseContentReviewOutput,
 } from '../src/server/agents/content-review.ts'
@@ -784,45 +785,99 @@ test('13. structured review returned', () => {
 
 test('14. Pass verdict accepted', () => {
   const parsed = parseContentReviewOutput(
-    JSON.stringify({ verdict: 'pass', summary: 'Ready to ship' }),
+    JSON.stringify({
+      verdict: 'pass',
+      summary: 'Ready to ship',
+      strengths: ['Clear message'],
+      issues: [],
+      recommendedChanges: [],
+    }),
   )
   assert.equal(parsed.verdict, 'pass')
+  assert.equal(parsed.summary, 'Ready to ship')
 })
 
 test('15. Revise verdict accepted', () => {
   const parsed = parseContentReviewOutput(
-    JSON.stringify({ verdict: 'revise', summary: 'Needs improvement' }),
-  )
-  assert.equal(parsed.verdict, 'revise')
-})
-
-test('16. invalid verdict normalized', () => {
-  const parsed = parseContentReviewOutput(
-    JSON.stringify({ verdict: 'maybe', summary: 'Unclear verdict' }),
-  )
-  assert.equal(parsed.verdict, 'revise')
-})
-
-test('17. invalid severity normalized', () => {
-  const parsed = parseContentReviewOutput(
     JSON.stringify({
       verdict: 'revise',
-      summary: 'Severity test',
-      issues: [{ category: 'tone', severity: 'extreme_danger', message: 'Too aggressive' }],
+      summary: 'Needs improvement',
+      strengths: [],
+      issues: [{ category: 'tone', severity: 'medium', message: 'Too informal' }],
+      recommendedChanges: ['Make tone professional'],
     }),
   )
-  assert.equal(parsed.issues[0].severity, 'medium')
+  assert.equal(parsed.verdict, 'revise')
 })
 
-test('18. malformed review handled safely', () => {
-  const parsed = parseContentReviewOutput(
-    'Not JSON at all, but plain text critique saying this needs revise.',
+test('16. invalid verdict rejected with CriticReviewParseError', () => {
+  const invalidVerdicts = [
+    'maybe',
+    'approved',
+    'accept',
+    'ready',
+    'strong',
+    'no major issues',
+    'PASS',
+    'REVISE',
+    '',
+  ]
+  for (const invalidVerdict of invalidVerdicts) {
+    assert.throws(
+      () =>
+        parseContentReviewOutput(
+          JSON.stringify({
+            verdict: invalidVerdict,
+            summary: 'Verdict test',
+            strengths: [],
+            issues: [],
+            recommendedChanges: [],
+          }),
+        ),
+      CriticReviewParseError,
+      `Expected ${invalidVerdict} to be rejected`,
+    )
+  }
+})
+
+test('17. invalid severity rejected with CriticReviewParseError', () => {
+  assert.throws(
+    () =>
+      parseContentReviewOutput(
+        JSON.stringify({
+          verdict: 'revise',
+          summary: 'Severity test',
+          strengths: [],
+          issues: [{ category: 'tone', severity: 'extreme_danger', message: 'Too aggressive' }],
+          recommendedChanges: [],
+        }),
+      ),
+    CriticReviewParseError,
   )
-  assert.equal(parsed.verdict, 'revise')
-  assert.ok(parsed.summary.length > 0)
-  assert.ok(Array.isArray(parsed.strengths))
-  assert.ok(Array.isArray(parsed.issues))
-  assert.ok(Array.isArray(parsed.recommendedChanges))
+})
+
+test('18. malformed review or plain text rejected with CriticReviewParseError', () => {
+  assert.throws(
+    () =>
+      parseContentReviewOutput(
+        'Not JSON at all, but plain text critique saying this needs revise.',
+      ),
+    CriticReviewParseError,
+  )
+  assert.throws(() => parseContentReviewOutput(''), CriticReviewParseError)
+  assert.throws(
+    () =>
+      parseContentReviewOutput(
+        JSON.stringify({
+          verdict: 'pass',
+          // missing summary
+          strengths: [],
+          issues: [],
+          recommendedChanges: [],
+        }),
+      ),
+    CriticReviewParseError,
+  )
 })
 
 test('19. generation does not persist review', async () => {
@@ -860,6 +915,9 @@ test('19. generation does not persist review', async () => {
       JSON.stringify({
         verdict: 'pass',
         summary: 'Looks good.',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
       }),
     ),
   )
@@ -1024,7 +1082,15 @@ test('22. Critic provenance preserved', async () => {
       contentId: item.id,
       contentVariantId: variant.id,
     },
-    echoDeps(),
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'pass',
+        summary: 'Critic provenance review summary.',
+        strengths: ['Great technical depth'],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
   )
 
   assert.equal(genResult.ok, true)
@@ -1463,7 +1529,15 @@ test('30. events/audit safe (content.review_generated, content.review_saved)', a
       contentId: item.id,
       contentVariantId: variant.id,
     },
-    echoDeps(),
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'pass',
+        summary: 'Audit test review summary.',
+        strengths: ['Clear structure'],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
   )
 
   assert.equal(genResult.ok, true)
@@ -1627,7 +1701,15 @@ test('37-39. candidate provider, model and review_hash are deterministic and tru
       contentId: item.id,
       contentVariantId: variant.id,
     },
-    mockAiDeps(JSON.stringify({ verdict: 'revise', summary: 'Truth summary' })),
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'revise',
+        summary: 'Truth summary',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
   )
 
   assert.equal(genResult.ok, true)
@@ -1702,7 +1784,15 @@ test('40-44. Save strictly validates candidate binding (workspace, campaign, con
       contentId: item.id,
       contentVariantId: variant.id,
     },
-    mockAiDeps(JSON.stringify({ verdict: 'pass', summary: 'Good' })),
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'pass',
+        summary: 'Good',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
   )
   assert.equal(genResult.ok, true)
   if (!genResult.ok) throw new Error('gen failed')
@@ -1860,7 +1950,15 @@ test('47-48. candidate is single-use and marked consumed upon save', async () =>
       contentId: item.id,
       contentVariantId: variant.id,
     },
-    mockAiDeps(JSON.stringify({ verdict: 'pass', summary: 'Looks great' })),
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'pass',
+        summary: 'Looks great',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
   )
   assert.equal(genResult.ok, true)
   if (!genResult.ok) throw new Error('gen failed')
@@ -1897,4 +1995,95 @@ test('47-48. candidate is single-use and marked consumed upon save', async () =>
       }),
     /Candidate review has already been saved/,
   )
+})
+
+test('49. deterministic tie-breaking on identical timestamps (ORDER BY created_at DESC, id DESC)', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+  const agentMap = await ensureBuiltinAgents(db, base.workspaceId)
+  const critic = agentMap.get('critic')!
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Tiebreaker Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Tiebreaker Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Tiebreaker test body',
+  })
+
+  const sameTimestamp = '2026-08-20T12:00:00.000Z'
+  const idA = '00000000-0000-0000-0000-000000000001'
+  const idB = '00000000-0000-0000-0000-000000000002'
+
+  const reviewPayloadA = JSON.stringify({
+    verdict: 'pass',
+    summary: 'Review A summary',
+    strengths: [],
+    issues: [],
+    recommendedChanges: [],
+  })
+  const reviewPayloadB = JSON.stringify({
+    verdict: 'revise',
+    summary: 'Review B summary',
+    strengths: [],
+    issues: [],
+    recommendedChanges: [],
+  })
+
+  raw
+    .prepare(
+      `INSERT INTO content_review (
+        id, workspace_id, content_id, content_variant_id, critic_agent_id,
+        critic_agent_version_id, ai_execution_id, verdict, review_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'exec-1', 'pass', ?, ?)`,
+    )
+    .run(
+      idA,
+      base.workspaceId,
+      item.id,
+      variant.id,
+      critic.agent.id,
+      critic.version.id,
+      reviewPayloadA,
+      sameTimestamp,
+    )
+
+  raw
+    .prepare(
+      `INSERT INTO content_review (
+        id, workspace_id, content_id, content_variant_id, critic_agent_id,
+        critic_agent_version_id, ai_execution_id, verdict, review_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 'exec-2', 'revise', ?, ?)`,
+    )
+    .run(
+      idB,
+      base.workspaceId,
+      item.id,
+      variant.id,
+      critic.agent.id,
+      critic.version.id,
+      reviewPayloadB,
+      sameTimestamp,
+    )
+
+  const reviews = await listContentReviews(db, base.workspaceId, variant.id)
+  assert.equal(reviews.length, 2)
+  assert.equal(reviews[0].id, idB, 'idB should be first due to id DESC tiebreaker')
+  assert.equal(reviews[1].id, idA, 'idA should be second')
+
+  const latest = await getLatestContentReview(db, base.workspaceId, variant.id)
+  assert.ok(latest)
+  assert.equal(latest.id, idB, 'Latest review must deterministically be idB on timestamp tie')
+  assert.equal(latest.verdict, 'revise')
 })
