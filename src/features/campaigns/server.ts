@@ -4,6 +4,7 @@ import { resolveAiRuntime } from '~/server/ai/runtime'
 import { type AccountSummary, listAccounts } from '~/server/db/account'
 import { listAgents } from '~/server/db/agent'
 import { listBrands } from '~/server/db/brand'
+import { listMetricDefinitions, type MetricDefinition } from '~/server/db/metric'
 import {
   activateCampaign,
   archiveCampaign,
@@ -140,11 +141,12 @@ export const getCampaignDetailData = createServerFn({ method: 'GET' })
       const campaign = await getCampaignDetail(db, workspace.id, data.id)
       if (!campaign) return null
 
-      const [brands, products, allAccounts, allWorkflows] = await Promise.all([
+      const [brands, products, allAccounts, allWorkflows, metricDefinitions] = await Promise.all([
         listBrands(workspace.id),
         listProducts(workspace.id),
         listAccounts(workspace.id),
         listWorkflows(db, workspace.id),
+        listMetricDefinitions(db, workspace.id),
       ])
 
       const productsByBrand: Record<string, ProductSummary[]> = {}
@@ -162,9 +164,19 @@ export const getCampaignDetailData = createServerFn({ method: 'GET' })
         productsByBrand,
         allAccounts,
         activeWorkflows,
+        metricDefinitions,
       }
     },
   )
+
+export const listMetricDefinitionsFn = createServerFn({ method: 'GET' }).handler(
+  async (): Promise<MetricDefinition[]> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) return []
+    return listMetricDefinitions(db, workspace.id)
+  },
+)
 
 export const createCampaignFn = createServerFn({ method: 'POST' })
   .validator(createCampaignInput)

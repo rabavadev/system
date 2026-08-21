@@ -98,38 +98,32 @@ wrapper over the generic runtime): stable lookup by name/role per
 workspace, created on first use, instructions versioned through
 `agent_version` — shipping changed instructions rotates the version, so
 every assistant message's `agent_version_id` still points at the exact
-configuration that produced it. Chief has **no tools, no workflows, no
-autonomy**: it reads context, reasons, recommends, replies, and says so
-when asked to do something execution is not enabled for. The specialist
-agents (Researcher, Strategist, Creator, Critic, Analytics, Publisher) use
-the same machinery; see docs/agents.md.
+configuration that produced it.
 
-Per send: user message persists → `buildContext` (conversation id + UI
-selection; STEP 5 precedence unchanged) → composer renders the structured
-context document (workspace, scope, brand/product/account, goals, verified
-memory vs hypotheses, research with freshness, recent conversation,
-current request) → `executeAI` → assistant message persists with
-`agent_id`, `agent_version_id` and a safe `provider_metadata` trace
-(execution id, provider, model, usage, latency, scope source, context
-counts — never secrets).
+## Tool Calling Loop (H1B / H1B.1 / H1B.2)
 
-## Traceability & idempotency
+The AI execution layer supports a provider-neutral multi-turn tool calling loop:
+1. `executeAI` passes declared tool JSON Schemas to the provider adapter when tools are available.
+2. When the model returns a `tool_calls` finish reason, the loop resolves each tool call via `executeTool`.
+3. Results are converted to provider-neutral `tool_result` messages correlated by `tool_call_id`.
+4. The loop re-invokes `executeAI` with the updated conversation history until completion or visit bounds.
+5. All external tool content is framed with untrusted data markers (H2B).
+
+## Traceability & Idempotency
 
 - `ai.execution.started/completed/failed` events (existing `event` table)
   carry the execution id, agent version, provider/model, usage, latency,
-  error code, and the bounded context trace. No schema migration was
-  needed: `message.provider_metadata` + `event.payload` already existed.
-- The composer also stores a per-message trace summary, so "why did Chief
+  error code, and the bounded context trace.
+- The composer also stores a per-message trace summary, so "why did the agent
   say this" is answerable from the conversation row + event log.
 - The client attaches a `clientRequestId` (uuid) per send; user and
   assistant messages record it. Retries/double-submits return the
   already-persisted result instead of executing twice.
-- `/dev-context` (dev only) shows recent executions; production Chat UI
-  never exposes provider/model internals.
 
-## Not built yet (deliberately)
+## Verification Status & Limitations
 
-Streaming (the executor boundary is streaming-ready; chat uses one
-request/response — no fake typing animation), external_agent/router
-executors, tool calling, specialist agents, budget/cost accounting beyond
-usage capture, semantic retrieval.
+- **Local Unit & Contract Tests**: Fully verified in local Node / SQLite environment (`npm run test:ai`, `npm run test:tools`).
+- **Workers AI Live Tool Calling**: **NOT VERIFIED** in remote production until H4B.
+- **Brave Live Search**: **NOT VERIFIED** in remote production until H4B.
+- **Streaming**: Executor is streaming-ready, but full streaming response UX is scheduled for a future milestone.
+

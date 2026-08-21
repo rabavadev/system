@@ -742,3 +742,113 @@ test('21. existing Campaign tests remain green', async () => {
   assert.equal(summary?.name, 'Regression Check Campaign')
   assert.equal(summary?.productName, 'Acme Widget')
 })
+
+test('22. all 12 required built-in metrics resolve from canonical metric_definition registry', async () => {
+  const { db, raw } = freshDb()
+  const { wsId, brandId } = seedWorkspace(raw)
+
+  const REQUIRED_BUILTINS = [
+    'revenue',
+    'conversions',
+    'orders',
+    'conversion_rate',
+    'qualified_visits',
+    'clicks',
+    'outbound_clicks',
+    'ctr',
+    'leads',
+    'saves',
+    'engagements',
+    'impressions',
+  ]
+
+  const { listMetricDefinitions } = await import('../src/server/db/metric.ts')
+  const defs = await listMetricDefinitions(db, wsId)
+  const keys = defs.map((d) => d.key)
+
+  for (const b of REQUIRED_BUILTINS) {
+    assert.ok(keys.includes(b), `expected built-in '${b}' to be present in metric_definition registry`)
+  }
+
+  // Create campaign using a less common built-in like 'saves' or 'leads'
+  const c = await createCampaign(db, {
+    workspaceId: wsId,
+    brandId,
+    name: 'Saves Campaign',
+    targets: [{ metricKey: 'saves', targetValue: 500, isPrimary: true }],
+  })
+  assert.ok(c.id)
+})
+
+test('23. custom workspace-owned metric is accepted in campaign targets', async () => {
+  const { db, raw } = freshDb()
+  const { wsId, brandId } = seedWorkspace(raw)
+
+  const { createMetricDefinition } = await import('../src/server/db/metric.ts')
+  await createMetricDefinition(db, {
+    workspaceId: wsId,
+    key: 'custom_mql',
+    name: 'Marketing Qualified Leads',
+    description: 'Custom internal MQL metric',
+    unit: 'leads',
+  })
+
+  const campaign = await createCampaign(db, {
+    workspaceId: wsId,
+    brandId,
+    name: 'Custom Metric Campaign',
+    targets: [{ metricKey: 'custom_mql', targetValue: 120, isPrimary: true }],
+  })
+
+  assert.ok(campaign.id)
+  const detail = await getCampaignDetail(db, wsId, campaign.id)
+  assert.equal(detail?.primaryTarget?.metricKey, 'custom_mql')
+})
+
+test('24. custom metric from another workspace is rejected', async () => {
+  const { db, raw } = freshDb()
+  const { wsId, brandId, otherWsId } = seedWorkspace(raw)
+
+  const { createMetricDefinition } = await import('../src/server/db/metric.ts')
+  await createMetricDefinition(db, {
+    workspaceId: otherWsId,
+    key: 'secret_other_metric',
+    name: 'Other WS Metric',
+    unit: 'count',
+  })
+
+  // Attempting to use otherWsId's metric from wsId must be rejected
+  await assert.rejects(
+    async () =>
+      createCampaign(db, {
+        workspaceId: wsId,
+        brandId,
+        name: 'Foreign Metric Campaign',
+        targets: [{ metricKey: 'secret_other_metric', targetValue: 50, isPrimary: true }],
+      }),
+    /Invalid metric key|not found in canonical metric registry/i,
+  )
+})
+
+test('25. updateCampaignTargets validates against metric_definition registry server-side', async () => {
+  const { db, raw } = freshDb()
+  const { wsId, brandId } = seedWorkspace(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: wsId,
+    brandId,
+    name: 'Target Validation Campaign',
+    targets: [{ metricKey: 'revenue', targetValue: 1000, isPrimary: true }],
+  })
+
+  await assert.rejects(
+    async () =>
+      updateCampaignTargets(db, {
+        workspaceId: wsId,
+        id: campaign.id,
+        targets: [{ metricKey: 'unregistered_fake_metric', targetValue: 10, isPrimary: true }],
+      }),
+    /Invalid metric key|not found in canonical metric registry/i,
+  )
+})
+

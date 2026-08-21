@@ -36,9 +36,14 @@ import {
   restoreCampaignFn,
 } from '~/features/campaigns/server'
 import type { AccountSummary } from '~/server/db/account'
-import type { CampaignDetail } from '~/server/db/campaign'
 import type { ProductSummary } from '~/server/db/product'
-import type { Brand, CampaignObjective, CampaignPriority, CampaignStatus } from '~/types/domain'
+import type {
+  Brand,
+  CampaignObjective,
+  CampaignPriority,
+  CampaignStatus,
+  MetricDefinition,
+} from '~/types/domain'
 
 interface CampaignDetailPageProps {
   campaign: CampaignDetail
@@ -46,6 +51,7 @@ interface CampaignDetailPageProps {
   productsByBrand: Record<string, ProductSummary[]>
   allAccounts: AccountSummary[]
   activeWorkflows?: Array<{ id: string; name: string; description: string | null }>
+  metricDefinitions?: MetricDefinition[]
 }
 
 function statusTone(status: CampaignStatus): 'success' | 'warning' | 'muted' | 'neutral' {
@@ -684,6 +690,7 @@ export function CampaignDetailPage({
       {showTargetsModal && (
         <CampaignTargetsModal
           campaign={campaign}
+          metricDefinitions={props.metricDefinitions}
           onClose={() => setShowTargetsModal(false)}
           onSuccess={async () => {
             await router.invalidate()

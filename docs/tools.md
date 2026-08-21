@@ -1,72 +1,65 @@
-# Tool Registry (STEP 9)
+# Tool Registry & Execution Boundary
 
 One controlled path for every agent action:
 
 ```
-Agent
+Agent / Model Tool Call
   → executeTool (src/server/tools/executor.ts)
   → registry lookup (stable key)
   → agent status + capability check (server-side)
-  → tool status / configuration
+  → dynamic runtime status / configuration check (resolveToolAvailability)
   → input validation (zod, server-side)
-  → approval gate (separate layer; no workflow yet)
+  → approval gate (src/server/policy + src/server/approval)
   → tool adapter (src/server/tools/adapters/*)
   → output contract validation
   → structured ToolExecutionResult + safe tool.execution.* event
 ```
 
-Agents never call `fetch`, D1 or a platform SDK directly. Provider-specific
-function schemas (OpenAI/Anthropic/...) are generated later FROM our
-definitions; they are never the canonical ToolDefinition.
+Agents never call `fetch`, D1 or external APIs directly. Model-facing schemas (JSON Schema)
+are derived strictly FROM our definitions; server-side Zod validation remains authoritative.
 
-## Definitions
+## Definitions & Runtime Availability
 
-`src/server/tools/definitions.ts` is the authoritative built-in registry:
-stable keys, human names/descriptions, category, input schema, output
-contract, required capability, risk set (`read`, `write`, `external`,
-`sensitive`, `destructive`), execution mode, status, origin, version,
-timeout and cost class. There is no D1 table yet on purpose: tools are
-code-reviewed contracts and no user-configured tool data exists; persistence
-can be added behind the registry later without changing `executeTool`.
+`src/server/tools/definitions.ts` defines all registered tools: stable keys, human names,
+category, input/output schemas, required capabilities, risk sets (`read`, `write`, `external`,
+`sensitive`, `destructive`), execution mode, and default status.
 
-Statuses: `available`, `disabled`, `needs_setup`, `unavailable`. Capability,
-availability and approval are separate layers: declaring `publish` does not
-make publishing available, and an available write tool can still return
-`approval_required` before its adapter runs.
+Tool availability is dynamically resolved at runtime by `resolveToolAvailability(env)`:
+- Tools requiring missing credentials or bindings are marked `needs_setup` or `unavailable`.
+- Tools not in `available` status are **never** exposed to models or agents.
 
-## Implemented tools (read-only, internal)
+## Implemented Tools
 
-- `workspace.get_current_context` — safe current-context summary via the
-  Context Engine (never a second context loader).
-- `workspace.get_product` / `workspace.list_products`
-- `workspace.get_account` / `workspace.list_accounts` — safe platform
-  metadata only; never secrets or `secret_ref`.
-- `memory.list_relevant` — Context Engine memory only: active, unexpired,
-  non-superseded; proposed learning stays `hypothesis`.
-- `research.list_relevant` — stored research only, with freshness; not live
-  web research.
+### Internal Read Tools
+- `workspace.get_current_context` — safe current-context summary via Context Engine.
+- `workspace.get_product` / `workspace.list_products` — product catalogs and details.
+- `workspace.get_account` / `workspace.list_accounts` — account handles and platform info (never secrets).
+- `memory.list_relevant` — active, unexpired, non-superseded memory from Context Engine.
+- `research.list_relevant` — stored workspace research with freshness classification.
 
-## Registered but not available
+### External Tools (Hardened in H2A/H2B)
+- `web.search` — web search via Brave Search API adapter (`src/server/tools/adapters/web-search.ts`).
+  - Active when `BRAVE_SEARCH_API_KEY` is configured in environment.
+  - Bounded to maximum 5 results, max query length 200 chars, max snippet length 300 chars.
+  - Safe URL normalization, exact-turn deduplication, no full-page scraping.
+  - *Verification note*: Live remote search API calls are **NOT VERIFIED** until H4B.
 
-`analytics.read` is `needs_setup` (returns `not_configured`; never invents
-metrics). `web.search`, `files.list`, `files.read`, `image.generate`,
-`platform.get_posts`, `platform.get_analytics` and `platform.publish` are
-declared with contracts/risk but `unavailable` — no fake search, no fake
-files, no fake publish.
+### Registered but Unavailable
+- `analytics.read` — requires analytics platform integrations.
+- `files.list`, `files.read`, `image.generate`, `platform.get_posts`, `platform.get_analytics`, `platform.publish` — contracts defined, unavailable until concrete platform adapters exist.
 
-## Safety
+## Security & Prompt Injection Defense (H2B)
 
-- Unknown/disabled tools, missing capabilities, invalid input,
-  cross-workspace or archived entities, missing adapters and timeouts return
-  typed errors (`tool_not_found`, `tool_disabled`, `capability_denied`,
-  `invalid_input`, `scope_denied`, `approval_required`, `not_configured`,
-  `no_data`, `execution_failed`, `timeout`). No stack traces.
-- Every execution has a UUID execution id and emits `tool.execution.completed`
-  or `tool.execution.failed` with safe metadata only (ids, category, risk,
-  capability, duration, safe argument summary). Secrets and raw external
-  payloads are never stored.
-- `getAvailableTools(caller)` is the discovery surface for a future AI
-  tool-calling loop: active agents only, available+configured tools only,
-  capability-filtered. Model tool calling is NOT enabled in STEP 9.
+- **Untrusted Content Framing**: All external tool outputs (web search snippets, external data) are framed within `<external_untrusted_data source="..." confidence="...">` tags before ingestion into model prompts.
+- **Sanitization**: Raw HTML tags, markdown formatting tricks, and instruction-hijacking patterns are stripped or escaped.
+- **Strict Capabilities**: Agents can only invoke tools for which their version explicitly declares capabilities (e.g. Researcher requires `read_research` and `read_context`).
+- **Approval Gate**: Write/destructive tools require evaluation by Approval Policy (`auto`, `review`, `blocked`) before adapter execution.
 
-Tests: `npm run test:tools`.
+## Observability & Events
+
+Every execution generates a UUID and emits `tool.execution.completed` or `tool.execution.failed`
+with safe metadata (caller agent, tool key, duration, risk classification, safe summary).
+Secrets, tokens, and raw payloads are never logged.
+
+Tests: `npm run test:tools` (41 tests covering registry, executor, capabilities, availability, and web search).
+

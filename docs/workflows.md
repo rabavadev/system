@@ -128,18 +128,24 @@ versions belong to their agent, tool keys are registered, bindings
 reference declared inputs/existing steps, condition operators are valid,
 cycles are bounded, a terminating path exists. Unreachable steps warn.
 
-## Runs
+## Runs & Exact Scope Integrity (H3B.2)
 
 `startWorkflowRun` (engine.ts):
 
-1. workflow must be active in this workspace
-2. definition re-validated
-3. inputs validated against the declaration BEFORE anything starts
-4. entity-kind inputs become explicit Context Engine references — scope
-   conflicts, cross-workspace ids and archived entities reject here
-5. a safe ContextPackage snapshot is persisted (`context_json`)
-6. agent versions are frozen (`plan_json`)
-7. the run row is persisted (`running`) and driven
+1. Workflow must be active in this workspace
+2. Definition re-validated
+3. Inputs validated against declaration BEFORE execution starts
+4. Exact scope (`scope_type`, `scope_id`) resolved from explicit caller parameters or extracted from primary entity inputs (campaign, brand, niche, product, account)
+5. Entity-kind inputs become explicit Context Engine references — scope conflicts, cross-workspace ids and archived entities reject here
+6. A safe ContextPackage snapshot is persisted (`context_json`)
+7. Agent versions are frozen (`plan_json`)
+8. The run row is persisted (`running`) with exact `scope_type` and `scope_id` columns, indexed by `idx_workflow_run_scope(workspace_id, scope_type, scope_id)`
+9. `driveRun` drives the step execution
+
+### Scope Querying & Isolation
+- Campaign orchestration writes exact `scope_type = 'campaign'`, `scope_id = campaign.id`.
+- `listCampaignWorkflowRuns` performs exact indexed queries (`scope_type = 'campaign' AND scope_id = ?`) rather than fragile JSON string scans.
+- Historical runs maintain structured `activeScope` in `plan_json` for backward compatibility.
 
 `driveRun` persists state after EVERY transition (`state_json`: next step,
 visit counts, counters), so a run never depends on one request staying
@@ -152,7 +158,8 @@ Run statuses: `queued` / `running` / `waiting` / `succeeded` / `failed` /
 `cancelled`. Step runs additionally have `skipped`. `waiting` is the
 approval-compatible pause: when `executeTool` returns `approval_required`
 the step run goes `waiting` and the run pauses — neither failure nor
-success. STEP 11 will resolve approvals and resume.
+success. On human approval, `resumeWorkflowRun` is called with an authorized
+approval token to continue execution safely without re-entry loops.
 
 ## Retries and failures
 

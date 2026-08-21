@@ -11,6 +11,29 @@ npm run db:test            # fresh-DB migration + constraint test suite
 npm run db:migrate:remote  # production (after setting a real database_id)
 ```
 
+## Migration Index (0001–0018)
+
+| Migration | Purpose | Key Tables / Columns |
+|---|---|---|
+| `0001_core_business.sql` | Core domain entities | `workspace`, `brand`, `niche`, `product`, `account`, `platform`, `platform_connection`, `account_niche` |
+| `0002_agents_workflows_conversations.sql` | Agent & workflow engine base, chat | `agent`, `agent_version`, `workflow`, `workflow_version`, `workflow_run`, `workflow_step_run`, `conversation`, `message` |
+| `0003_events_audit.sql` | Observability & auditing | `event`, `audit_log` |
+| `0004_memory_facts_learnings.sql` | Structured memory & goals | `memory`, `goal` |
+| `0005_experiments_analytics.sql` | Experimentation & metric registry | `experiment`, `experiment_variant`, `experiment_result`, `metric_definition`, `metric_observation`, `platform_metric_raw` |
+| `0006_research_market_intelligence.sql` | Market intelligence storage | `research` |
+| `0007_conversation_scope.sql` | Conversation scoping | `conversation.scope_type`, `conversation.scope_id` (brand, product, account, campaign) |
+| `0008_approvals.sql` | Autonomy policy & requests | `approval_policy`, `approval_request` |
+| `0009_workflow_engine.sql` | Engine extensions | Workflow step indexes & run plan metadata |
+| `0010_content_engine.sql` | Approval policy model | Strict policy schemas, scope-based rule evaluation |
+| `0011_research_sources.sql` | Sources & approvals | `research_source`, immutable approval request snapshots & SHA-256 fingerprinting |
+| `0012_campaign_extensions.sql` | Campaigns & publishing | `campaign`, `campaign_account`, `content`, `content_variant`, `post`, `file_asset`, `content_variant_asset` |
+| `0013_content_variants.sql` | Campaign strategy & targets | `campaign.objective`, `campaign.strategy_json`, `campaign_target`, `content_variant` enhancements |
+| `0014_agent_versions.sql` | Versioning enhancements | Agent version configuration tracking |
+| `0015_content_reviews.sql` | Critic review system | `content_review` (critique, suggestions, review metadata) |
+| `0016_content_draft_candidate.sql` | Creator draft lifecycle | `content_draft_candidate` (uncommitted draft candidates, generated vs saved hash tracking) |
+| `0017_conversation_niche_scope.sql` | Conversation niche scope | Extended `conversation.scope_type` check constraint to include `'niche'` |
+| `0018_workflow_run_scope.sql` | Exact workflow run scope | `workflow_run.scope_type`, `workflow_run.scope_id`, composite index `idx_workflow_run_scope` |
+
 ## Conventions
 
 - **IDs**: TEXT UUIDs generated application-side (`crypto.randomUUID()`).
@@ -44,6 +67,8 @@ erDiagram
   campaign }o--o{ account : campaign_account
   campaign ||--o{ content : contains
   content ||--o{ content_variant : adapts
+  content ||--o{ content_draft_candidate : drafts
+  content_variant ||--o{ content_review : reviews
   platform ||--o{ content_variant : targets
   content_variant ||--o{ post : published_as
   content_variant }o--o{ file_asset : content_variant_asset
@@ -63,84 +88,42 @@ erDiagram
 
   workspace ||--o{ memory : remembers
   workspace ||--o{ goal : sets
-  workspace ||--o{ approval : reviews
+  workspace ||--o{ approval_policy : sets
+  workspace ||--o{ approval_request : reviews
   workspace ||--o{ event : emits
   workspace ||--o{ audit_log : audits
 ```
-
-Not drawn: scoped references (see below) from goal, memory, research,
-approval, metric_observation, experiment_variant, event and audit_log into
-the business entities.
 
 ## Scoped references
 
 Several tables point at "some entity of some type" via
 `(scope_type, scope_id)` or `(subject_type, subject_id)` — goals, memory,
 research, approvals, metric observations, experiment variants, events, audit.
-Conversations carry an optional `(scope_type, scope_id)` too (brand, product,
-account or campaign; both NULL = a general workspace conversation), so chat
-can attach to business context without forcing it.
+Conversations carry an optional `(scope_type, scope_id)` (brand, niche, product,
+account or campaign; both NULL = a general workspace conversation).
 
-These are deliberately **not** foreign keys. The alternative — one join
-table or nullable FK column per target type — multiplies tables and forces a
-migration every time a new scopeable entity appears. The tradeoff: referential
-integrity for these links is enforced in the repository layer, and the
-`event`/`audit_log` records provide traceability when a target is archived.
-Every scoped column pair is indexed.
+Workflow runs carry explicit, exact `(scope_type, scope_id)` (migration 0018)
+with a composite index `idx_workflow_run_scope(workspace_id, scope_type, scope_id)`.
+This allows precise querying of historical workflow executions per campaign or
+other entity without fuzzy JSON text matching.
 
-## Versioning
+These are deliberately **not** foreign keys. Referential integrity for these
+links is enforced in the repository layer, and the `event`/`audit_log` records
+provide traceability when a target is archived.
 
-- `agent` / `workflow` are mutable shells holding `current_version_id`.
-  The agent shell also carries identity metadata that does not change how
-  the agent runs: `origin` (`builtin` | `custom`; built-ins can be disabled
-  but never archived) and `description` (purpose). `agent_version` carries
-  `change_note` (display-only). Everything execution-relevant (instructions,
-  model strategy, capabilities, external/router config) lives in the
-  versioned config JSON — see docs/agents.md.
-- `agent_version` / `workflow_version` are immutable snapshots
-  (`UNIQUE(parent, version)`; no `updated_at`). A version referenced by a run
-  must never be edited — the repository layer rejects updates to versions
-  that have runs. History is therefore never rewritten.
-- `message.agent_version_id` records exactly which configuration produced a
-  message; `message.provider_metadata` records provider/model per message, so
-  the conversation store is provider-agnostic.
+## Canonical Metrics Registry
 
-## Memory freshness
+The `metric_definition` table (created in `0005_experiments_analytics.sql`) is the
+authoritative single source of truth for all metrics in the product.
 
-Freshness is a derived triple, not a column:
-
-- `last_verified_at` — when the memory was last confirmed true,
-- `expires_at` — hard expiry, mainly for `temporary_context`,
-- `status` — `active | superseded | archived | rejected`
-  (`superseded_by` points at the replacement).
-
-A memory is fresh iff `status = 'active'` and (`expires_at` is null or in the
-future). This avoids a stored freshness flag that would silently drift.
-
-## Analytics: two lanes
-
-1. `metric_observation` — normalized metrics (`impressions`, `saves`,
-   `outbound_clicks`, …) defined in `metric_definition`. A unique index on
-   `(subject, metric, granularity, observed_at, source)` makes sync jobs
-   idempotent.
-2. `platform_metric_raw` — platform-native metrics preserved verbatim,
-   including the raw payload. Platforms do not expose the same metrics, so
-   this lane is keyed by platform-native names and never feeds UI directly.
-
-## Secrets
-
-No API keys, OAuth tokens, or provider secrets in D1. `platform_connection`
-stores only `secret_ref` (a pointer to a Workers secret / future vault key),
-scopes and non-sensitive metadata. The audit log must never receive secret
-values — repositories strip them before writing `previous_value`/`new_value`.
-
-## Deletion doctrine
-
-- UI "delete" = set `deleted_at` (soft).
-- Join/link rows (`account_niche`, `campaign_account`, `content_variant_asset`)
-  cascade on hard delete of their owning side.
-- Parents of history (`workflow_run`, `post`, `metric_observation`, `event`,
-  `audit_log`) restrict deletion. Historical rows are permanent.
+- **12 Built-in Metrics**: `revenue`, `conversions`, `orders`, `conversion_rate`,
+  `qualified_visits`, `clicks`, `outbound_clicks`, `ctr`, `leads`, `saves`,
+  `engagements`, `impressions` with `workspace_id IS NULL`.
+- **Custom Metrics**: Workspaces may define additional custom metrics with
+  `workspace_id = <workspace_uuid>`.
+- **Campaign Targets**: Validated server-side against `metric_definition` where
+  `workspace_id IS NULL OR workspace_id = ?`. Foreign workspace metrics and
+  unregistered keys are rejected.
 
 ## Access pattern
 
@@ -156,6 +139,4 @@ route loader / UI  →  server function (src/features/*/server.ts)
 Writes are validated with zod schemas colocated in each repository
 (`createMemoryInput`, `createCampaignInput`, …), mirroring the SQL CHECK
 constraints so bad payloads fail with useful errors before touching D1.
-Repositories exist where the app actually reads/writes today (workspace,
-memory, campaign, conversation, message, agent, event, context reads);
-add more as features land, not before.
+

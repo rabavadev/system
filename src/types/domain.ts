@@ -386,19 +386,17 @@ export interface CampaignStrategy {
   hypothesis?: string | null
 }
 
-export type CampaignMetricKey =
-  | 'revenue'
-  | 'conversions'
-  | 'orders'
-  | 'conversion_rate'
-  | 'qualified_visits'
-  | 'clicks'
-  | 'outbound_clicks'
-  | 'ctr'
-  | 'leads'
-  | 'saves'
-  | 'engagements'
-  | 'impressions'
+export interface MetricDefinition {
+  id: Id
+  workspaceId: Id | null
+  key: string
+  name: string
+  description: string | null
+  unit: string | null
+  createdAt: IsoTimestamp
+}
+
+export type CampaignMetricKey = string
 
 export interface CampaignTarget {
   id: Id

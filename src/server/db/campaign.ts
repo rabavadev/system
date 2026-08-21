@@ -22,6 +22,7 @@ import { writeAuditLog } from './audit.ts'
 import { listCampaignContent } from './content.ts'
 import { emitEventSafe } from './event.ts'
 import { IntegrityError, requireActiveBrand, requireProductForBrand } from './relations.ts'
+import { ensureBuiltinMetrics, findMetricDefinitionByKey } from './metric.ts'
 import {
   computeProvenanceSummary,
   listResearchSources,
@@ -247,25 +248,10 @@ export const campaignStrategySchema = z.object({
   hypothesis: z.string().trim().max(2000).nullish(),
 })
 
-export const campaignMetricKeySchema = z.enum([
-  'revenue',
-  'conversions',
-  'orders',
-  'conversion_rate',
-  'qualified_visits',
-  'clicks',
-  'outbound_clicks',
-  'ctr',
-  'leads',
-  'saves',
-  'engagements',
-  'impressions',
-])
-
 export const campaignTargetInputSchema = z
   .object({
     id: z.string().uuid().optional(),
-    metricKey: campaignMetricKeySchema,
+    metricKey: z.string().trim().min(1, 'Metric key is required.').max(100),
     targetValue: z.number().finite().min(0, 'Target value must be non-negative.'),
     unit: z.string().trim().max(50).nullish(),
     isPrimary: z.boolean().default(false),
@@ -454,6 +440,11 @@ export async function createCampaign(
 
   // 3. Validate Accounts
   const validAccountIds = await validateAccounts(db, data.workspaceId, data.accountIds ?? [])
+
+  // 4. Validate Targets against canonical metric_definition registry
+  if (data.targets && data.targets.length > 0) {
+    await validateCampaignTargets(db, data.workspaceId, data.targets)
+  }
 
   let audienceSummary = data.audience ?? null
   let audienceJson: string | null = null
@@ -645,6 +636,7 @@ export async function updateCampaign(
   let targetsJson = existing.targets_json
   if (data.targets !== undefined) {
     if (data.targets && data.targets.length > 0) {
+      await validateCampaignTargets(db, workspaceId, data.targets)
       const formattedTargets: CampaignTarget[] = data.targets.map((t, idx) => ({
         id: t.id || newId(),
         metricKey: t.metricKey,
@@ -849,6 +841,9 @@ export async function updateCampaignTargets(
   if (!existing || existing.workspace_id !== data.workspaceId) {
     throw new IntegrityError('Campaign not found in this workspace.')
   }
+
+  // Validate Targets against canonical metric_definition registry
+  await validateCampaignTargets(db, data.workspaceId, data.targets)
 
   const formattedTargets: CampaignTarget[] = data.targets.map((t, idx) => ({
     id: t.id || newId(),
@@ -1400,3 +1395,26 @@ export async function listArchivedCampaigns(
     accountHandles: row.account_handles ? row.account_handles.split(', ').filter(Boolean) : [],
   }))
 }
+
+async function validateCampaignTargets(
+  db: SqlDatabase,
+  workspaceId: string,
+  targets: Array<{ metricKey: string; targetValue: number; unit?: string | null; isPrimary?: boolean; orderIndex?: number }>,
+): Promise<void> {
+  if (!targets || targets.length === 0) return
+  await ensureBuiltinMetrics(db)
+  for (const t of targets) {
+    const def = await findMetricDefinitionByKey(db, workspaceId, t.metricKey)
+    if (!def) {
+      throw new IntegrityError(
+        `Invalid metric key '${t.metricKey}': not found in canonical metric registry for workspace '${workspaceId}'.`,
+      )
+    }
+    if (def.unit === 'percent' || t.metricKey === 'conversion_rate' || t.metricKey === 'ctr') {
+      if (t.targetValue < 0 || t.targetValue > 100) {
+        throw new IntegrityError(`Percentage metric '${t.metricKey}' must be between 0 and 100.`)
+      }
+    }
+  }
+}
+

@@ -17,9 +17,9 @@ Package manager: npm 10+ (Node 22+, enforced via engines)
 UI/styling: Tailwind CSS v4, lucide-react icons, own ui primitives
 State: TanStack Query
 Backend: TanStack Start server functions
-Database: Cloudflare D1 (SQLite), wrangler migrations in migrations/
+Database: Cloudflare D1 (SQLite), wrangler migrations in migrations/ (0001–0018)
 Auth: single default workspace (dev seed); workspace scoping server-side
-Testing: scripts/test-db.mjs (constraints), scripts/test-relations.ts (relations)
+Testing: 19 specialized node test suites + scripts/test-db.mjs
 Deployment: wrangler deploy
 ```
 
@@ -31,6 +31,24 @@ npm run typecheck         # tsc --noEmit (strict)
 npm run lint              # biome check .
 npm run db:test           # fresh-DB migration + constraint suite
 npm run test:relations    # relationship-integrity suite
+npm run test:chat         # chat & conversation scope suite
+npm run test:context      # context engine & ranking suite
+npm run test:ai           # AI execution & provider suite
+npm run test:memory       # memory & goal lifecycle suite
+npm run test:agents       # agent registry suite
+npm run test:tools        # tool registry & adapter suite
+npm run test:workflows    # workflow engine & scope suite
+npm run test:policy       # approval policy suite
+npm run test:approvals    # approval request & snapshot suite
+npm run test:workflow-approvals # workflow approval integration suite
+npm run test:approvals-ux # approval center UX suite
+npm run test:research     # research & citation source suite
+npm run test:campaigns    # campaign domain suite
+npm run test:campaign-strategy # campaign strategy & targets suite
+npm run test:campaign-content # campaign content & variants suite
+npm run test:campaign-orchestration # campaign workflow orchestration suite
+npm run test:creator-draft # Creator draft candidate suite
+npm run test:critic-review # Critic review suite
 npm run build             # production build
 npm run cf-typegen        # regenerate worker-configuration.d.ts (gitignored)
 npm run db:migrate:local  # apply migrations to local D1
@@ -46,7 +64,7 @@ Navigation: src/components/layout/nav-items.ts + topbar.tsx
 Auth state: n/a yet — single workspace from seed
 Current-user state: n/a; active brand selection via cookie (src/features/workspace/server.ts)
 API client: TanStack Start server functions per feature (src/features/*/server.ts)
-Database/schema source: migrations/ (immutable) + docs/database.md
+Database/schema source: migrations/ (0001–0018, immutable) + docs/database.md
 Design token source: Tailwind v4 theme (src/styles), ui primitives in src/components/ui/
 Shared component library: src/components/ui/ + src/components/layout/
 ```

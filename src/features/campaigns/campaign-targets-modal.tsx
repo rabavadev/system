@@ -5,15 +5,17 @@ import { Button } from '~/components/ui/button'
 import { FormError, inputClass } from '~/components/ui/form'
 import { Modal } from '~/components/ui/modal'
 import type { CampaignDetail } from '~/server/db/campaign'
-import type { CampaignMetricKey, CampaignTarget } from '~/types/domain'
+import type { CampaignMetricKey, CampaignTarget, MetricDefinition } from '~/types/domain'
 import { updateCampaignTargetsFn } from './server'
 
-const METRIC_OPTIONS: Array<{
-  key: CampaignMetricKey
+interface MetricOption {
+  key: string
   label: string
   defaultUnit: string
   isPercent?: boolean
-}> = [
+}
+
+const DEFAULT_METRIC_OPTIONS: MetricOption[] = [
   { key: 'revenue', label: 'Revenue', defaultUnit: 'USD' },
   { key: 'conversions', label: 'Conversions / Sales', defaultUnit: 'orders' },
   { key: 'orders', label: 'Orders', defaultUnit: 'orders' },
@@ -28,14 +30,9 @@ const METRIC_OPTIONS: Array<{
   { key: 'impressions', label: 'Impressions', defaultUnit: 'views' },
 ]
 
-const FALLBACK_METRIC = METRIC_OPTIONS[0] ?? {
-  key: 'revenue' as CampaignMetricKey,
-  label: 'Revenue',
-  defaultUnit: 'USD',
-}
-
 interface CampaignTargetsModalProps {
   campaign: CampaignDetail
+  metricDefinitions?: MetricDefinition[]
   onClose: () => void
   onSuccess?: () => void
 }
@@ -49,9 +46,30 @@ interface EditableTarget {
   isPrimary: boolean
 }
 
-export function CampaignTargetsModal({ campaign, onClose, onSuccess }: CampaignTargetsModalProps) {
+export function CampaignTargetsModal({
+  campaign,
+  metricDefinitions,
+  onClose,
+  onSuccess,
+}: CampaignTargetsModalProps) {
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
+
+  const metricOptions: MetricOption[] =
+    metricDefinitions && metricDefinitions.length > 0
+      ? metricDefinitions.map((d) => ({
+          key: d.key,
+          label: d.name,
+          defaultUnit: d.unit ?? '',
+          isPercent: d.unit === 'percent' || d.key === 'conversion_rate' || d.key === 'ctr',
+        }))
+      : DEFAULT_METRIC_OPTIONS
+
+  const fallbackMetric = metricOptions[0] ?? {
+    key: 'revenue',
+    label: 'Revenue',
+    defaultUnit: 'USD',
+  }
 
   const [targets, setTargets] = useState<EditableTarget[]>(() => {
     if (campaign.targets && campaign.targets.length > 0) {
@@ -69,7 +87,7 @@ export function CampaignTargetsModal({ campaign, onClose, onSuccess }: CampaignT
 
   const addTarget = () => {
     const existingKeys = new Set(targets.map((t) => t.metricKey))
-    const nextAvailable = METRIC_OPTIONS.find((m) => !existingKeys.has(m.key)) ?? FALLBACK_METRIC
+    const nextAvailable = metricOptions.find((m) => !existingKeys.has(m.key)) ?? fallbackMetric
     const isFirst = targets.length === 0
 
     setTargets([
@@ -102,7 +120,7 @@ export function CampaignTargetsModal({ campaign, onClose, onSuccess }: CampaignT
   }
 
   const updateMetric = (index: number, key: CampaignMetricKey) => {
-    const option = METRIC_OPTIONS.find((m) => m.key === key)
+    const option = metricOptions.find((m) => m.key === key)
     setTargets(
       targets.map((t, idx) => {
         if (idx === index) {
@@ -237,7 +255,7 @@ export function CampaignTargetsModal({ campaign, onClose, onSuccess }: CampaignT
                         onChange={(e) => updateMetric(idx, e.target.value as CampaignMetricKey)}
                         className={inputClass}
                       >
-                        {METRIC_OPTIONS.map((opt) => (
+                        {metricOptions.map((opt) => (
                           <option key={opt.key} value={opt.key}>
                             {opt.label}
                           </option>

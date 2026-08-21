@@ -356,7 +356,7 @@ test('seed applies cleanly and is idempotent', () => {
   const metrics = db.prepare(`SELECT COUNT(*) AS n FROM metric_definition`).get()
   assert.equal(workspaces.n, 1)
   assert.equal(platforms.n, 4)
-  assert.equal(metrics.n, 7)
+  assert.equal(metrics.n, 12)
   db.close()
 })
 

@@ -1,25 +1,31 @@
 # server/tools
 
-The ONE Tool Registry and execution boundary for agents (STEP 9).
+The ONE Tool Registry and execution boundary for agents.
 
 Flow:
 
 ```
-Agent → executeTool → registry lookup → agent status → capability check →
-tool status/configuration → input validation → approval gate → adapter →
-output contract → structured result + safe tool.execution.* event
+Agent / Model Tool Call
+  → executeTool (executor.ts)
+  → registry lookup
+  → agent status check
+  → capability check
+  → dynamic runtime availability (resolveToolAvailability)
+  → input validation (Zod, server-side)
+  → approval gate (policy + approval service)
+  → tool adapter
+  → output contract validation
+  → structured ToolExecutionResult + safe tool.execution.* event
 ```
 
 - `types.ts` — provider-neutral tool contracts, risk, status, errors, caller.
-- `definitions.ts` — the authoritative built-in registry. No D1 table yet:
-  tools are code-reviewed contracts; persistence can be added later behind
-  this surface without changing callers.
+- `definitions.ts` — authoritative built-in registry with schemas, capabilities, risks.
 - `registry.ts` — lookup, safe descriptors, capability/status filtering.
-- `executor.ts` — the only execution path. Capability ≠ availability ≠
-  approval; adapters never run after denial.
-- `adapters/` — implementations. Internal read tools use the safe context
-  repository / Context Engine. External tools are declared but unavailable
-  until a real adapter and configuration exist.
+- `executor.ts` — single execution path. Capability ≠ availability ≠ approval; adapters never run after denial.
+- `adapters/` — implementations:
+  - Internal read tools use the Context Engine.
+  - `web.search` uses Brave Search adapter with query bounding, URL normalization, and H2B untrusted content framing.
+  - External write tools require concrete platform adapters and explicit approval.
 
-Server-only code. Never import from client bundles. No provider-specific
-function schemas, no secrets, no arbitrary user code.
+Server-only code. Never import from client bundles. No provider-specific function schemas, no secrets, no arbitrary user code.
+

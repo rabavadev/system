@@ -18,7 +18,8 @@ export const Route = createFileRoute('/campaigns_/$campaignId')({
 })
 
 function CampaignDetailRoute() {
-  const { campaign, brands, productsByBrand, allAccounts, activeWorkflows } = Route.useLoaderData()
+  const { campaign, brands, productsByBrand, allAccounts, activeWorkflows, metricDefinitions } =
+    Route.useLoaderData()
   return (
     <CampaignDetailPage
       campaign={campaign}
@@ -26,6 +27,7 @@ function CampaignDetailRoute() {
       productsByBrand={productsByBrand}
       allAccounts={allAccounts}
       activeWorkflows={activeWorkflows}
+      metricDefinitions={metricDefinitions}
     />
   )
 }

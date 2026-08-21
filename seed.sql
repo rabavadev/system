@@ -18,10 +18,16 @@ INSERT OR IGNORE INTO platform (id, adapter_key, name, created_at) VALUES
 
 -- Built-in normalized metric definitions (workspace_id NULL = built-in).
 INSERT OR IGNORE INTO metric_definition (id, workspace_id, key, name, description, unit, created_at) VALUES
-  ('6c37f650-d5b6-4015-8f14-95c1e85fc23a', NULL, 'impressions',     'Impressions',     'Times content was shown.',                    'count',  '2026-08-19T00:00:00.000Z'),
-  ('a3d20229-52e5-4769-a3a9-cb64d1a2e7d2', NULL, 'engagements',     'Engagements',     'Total engagement actions.',                   'count',  '2026-08-19T00:00:00.000Z'),
-  ('c5faec40-f094-42cb-b73d-67b8db70d736', NULL, 'saves',           'Saves',           'Times content was saved.',                    'count',  '2026-08-19T00:00:00.000Z'),
-  ('72455ca8-c160-460a-8121-da2dae4c9558', NULL, 'clicks',          'Clicks',          'Clicks on content.',                          'count',  '2026-08-19T00:00:00.000Z'),
-  ('54895b39-c960-496f-82fb-c0a73c953e16', NULL, 'outbound_clicks', 'Outbound clicks', 'Clicks leaving the platform to a link.',      'count',  '2026-08-19T00:00:00.000Z'),
-  ('b009f533-402e-4ac2-be27-262253cf29ea', NULL, 'conversions',     'Conversions',     'Attributed conversion events.',               'count',  '2026-08-19T00:00:00.000Z'),
-  ('c37c850c-8d3a-4ae9-ac89-ce83527b4031', NULL, 'revenue',         'Revenue',         'Attributed revenue.',                         'usd',    '2026-08-19T00:00:00.000Z');
+  ('6c37f650-d5b6-4015-8f14-95c1e85fc23a', NULL, 'impressions',      'Impressions',         'Times content was shown.',               'count',   '2026-08-19T00:00:00.000Z'),
+  ('a3d20229-52e5-4769-a3a9-cb64d1a2e7d2', NULL, 'engagements',      'Engagements',         'Total engagement actions.',              'count',   '2026-08-19T00:00:00.000Z'),
+  ('c5faec40-f094-42cb-b73d-67b8db70d736', NULL, 'saves',            'Saves',               'Times content was saved.',               'count',   '2026-08-19T00:00:00.000Z'),
+  ('72455ca8-c160-460a-8121-da2dae4c9558', NULL, 'clicks',           'Clicks',              'Clicks on content.',                     'count',   '2026-08-19T00:00:00.000Z'),
+  ('54895b39-c960-496f-82fb-c0a73c953e16', NULL, 'outbound_clicks',  'Outbound clicks',     'Clicks leaving the platform to a link.', 'count',   '2026-08-19T00:00:00.000Z'),
+  ('b009f533-402e-4ac2-be27-262253cf29ea', NULL, 'conversions',      'Conversions',         'Attributed conversion events.',          'count',   '2026-08-19T00:00:00.000Z'),
+  ('c37c850c-8d3a-4ae9-ac89-ce83527b4031', NULL, 'revenue',          'Revenue',             'Attributed revenue.',                    'usd',     '2026-08-19T00:00:00.000Z'),
+  ('e12f4581-7489-4a92-95b1-128d9c129e01', NULL, 'orders',           'Orders',              'Total purchase orders.',                 'count',   '2026-08-19T00:00:00.000Z'),
+  ('e12f4581-7489-4a92-95b1-128d9c129e02', NULL, 'conversion_rate',  'Conversion Rate',     'Conversion rate percentage.',            'percent', '2026-08-19T00:00:00.000Z'),
+  ('e12f4581-7489-4a92-95b1-128d9c129e03', NULL, 'qualified_visits', 'Qualified Visits',    'High-intent or qualified visits.',       'count',   '2026-08-19T00:00:00.000Z'),
+  ('e12f4581-7489-4a92-95b1-128d9c129e04', NULL, 'ctr',               'Click-Through Rate',  'Click-through rate percentage.',         'percent', '2026-08-19T00:00:00.000Z'),
+  ('e12f4581-7489-4a92-95b1-128d9c129e05', NULL, 'leads',             'Leads',               'Generated leads or signups.',            'count',   '2026-08-19T00:00:00.000Z');
+
