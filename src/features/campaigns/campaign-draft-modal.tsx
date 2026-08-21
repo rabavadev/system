@@ -33,6 +33,7 @@ import type {
 import {
   generateCampaignContentDraftFn,
   generateCampaignContentReviewFn,
+  generateCampaignContentRevisionFn,
   listContentReviewsFn,
   listContentVariantsFn,
   saveCampaignContentDraftFn,
@@ -100,6 +101,7 @@ export function CampaignDraftModal({
   const [expandedReviewId, setExpandedReviewId] = useState<string | null>(null)
 
   const [isGenerating, startGenerating] = useTransition()
+  const [isRevising, startRevising] = useTransition()
   const [isSaving, startSaving] = useTransition()
   const [isReviewing, startReviewing] = useTransition()
   const [isSavingReview, startSavingReview] = useTransition()
@@ -300,6 +302,42 @@ export function CampaignDraftModal({
     })
   }
 
+  const handleReviseDraft = (sourceReviewId: string) => {
+    if (!savedVariantId) {
+      setError('A saved variant is required to generate a revision.')
+      return
+    }
+
+    setError(null)
+    setSuccessMessage(null)
+    startRevising(async () => {
+      try {
+        const result = await generateCampaignContentRevisionFn({
+          data: {
+            campaignId: campaign.id,
+            contentId: contentItem.id,
+            sourceVariantId: savedVariantId,
+            sourceReviewId,
+          },
+        })
+
+        if (!result.ok) {
+          setError(result.message || 'Revision generation failed.')
+          return
+        }
+
+        setCandidateId(result.candidateId)
+        setDraft(result.draft)
+        setProvenance(result.provenance)
+        setIsCandidate(true)
+        setIsSaved(false)
+        setSuccessMessage('Creator generated a new revision candidate addressing Critic feedback!')
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Revision generation failed.')
+      }
+    })
+  }
+
   const handleCopyBody = () => {
     if (!draft.body) return
     navigator.clipboard.writeText(draft.body)
@@ -488,10 +526,15 @@ export function CampaignDraftModal({
             {provenance && (
               <div className="rounded-lg border border-zinc-100 bg-zinc-50 p-2.5 text-[11px] text-zinc-500 space-y-1">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-zinc-700">
-                    Generation Provenance
+                  <span className="font-semibold text-zinc-700 flex items-center gap-1.5">
+                    {provenance.sourceVariantId ? 'Revision Lineage' : 'Generation Provenance'}
+                    {provenance.sourceVariantId && (
+                      <span className="font-normal text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded text-[10px]">
+                        Revision based on Critic feedback
+                      </span>
+                    )}
                     {provenance.humanEdited && (
-                      <span className="ml-1.5 font-normal text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">
+                      <span className="font-normal text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded text-[10px]">
                         Edited before save
                       </span>
                     )}
@@ -737,6 +780,34 @@ export function CampaignDraftModal({
                         ))}
                       </div>
                     )}
+                    {latestSavedReview.verdict === 'revise' && (
+                      <div className="pt-2 border-t border-zinc-100 flex justify-end">
+                        <Button
+                          variant="secondary"
+                          onClick={() => handleReviseDraft(latestSavedReview.id)}
+                          disabled={
+                            isRevising ||
+                            isGenerating ||
+                            isSaving ||
+                            isReviewing ||
+                            isSavingReview
+                          }
+                          className="h-7 px-2.5 text-xs text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-200"
+                        >
+                          {isRevising ? (
+                            <>
+                              <Loader2 className="size-3 mr-1 animate-spin" />
+                              Revising with Creator...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="size-3 mr-1 text-amber-600" />
+                              Revise with Creator
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -822,6 +893,35 @@ export function CampaignDraftModal({
                                     </ul>
                                   </div>
                                 )}
+
+                                {rev.verdict === 'revise' && (
+                                  <div className="pt-2 border-t border-zinc-200/60 flex justify-end">
+                                    <Button
+                                      variant="secondary"
+                                      onClick={() => handleReviseDraft(rev.id)}
+                                      disabled={
+                                        isRevising ||
+                                        isGenerating ||
+                                        isSaving ||
+                                        isReviewing ||
+                                        isSavingReview
+                                      }
+                                      className="h-6 px-2 text-[11px] text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-200"
+                                    >
+                                      {isRevising ? (
+                                        <>
+                                          <Loader2 className="size-2.5 mr-1 animate-spin" />
+                                          Revising...
+                                        </>
+                                      ) : (
+                                        <>
+                                          <Sparkles className="size-2.5 mr-1 text-amber-600" />
+                                          Revise with Creator from this review
+                                        </>
+                                      )}
+                                    </Button>
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
@@ -842,7 +942,7 @@ export function CampaignDraftModal({
               <Button
                 variant="ghost"
                 onClick={handleGenerate}
-                disabled={isGenerating || isSaving || isReviewing || isSavingReview}
+                disabled={isGenerating || isRevising || isSaving || isReviewing || isSavingReview}
                 className="text-xs text-zinc-600 hover:text-zinc-900"
               >
                 <RefreshCw className={`size-3.5 mr-1.5 ${isGenerating ? 'animate-spin' : ''}`} />
@@ -855,7 +955,7 @@ export function CampaignDraftModal({
             <Button
               variant="ghost"
               onClick={onClose}
-              disabled={isSaving || isGenerating || isSavingReview}
+              disabled={isSaving || isGenerating || isRevising || isSavingReview}
             >
               {isCandidate ? 'Discard' : 'Close'}
             </Button>
@@ -864,7 +964,9 @@ export function CampaignDraftModal({
               <Button
                 variant="primary"
                 onClick={handleSave}
-                disabled={isSaving || isGenerating || isSavingReview || !draft.body.trim()}
+                disabled={
+                  isSaving || isGenerating || isRevising || isSavingReview || !draft.body.trim()
+                }
               >
                 {isSaving ? (
                   <>

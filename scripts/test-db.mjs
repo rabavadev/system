@@ -45,7 +45,7 @@ const id = () => crypto.randomUUID()
 test('clean database migrates from zero; all tables exist', () => {
   const db = freshDb()
   const files = migrate(db)
-  assert.equal(files.length, 18, `expected 18 migrations, got: ${files.join(', ')}`)
+  assert.equal(files.length, 19, `expected 19 migrations, got: ${files.join(', ')}`)
 
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -851,6 +851,41 @@ test('migration 0018 safely backfills unambiguous structured activeScope and lea
   const row3 = db.prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`).get(unscopedRunId)
   assert.equal(row3.scope_type, null)
   assert.equal(row3.scope_id, null)
+
+  db.close()
+})
+
+test('migration 0019 adds source_variant_id and source_review_id to content_draft_candidate', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const columns = db
+    .prepare(`PRAGMA table_info(content_draft_candidate)`)
+    .all()
+    .map((c) => c.name)
+
+  assert.ok(
+    columns.includes('source_variant_id'),
+    `expected source_variant_id column in content_draft_candidate, got: ${columns.join(', ')}`,
+  )
+  assert.ok(
+    columns.includes('source_review_id'),
+    `expected source_review_id column in content_draft_candidate, got: ${columns.join(', ')}`,
+  )
+
+  const indexes = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'content_draft_candidate'`)
+    .all()
+    .map((r) => r.name)
+
+  assert.ok(
+    indexes.includes('idx_content_draft_candidate_source_variant'),
+    `expected idx_content_draft_candidate_source_variant index, got: ${indexes.join(', ')}`,
+  )
+  assert.ok(
+    indexes.includes('idx_content_draft_candidate_source_review'),
+    `expected idx_content_draft_candidate_source_review index, got: ${indexes.join(', ')}`,
+  )
 
   db.close()
 })

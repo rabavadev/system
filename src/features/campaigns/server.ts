@@ -47,6 +47,7 @@ import {
   type ContentVariantDetail,
   type GenerateContentDraftResult,
   generateCampaignContentDraft,
+  generateCampaignContentRevision,
   listContentVariants,
   saveCampaignContentDraft,
 } from '~/server/db/content-variant'
@@ -406,6 +407,35 @@ export const generateCampaignContentDraftFn = createServerFn({ method: 'POST' })
         workspaceId: workspace.id,
         campaignId: data.campaignId,
         contentId: data.contentId,
+      },
+      deps,
+    )
+  })
+
+export const generateCampaignContentRevisionFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      campaignId: z.uuid(),
+      contentId: z.uuid(),
+      sourceVariantId: z.uuid(),
+      sourceReviewId: z.uuid(),
+    }),
+  )
+  .handler(async ({ data }): Promise<GenerateContentDraftResult> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      return { ok: false, errorCode: 'workspace_not_found', message: 'Workspace not found' }
+    }
+    const { deps } = resolveAiRuntime()
+    return generateCampaignContentRevision(
+      db,
+      {
+        workspaceId: workspace.id,
+        campaignId: data.campaignId,
+        contentId: data.contentId,
+        sourceVariantId: data.sourceVariantId,
+        sourceReviewId: data.sourceReviewId,
       },
       deps,
     )
