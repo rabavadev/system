@@ -1148,3 +1148,54 @@ test('37. duplicate pending request deduplication preserves original reason and 
   assert.equal(second.reason, 'Reusing existing pending approval request')
   assert.equal(second.request.policySource, first.request.policySource)
 })
+
+// 38. HARDENING H1B.2: publish preserves write + external in approval.requested and audit log
+test('38. publish action preserves write + external risks and safe metadata without secret leakage', async () => {
+  const db = freshDb()
+  const created = await createApprovalRequest(db, {
+    workspaceId: WS_A,
+    actionKey: 'content.publish',
+    origin: 'agent',
+    payload: {
+      accountId: crypto.randomUUID(),
+      contentVariantId: crypto.randomUUID(),
+      apiKey: 'sk-secret-do-not-leak-12345',
+      bearer_token: 'secret-token-xyz',
+    },
+    risk: ['write', 'external'],
+  })
+
+  assert.ok(created.request)
+
+  // Check event emission
+  const events = await listRecentEvents(db, WS_A, 'approval.', 10)
+  const approvalEvent = events.find((e) => e.event_type === 'approval.requested')
+  assert.ok(approvalEvent, 'approval.requested event MUST be emitted')
+
+  const eventPayload = JSON.parse(approvalEvent.payload ?? '{}') as Record<string, unknown>
+  assert.equal(eventPayload.actionKey, 'content.publish')
+  assert.deepEqual(eventPayload.risks, ['write', 'external'])
+  assert.equal(eventPayload.risk, 'write')
+  assert.equal(eventPayload.policySource, 'risk_fallback')
+
+  // Check no raw payload, API keys, or secrets exist in event payload
+  const rawEventString = approvalEvent.payload ?? ''
+  assert.equal(rawEventString.includes('sk-secret-do-not-leak-12345'), false)
+  assert.equal(rawEventString.includes('secret-token-xyz'), false)
+
+  // Check audit log
+  const auditRow = await db
+    .prepare(`SELECT new_value FROM audit_log WHERE entity_id = ? AND action = 'create'`)
+    .bind(created.request.id)
+    .first<{ new_value: string }>()
+
+  assert.ok(auditRow)
+  const auditPayload = JSON.parse(auditRow.new_value) as Record<string, unknown>
+  assert.equal(auditPayload.actionKey, 'content.publish')
+  assert.deepEqual(auditPayload.risks, ['write', 'external'])
+  assert.equal(auditPayload.policySource, 'risk_fallback')
+
+  const rawAuditString = auditRow.new_value
+  assert.equal(rawAuditString.includes('sk-secret-do-not-leak-12345'), false)
+  assert.equal(rawAuditString.includes('secret-token-xyz'), false)
+})
