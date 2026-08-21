@@ -56,6 +56,7 @@ export interface ContentVariantDetail {
   notes: string | null
   status: ContentStatus
   provenance: DraftProvenance | null
+  isApproved?: boolean | undefined
   createdAt: string
   updatedAt: string
   deletedAt: string | null
@@ -95,7 +96,10 @@ export interface ContentDraftCandidateRow {
   source_review_id?: string | null
 }
 
-export function toContentVariantDetail(row: ContentVariantRow): ContentVariantDetail {
+export function toContentVariantDetail(
+  row: ContentVariantRow,
+  isApproved?: boolean,
+): ContentVariantDetail {
   let meta: ContentVariantMetadata = {}
   if (row.metadata) {
     try {
@@ -117,6 +121,7 @@ export function toContentVariantDetail(row: ContentVariantRow): ContentVariantDe
     notes: meta.notes ?? null,
     status: row.status,
     provenance: meta.provenance ?? null,
+    isApproved: typeof isApproved === 'boolean' ? isApproved : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
@@ -891,9 +896,9 @@ export async function listContentVariants(
   workspaceId: string,
   contentId: string,
 ): Promise<ContentVariantDetail[]> {
-  const content = await queryFirst<{ id: string }>(
+  const content = await queryFirst<{ id: string; selected_variant_id: string | null }>(
     db,
-    `SELECT id FROM content WHERE id = ? AND workspace_id = ?`,
+    `SELECT id, selected_variant_id FROM content WHERE id = ? AND workspace_id = ?`,
     [contentId, workspaceId],
   )
   if (!content) return []
@@ -908,7 +913,12 @@ export async function listContentVariants(
     [contentId],
   )
 
-  return rows.map(toContentVariantDetail)
+  return rows.map((row) =>
+    toContentVariantDetail(
+      row,
+      Boolean(content.selected_variant_id && content.selected_variant_id === row.id),
+    ),
+  )
 }
 
 /**

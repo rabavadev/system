@@ -767,7 +767,10 @@ test('22. all 12 required built-in metrics resolve from canonical metric_definit
   const keys = defs.map((d) => d.key)
 
   for (const b of REQUIRED_BUILTINS) {
-    assert.ok(keys.includes(b), `expected built-in '${b}' to be present in metric_definition registry`)
+    assert.ok(
+      keys.includes(b),
+      `expected built-in '${b}' to be present in metric_definition registry`,
+    )
   }
 
   // Create campaign using a less common built-in like 'saves' or 'leads'
@@ -851,4 +854,3 @@ test('25. updateCampaignTargets validates against metric_definition registry ser
     /Invalid metric key|not found in canonical metric registry/i,
   )
 })
-

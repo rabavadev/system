@@ -410,11 +410,7 @@ export async function validateWorkflowRunScope(
       workspace_id: string
       status: string
       deleted_at: string | null
-    }>(
-      db,
-      `SELECT id, workspace_id, status, deleted_at FROM account WHERE id = ?`,
-      [scopeId],
-    )
+    }>(db, `SELECT id, workspace_id, status, deleted_at FROM account WHERE id = ?`, [scopeId])
     if (!row || row.workspace_id !== workspaceId) {
       throw new Error('The scope target belongs to a different workspace.')
     }
@@ -430,11 +426,7 @@ export async function validateWorkflowRunScope(
       workspace_id: string
       status: string
       deleted_at: string | null
-    }>(
-      db,
-      `SELECT id, workspace_id, status, deleted_at FROM campaign WHERE id = ?`,
-      [scopeId],
-    )
+    }>(db, `SELECT id, workspace_id, status, deleted_at FROM campaign WHERE id = ?`, [scopeId])
     if (!row || row.workspace_id !== workspaceId) {
       throw new Error('The scope target belongs to a different workspace.')
     }

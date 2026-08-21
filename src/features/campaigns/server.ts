@@ -4,7 +4,6 @@ import { resolveAiRuntime } from '~/server/ai/runtime'
 import { type AccountSummary, listAccounts } from '~/server/db/account'
 import { listAgents } from '~/server/db/agent'
 import { listBrands } from '~/server/db/brand'
-import { listMetricDefinitions, type MetricDefinition } from '~/server/db/metric'
 import {
   activateCampaign,
   archiveCampaign,
@@ -38,6 +37,12 @@ import {
   updateCampaignContentInput,
 } from '~/server/db/content'
 import {
+  type ApproveContentVariantResult,
+  approveCampaignContentVariant,
+  listContentApprovals,
+  revokeCampaignContentApproval,
+} from '~/server/db/content-approval'
+import {
   type GenerateContentReviewResult,
   generateCampaignContentReview,
   listContentReviews,
@@ -53,6 +58,7 @@ import {
 } from '~/server/db/content-variant'
 import { createConversation } from '~/server/db/conversation'
 import { emitEventSafe } from '~/server/db/event'
+import { listMetricDefinitions } from '~/server/db/metric'
 import { listProducts, type ProductSummary } from '~/server/db/product'
 import { getWorkflowById, getWorkflowVersion, listWorkflows } from '~/server/db/workflow'
 import { getDefaultWorkspace } from '~/server/db/workspace'
@@ -62,8 +68,10 @@ import type {
   Brand,
   CampaignContentItem,
   CampaignStatus,
+  ContentApprovalDetail,
   ContentReviewDetail,
   ContentStatus,
+  MetricDefinition,
 } from '~/types/domain'
 
 const idWire = z.object({ id: z.uuid() })
@@ -134,6 +142,7 @@ export const getCampaignDetailData = createServerFn({ method: 'GET' })
       productsByBrand: Record<string, ProductSummary[]>
       allAccounts: AccountSummary[]
       activeWorkflows: Array<{ id: string; name: string; description: string | null }>
+      metricDefinitions: MetricDefinition[]
     } | null> => {
       const db = getDb()
       const workspace = await getDefaultWorkspace()
@@ -567,4 +576,62 @@ export const listContentReviewsFn = createServerFn({ method: 'GET' })
     const workspace = await getDefaultWorkspace()
     if (!workspace) return []
     return listContentReviews(db, workspace.id, data.contentVariantId)
+  })
+
+export const approveCampaignContentVariantFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      campaignId: z.uuid(),
+      contentId: z.uuid(),
+      contentVariantId: z.uuid(),
+      note: z.string().max(1000).nullable().optional(),
+      overrideCritic: z.boolean().optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<ApproveContentVariantResult> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) throw new Error('Workspace not found')
+    return approveCampaignContentVariant(db, {
+      workspaceId: workspace.id,
+      campaignId: data.campaignId,
+      contentId: data.contentId,
+      contentVariantId: data.contentVariantId,
+      note: data.note,
+      overrideCritic: data.overrideCritic,
+    })
+  })
+
+export const revokeCampaignContentApprovalFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      campaignId: z.uuid(),
+      contentId: z.uuid(),
+      note: z.string().max(1000).nullable().optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<CampaignContentItem> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) throw new Error('Workspace not found')
+    return revokeCampaignContentApproval(db, {
+      workspaceId: workspace.id,
+      campaignId: data.campaignId,
+      contentId: data.contentId,
+      note: data.note,
+    })
+  })
+
+export const listContentApprovalsFn = createServerFn({ method: 'GET' })
+  .validator(
+    z.object({
+      contentId: z.uuid(),
+      variantId: z.uuid().optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<ContentApprovalDetail[]> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) return []
+    return listContentApprovals(db, workspace.id, data.contentId, data.variantId)
   })

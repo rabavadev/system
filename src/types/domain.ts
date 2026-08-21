@@ -473,6 +473,7 @@ export interface Content {
   body: string | null
   status: ContentStatus
   plannedAt: IsoTimestamp | null
+  selectedVariantId?: Id | null
   createdAt: IsoTimestamp
   updatedAt: IsoTimestamp
   deletedAt: IsoTimestamp | null
@@ -485,6 +486,7 @@ export interface CampaignContentItem extends Content {
   platformName?: string | null
   variantCount?: number
   latestVariantId?: string | null
+  selectedVariantId?: Id | null
 }
 
 export interface ContentVariant {
@@ -528,6 +530,26 @@ export interface ContentReviewDetail extends ContentReview {
   strengths: string[]
   issues: ReviewIssue[]
   recommendedChanges: string[]
+}
+
+export type ContentApprovalStatus = 'approved' | 'revoked'
+
+export interface ContentApproval {
+  id: Id
+  workspaceId: Id
+  campaignId: Id
+  contentId: Id
+  contentVariantId: Id
+  status: ContentApprovalStatus
+  actorType: ActorType
+  actorId: string | null
+  criticOverride: boolean
+  note: string | null
+  createdAt: IsoTimestamp
+}
+
+export interface ContentApprovalDetail extends ContentApproval {
+  criticVerdict?: ReviewVerdict | null
 }
 
 export type PostStatus = 'draft' | 'scheduled' | 'publishing' | 'published' | 'failed' | 'removed'

@@ -45,7 +45,7 @@ const id = () => crypto.randomUUID()
 test('clean database migrates from zero; all tables exist', () => {
   const db = freshDb()
   const files = migrate(db)
-  assert.equal(files.length, 19, `expected 19 migrations, got: ${files.join(', ')}`)
+  assert.equal(files.length, 20, `expected 20 migrations, got: ${files.join(', ')}`)
 
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -65,6 +65,7 @@ test('clean database migrates from zero; all tables exist', () => {
     'campaign',
     'campaign_account',
     'content',
+    'content_approval',
     'content_draft_candidate',
     'content_review',
     'content_variant',
@@ -730,30 +731,36 @@ test('workflow_run table enforces scope_type enum, pair invariant, and has scope
   // 3. Invalid scope_type rejected by CHECK constraint
   assert.throws(
     () =>
-      db.prepare(
-        `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
+      db
+        .prepare(
+          `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
          VALUES (?, ?, ?, 'running', ?, ?, 'invalid_scope', ?)`,
-      ).run(id(), wfId, wfVerId, NOW, NOW, id()),
+        )
+        .run(id(), wfId, wfVerId, NOW, NOW, id()),
     /CHECK/i,
   )
 
   // 4. Pair invariant: scope_type set but scope_id NULL rejected
   assert.throws(
     () =>
-      db.prepare(
-        `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
+      db
+        .prepare(
+          `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
          VALUES (?, ?, ?, 'running', ?, ?, 'campaign', NULL)`,
-      ).run(id(), wfId, wfVerId, NOW, NOW),
+        )
+        .run(id(), wfId, wfVerId, NOW, NOW),
     /CHECK/i,
   )
 
   // 5. Pair invariant: scope_id set but scope_type NULL rejected
   assert.throws(
     () =>
-      db.prepare(
-        `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
+      db
+        .prepare(
+          `INSERT INTO workflow_run (id, workflow_id, workflow_version_id, status, created_at, updated_at, scope_type, scope_id)
          VALUES (?, ?, ?, 'running', ?, ?, NULL, ?)`,
-      ).run(id(), wfId, wfVerId, NOW, NOW, id()),
+        )
+        .run(id(), wfId, wfVerId, NOW, NOW, id()),
     /CHECK/i,
   )
 
@@ -840,15 +847,21 @@ test('migration 0018 safely backfills unambiguous structured activeScope and lea
   db.exec(readFileSync(join(dir, '0018_workflow_run_scope.sql'), 'utf8'))
 
   // Verify backfilled results
-  const row1 = db.prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`).get(structuredRunId)
+  const row1 = db
+    .prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`)
+    .get(structuredRunId)
   assert.equal(row1.scope_type, 'campaign')
   assert.equal(row1.scope_id, campaignId)
 
-  const row2 = db.prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`).get(ambiguousRunId)
+  const row2 = db
+    .prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`)
+    .get(ambiguousRunId)
   assert.equal(row2.scope_type, null)
   assert.equal(row2.scope_id, null)
 
-  const row3 = db.prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`).get(unscopedRunId)
+  const row3 = db
+    .prepare(`SELECT scope_type, scope_id FROM workflow_run WHERE id = ?`)
+    .get(unscopedRunId)
   assert.equal(row3.scope_type, null)
   assert.equal(row3.scope_id, null)
 
@@ -874,7 +887,9 @@ test('migration 0019 adds source_variant_id and source_review_id to content_draf
   )
 
   const indexes = db
-    .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'content_draft_candidate'`)
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'content_draft_candidate'`,
+    )
     .all()
     .map((r) => r.name)
 
@@ -885,6 +900,68 @@ test('migration 0019 adds source_variant_id and source_review_id to content_draf
   assert.ok(
     indexes.includes('idx_content_draft_candidate_source_review'),
     `expected idx_content_draft_candidate_source_review index, got: ${indexes.join(', ')}`,
+  )
+
+  db.close()
+})
+
+test('migration 0020 creates content_approval table and adds selected_variant_id to content', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const approvalCols = db
+    .prepare(`PRAGMA table_info(content_approval)`)
+    .all()
+    .map((c) => c.name)
+
+  assert.ok(approvalCols.includes('id'), 'content_approval should have id')
+  assert.ok(approvalCols.includes('workspace_id'), 'content_approval should have workspace_id')
+  assert.ok(approvalCols.includes('campaign_id'), 'content_approval should have campaign_id')
+  assert.ok(approvalCols.includes('content_id'), 'content_approval should have content_id')
+  assert.ok(
+    approvalCols.includes('content_variant_id'),
+    'content_approval should have content_variant_id',
+  )
+  assert.ok(approvalCols.includes('status'), 'content_approval should have status')
+  assert.ok(approvalCols.includes('actor_type'), 'content_approval should have actor_type')
+  assert.ok(approvalCols.includes('actor_id'), 'content_approval should have actor_id')
+  assert.ok(
+    approvalCols.includes('critic_override'),
+    'content_approval should have critic_override',
+  )
+  assert.ok(approvalCols.includes('note'), 'content_approval should have note')
+  assert.ok(approvalCols.includes('created_at'), 'content_approval should have created_at')
+
+  const contentCols = db
+    .prepare(`PRAGMA table_info(content)`)
+    .all()
+    .map((c) => c.name)
+
+  assert.ok(
+    contentCols.includes('selected_variant_id'),
+    `expected selected_variant_id in content table, got: ${contentCols.join(', ')}`,
+  )
+
+  const contentIndexes = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'content'`)
+    .all()
+    .map((r) => r.name)
+
+  assert.ok(
+    contentIndexes.includes('idx_content_selected_variant'),
+    `expected idx_content_selected_variant index, got: ${contentIndexes.join(', ')}`,
+  )
+
+  const approvalIndexes = db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'content_approval'`,
+    )
+    .all()
+    .map((r) => r.name)
+
+  assert.ok(
+    approvalIndexes.includes('idx_content_approval_variant'),
+    `expected idx_content_approval_variant index, got: ${approvalIndexes.join(', ')}`,
   )
 
   db.close()

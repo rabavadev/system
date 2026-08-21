@@ -21,8 +21,8 @@ import {
 import { writeAuditLog } from './audit.ts'
 import { listCampaignContent } from './content.ts'
 import { emitEventSafe } from './event.ts'
-import { IntegrityError, requireActiveBrand, requireProductForBrand } from './relations.ts'
 import { ensureBuiltinMetrics, findMetricDefinitionByKey } from './metric.ts'
+import { IntegrityError, requireActiveBrand, requireProductForBrand } from './relations.ts'
 import {
   computeProvenanceSummary,
   listResearchSources,
@@ -1399,7 +1399,13 @@ export async function listArchivedCampaigns(
 async function validateCampaignTargets(
   db: SqlDatabase,
   workspaceId: string,
-  targets: Array<{ metricKey: string; targetValue: number; unit?: string | null; isPrimary?: boolean; orderIndex?: number }>,
+  targets: Array<{
+    metricKey: string
+    targetValue: number
+    unit?: string | null | undefined
+    isPrimary?: boolean | undefined
+    orderIndex?: number | undefined
+  }>,
 ): Promise<void> {
   if (!targets || targets.length === 0) return
   await ensureBuiltinMetrics(db)
@@ -1417,4 +1423,3 @@ async function validateCampaignTargets(
     }
   }
 }
-

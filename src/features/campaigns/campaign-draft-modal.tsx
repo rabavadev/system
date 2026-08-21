@@ -1,6 +1,7 @@
 import {
   AlertTriangle,
   Bot,
+  Check,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -11,6 +12,7 @@ import {
   RefreshCw,
   ShieldAlert,
   Sparkles,
+  Undo2,
 } from 'lucide-react'
 import { useEffect, useState, useTransition } from 'react'
 
@@ -31,11 +33,13 @@ import type {
   ReviewVerdict,
 } from '~/types/domain'
 import {
+  approveCampaignContentVariantFn,
   generateCampaignContentDraftFn,
   generateCampaignContentReviewFn,
   generateCampaignContentRevisionFn,
   listContentReviewsFn,
   listContentVariantsFn,
+  revokeCampaignContentApprovalFn,
   saveCampaignContentDraftFn,
   saveCampaignContentReviewFn,
 } from './server'
@@ -73,6 +77,7 @@ export function CampaignDraftModal({
   onClose,
   onSuccess,
 }: CampaignDraftModalProps) {
+  const [activeItem, setActiveItem] = useState<CampaignContentItem>(contentItem)
   const [_existingVariants, setExistingVariants] = useState<ContentVariantDetail[]>([])
   const [savedVariantId, setSavedVariantId] = useState<string | null>(null)
   const [isLoadingVariants, setIsLoadingVariants] = useState(true)
@@ -99,6 +104,12 @@ export function CampaignDraftModal({
   const [isReviewCandidate, setIsReviewCandidate] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
   const [expandedReviewId, setExpandedReviewId] = useState<string | null>(null)
+
+  // STEP 15D: Human Editorial Approval states
+  const [isApproving, startApproving] = useTransition()
+  const [isRevoking, startRevoking] = useTransition()
+  const [showOverrideConfirm, setShowOverrideConfirm] = useState(false)
+  const [overrideNote, setOverrideNote] = useState('')
 
   const [isGenerating, startGenerating] = useTransition()
   const [isRevising, startRevising] = useTransition()
@@ -347,6 +358,68 @@ export function CampaignDraftModal({
 
   const hasDraftContent = draft.body.trim().length > 0 || (draft.headline ?? '').trim().length > 0
   const latestSavedReview = reviews.length > 0 ? reviews[0] : null
+  const isApproved =
+    Boolean(savedVariantId) &&
+    activeItem.selectedVariantId === savedVariantId &&
+    activeItem.status === 'ready'
+
+  const handleApproveVariant = (override = false) => {
+    if (!savedVariantId) {
+      setError('A saved draft variant is required for approval.')
+      return
+    }
+
+    if (latestSavedReview?.verdict === 'revise' && !override && !showOverrideConfirm) {
+      setShowOverrideConfirm(true)
+      return
+    }
+
+    setError(null)
+    setSuccessMessage(null)
+    startApproving(async () => {
+      try {
+        const result = await approveCampaignContentVariantFn({
+          data: {
+            campaignId: campaign.id,
+            contentId: activeItem.id,
+            contentVariantId: savedVariantId,
+            note: overrideNote.trim() || null,
+            overrideCritic: override || Boolean(overrideNote.trim()),
+          },
+        })
+
+        setActiveItem(result.contentItem)
+        setShowOverrideConfirm(false)
+        setOverrideNote('')
+        setSuccessMessage('Variant approved! Content is now Ready for publishing.')
+        await onSuccess?.()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to approve variant.')
+      }
+    })
+  }
+
+  const handleRevokeApproval = () => {
+    setError(null)
+    setSuccessMessage(null)
+    startRevoking(async () => {
+      try {
+        const result = await revokeCampaignContentApprovalFn({
+          data: {
+            campaignId: campaign.id,
+            contentId: activeItem.id,
+            note: 'Revoked by user',
+          },
+        })
+
+        setActiveItem(result)
+        setSuccessMessage('Approval revoked. Content status returned to Draft.')
+        await onSuccess?.()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to revoke approval.')
+      }
+    })
+  }
 
   return (
     <Modal
@@ -786,11 +859,7 @@ export function CampaignDraftModal({
                           variant="secondary"
                           onClick={() => handleReviseDraft(latestSavedReview.id)}
                           disabled={
-                            isRevising ||
-                            isGenerating ||
-                            isSaving ||
-                            isReviewing ||
-                            isSavingReview
+                            isRevising || isGenerating || isSaving || isReviewing || isSavingReview
                           }
                           className="h-7 px-2.5 text-xs text-amber-800 bg-amber-50 hover:bg-amber-100 border-amber-200"
                         >
@@ -930,6 +999,155 @@ export function CampaignDraftModal({
                     </div>
                   </div>
                 )}
+              </div>
+            )}
+
+            {/* STEP 15D: Human Editorial Approval & Publish Readiness */}
+            {isSaved && !isCandidate && savedVariantId && (
+              <div
+                className={`rounded-xl border p-4 space-y-3 transition-colors ${
+                  isApproved ? 'border-emerald-200 bg-emerald-50/30' : 'border-zinc-200 bg-white'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    {isApproved ? (
+                      <CheckCircle2 className="size-4 text-emerald-600" />
+                    ) : (
+                      <FileText className="size-4 text-zinc-500" />
+                    )}
+                    <span className="text-xs font-semibold text-zinc-900">
+                      Editorial Approval & Publish Readiness
+                    </span>
+                    {isApproved ? (
+                      <Badge tone="success">Ready for Publishing</Badge>
+                    ) : (
+                      <Badge tone="neutral">Draft (Not Ready)</Badge>
+                    )}
+                  </div>
+                </div>
+
+                <p className="text-xs text-zinc-600">
+                  {isApproved
+                    ? 'This exact variant is approved as the publication candidate. No external publishing occurs until an explicit publication step is triggered.'
+                    : latestSavedReview?.verdict === 'revise'
+                      ? 'Critic recommends revisions before publishing. You can revise with Creator, or explicitly approve this variant anyway.'
+                      : latestSavedReview?.verdict === 'pass'
+                        ? 'Critic review passed. Approve this exact variant to mark content Ready for publishing.'
+                        : 'Review is optional. You may approve this exact draft variant directly to mark content Ready for publishing.'}
+                </p>
+
+                {/* Override confirmation box if Critic recommended revision */}
+                {showOverrideConfirm && !isApproved && (
+                  <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 space-y-2 text-xs">
+                    <div className="flex items-center gap-1.5 font-medium text-amber-800">
+                      <AlertTriangle className="size-3.5 text-amber-600" />
+                      <span>Critic Recommended Revisions</span>
+                    </div>
+                    <p className="text-amber-700">
+                      You are approving this draft despite Critic issues. You can provide an
+                      optional note for the audit record.
+                    </p>
+                    <input
+                      type="text"
+                      value={overrideNote}
+                      onChange={(e) => setOverrideNote(e.target.value)}
+                      placeholder="Optional override reason / justification..."
+                      className={`${inputClass} bg-white`}
+                    />
+                    <div className="flex items-center justify-end gap-2 pt-1">
+                      <Button
+                        variant="ghost"
+                        onClick={() => {
+                          setShowOverrideConfirm(false)
+                          setOverrideNote('')
+                        }}
+                        className="text-xs"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        variant="primary"
+                        onClick={() => handleApproveVariant(true)}
+                        disabled={isApproving}
+                        className="text-xs bg-amber-700 hover:bg-amber-800 text-white"
+                      >
+                        {isApproving ? (
+                          <>
+                            <Loader2 className="size-3 mr-1 animate-spin" />
+                            Approving...
+                          </>
+                        ) : (
+                          <>
+                            <Check className="size-3 mr-1" />
+                            Confirm & Approve Anyway
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Main Approval Action Bar */}
+                <div className="flex items-center justify-between pt-1 border-t border-zinc-100">
+                  <span className="text-[11px] text-zinc-400">
+                    {isApproved
+                      ? 'Approved publication candidate'
+                      : 'Human approval is authoritative'}
+                  </span>
+
+                  <div className="flex items-center gap-2">
+                    {isApproved ? (
+                      <Button
+                        variant="secondary"
+                        onClick={handleRevokeApproval}
+                        disabled={isRevoking || isApproving}
+                        className="h-7 px-2.5 text-xs text-zinc-700 bg-white hover:bg-zinc-50 border-zinc-200"
+                      >
+                        {isRevoking ? (
+                          <>
+                            <Loader2 className="size-3 mr-1 animate-spin" />
+                            Revoking...
+                          </>
+                        ) : (
+                          <>
+                            <Undo2 className="size-3 mr-1 text-zinc-500" />
+                            Mark Not Ready
+                          </>
+                        )}
+                      </Button>
+                    ) : (
+                      !showOverrideConfirm && (
+                        <Button
+                          variant="primary"
+                          onClick={() => handleApproveVariant(false)}
+                          disabled={
+                            isApproving ||
+                            isRevoking ||
+                            isGenerating ||
+                            isRevising ||
+                            isSaving ||
+                            isReviewing ||
+                            isSavingReview
+                          }
+                          className="h-7 px-3 text-xs bg-emerald-700 hover:bg-emerald-800 text-white"
+                        >
+                          {isApproving ? (
+                            <>
+                              <Loader2 className="size-3 mr-1 animate-spin" />
+                              Approving...
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle2 className="size-3.5 mr-1" />
+                              Approve for Publishing (Mark Ready)
+                            </>
+                          )}
+                        </Button>
+                      )
+                    )}
+                  </div>
+                </div>
               </div>
             )}
           </div>

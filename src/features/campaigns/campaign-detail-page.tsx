@@ -7,8 +7,6 @@ import {
   Compass,
   Edit3,
   Globe,
-  Info,
-  MessageSquare,
   Pause,
   Play,
   RotateCcw,
@@ -36,12 +34,14 @@ import {
   restoreCampaignFn,
 } from '~/features/campaigns/server'
 import type { AccountSummary } from '~/server/db/account'
+import type { CampaignAccountItem, CampaignDetail } from '~/server/db/campaign'
 import type { ProductSummary } from '~/server/db/product'
 import type {
   Brand,
   CampaignObjective,
   CampaignPriority,
   CampaignStatus,
+  CampaignTarget,
   MetricDefinition,
 } from '~/types/domain'
 
@@ -137,6 +137,7 @@ export function CampaignDetailPage({
   productsByBrand,
   allAccounts,
   activeWorkflows = [],
+  metricDefinitions = [],
 }: CampaignDetailPageProps) {
   const router = useRouter()
   const [showEditModal, setShowEditModal] = useState(false)
@@ -168,15 +169,18 @@ export function CampaignDetailPage({
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6 px-6 py-6">
-      {/* Breadcrumb & Top Bar */}
-      <div className="flex flex-col gap-3">
-        <Link
-          to="/campaigns"
-          className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-900 transition-colors w-fit"
-        >
-          <ArrowLeft className="size-3.5" />
-          Back to Campaigns
-        </Link>
+      {/* Top Bar: Back, Status, Actions */}
+      <div className="flex flex-col gap-4 border-b border-zinc-200 pb-5">
+        <div className="flex items-center justify-between">
+          <Link
+            to="/campaigns"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-zinc-500 hover:text-zinc-800"
+          >
+            <ArrowLeft className="size-3.5" />
+            Back to Campaigns
+          </Link>
+          <span className="text-xs text-zinc-400 font-mono">ID: {campaign.id.slice(0, 8)}...</span>
+        </div>
 
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1">
@@ -188,7 +192,7 @@ export function CampaignDetailPage({
               {campaign.objective ? (
                 <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-700 border border-blue-200/60 inline-flex items-center gap-1">
                   <Target className="size-3" />
-                  {OBJECTIVE_LABELS[campaign.objective] ?? campaign.objective}
+                  {OBJECTIVE_LABELS[campaign.objective as CampaignObjective] ?? campaign.objective}
                 </span>
               ) : null}
               <Badge tone={priorityTone(campaign.priority)}>
@@ -208,115 +212,134 @@ export function CampaignDetailPage({
           </div>
 
           {/* Action Buttons */}
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button
+              variant="secondary"
+              onClick={() => setShowEditModal(true)}
+              className="gap-1.5 text-xs px-2.5 py-1"
+            >
+              <Edit3 className="size-3.5" />
+              Edit
+            </Button>
+
+            {/* Lifecycle transitions */}
             {campaign.status === 'draft' && (
               <Button
-                variant="secondary"
-                disabled={pending}
+                variant="primary"
                 onClick={() => handleStatusChange(activateCampaignFn)}
-                className="text-xs text-emerald-700 hover:text-emerald-800 px-2.5 py-1"
+                disabled={pending}
+                className="gap-1.5 text-xs px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white"
               >
-                <Play className="size-3.5 mr-1" />
-                Activate campaign
+                <Play className="size-3.5" />
+                Activate
               </Button>
             )}
+
             {campaign.status === 'active' && (
-              <Button
-                variant="secondary"
-                disabled={pending}
-                onClick={() => handleStatusChange(pauseCampaignFn)}
-                className="text-xs text-amber-700 hover:text-amber-800 px-2.5 py-1"
-              >
-                <Pause className="size-3.5 mr-1" />
-                Pause
-              </Button>
-            )}
-            {campaign.status === 'paused' && (
-              <Button
-                variant="secondary"
-                disabled={pending}
-                onClick={() => handleStatusChange(activateCampaignFn)}
-                className="text-xs text-emerald-700 hover:text-emerald-800 px-2.5 py-1"
-              >
-                <Play className="size-3.5 mr-1" />
-                Resume
-              </Button>
-            )}
-            {(campaign.status === 'active' || campaign.status === 'paused') && (
-              <Button
-                variant="secondary"
-                disabled={pending}
-                onClick={() => handleStatusChange(completeCampaignFn)}
-                className="text-xs text-zinc-700 hover:text-zinc-900 px-2.5 py-1"
-              >
-                <CheckCircle2 className="size-3.5 mr-1" />
-                Mark completed
-              </Button>
-            )}
-            {campaign.status !== 'archived' ? (
               <>
                 <Button
                   variant="secondary"
-                  onClick={() => setShowEditModal(true)}
-                  className="text-xs px-2.5 py-1"
+                  onClick={() => handleStatusChange(pauseCampaignFn)}
+                  disabled={pending}
+                  className="gap-1.5 text-xs px-2.5 py-1"
                 >
-                  <Edit3 className="size-3.5 mr-1" />
-                  Edit
+                  <Pause className="size-3.5" />
+                  Pause
                 </Button>
                 <Button
-                  variant="ghost"
+                  variant="primary"
+                  onClick={() => handleStatusChange(completeCampaignFn)}
                   disabled={pending}
-                  onClick={() => handleStatusChange(archiveCampaignFn)}
-                  className="text-xs text-zinc-500 hover:text-red-600 px-2 py-1"
+                  className="gap-1.5 text-xs px-2.5 py-1"
                 >
-                  <Archive className="size-3.5 mr-1" />
-                  Archive
+                  <CheckCircle2 className="size-3.5" />
+                  Complete
                 </Button>
               </>
-            ) : (
+            )}
+
+            {campaign.status === 'paused' && (
+              <>
+                <Button
+                  variant="primary"
+                  onClick={() => handleStatusChange(activateCampaignFn)}
+                  disabled={pending}
+                  className="gap-1.5 text-xs px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white"
+                >
+                  <Play className="size-3.5" />
+                  Resume
+                </Button>
+                <Button
+                  variant="secondary"
+                  onClick={() => handleStatusChange(completeCampaignFn)}
+                  disabled={pending}
+                  className="gap-1.5 text-xs px-2.5 py-1"
+                >
+                  <CheckCircle2 className="size-3.5" />
+                  Complete
+                </Button>
+              </>
+            )}
+
+            {campaign.status === 'completed' && (
               <Button
                 variant="secondary"
-                disabled={pending}
                 onClick={() => handleStatusChange(restoreCampaignFn)}
-                className="text-xs text-blue-700 px-2.5 py-1"
+                disabled={pending}
+                className="gap-1.5 text-xs px-2.5 py-1"
               >
-                <RotateCcw className="size-3.5 mr-1" />
-                Restore campaign
+                <RotateCcw className="size-3.5" />
+                Reopen
               </Button>
             )}
-            <Link
-              to="/chat"
-              className="inline-flex items-center gap-1.5 rounded-md bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-zinc-800"
-            >
-              <MessageSquare className="size-3.5" />
-              Chat
-            </Link>
+
+            {campaign.status !== 'archived' && (
+              <Button
+                variant="ghost"
+                onClick={() => handleStatusChange(archiveCampaignFn)}
+                disabled={pending}
+                className="gap-1.5 text-xs px-2.5 py-1 text-zinc-500 hover:text-red-600 hover:bg-red-50"
+              >
+                <Archive className="size-3.5" />
+                Archive
+              </Button>
+            )}
+
+            {campaign.status === 'archived' && (
+              <Button
+                variant="secondary"
+                onClick={() => handleStatusChange(restoreCampaignFn)}
+                disabled={pending}
+                className="gap-1.5 text-xs px-2.5 py-1 text-green-700 hover:bg-green-50"
+              >
+                <RotateCcw className="size-3.5" />
+                Restore to Draft
+              </Button>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Grid Layout */}
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-        {/* Left Column (2 spans): Strategy, Success Targets, Details */}
-        <div className="space-y-6 md:col-span-2">
-          {/* Section 1: Strategy & Audience Definition */}
-          <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+      {/* Main Grid: 2/3 Content & Planning, 1/3 Strategy & Meta */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+        {/* Left Column: Sections & Content */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Section 1: Campaign Strategy & Alignment */}
+          <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs">
+            <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-zinc-900 flex items-center gap-2">
-                <Compass className="size-4 text-zinc-600" />
-                Strategic Direction & Audience
+                <Compass className="size-4 text-blue-600" />
+                Strategy & Audience
               </h2>
               <Button
-                variant="secondary"
+                variant="ghost"
                 onClick={() => setShowStrategyModal(true)}
-                className="text-xs h-7 px-2.5"
+                className="text-xs text-blue-600 hover:text-blue-700 h-7 px-2 py-0.5"
               >
-                <Edit3 className="size-3.5 mr-1" />
                 Edit Strategy
               </Button>
             </div>
 
-            {/* Strategy Grid */}
             <div className="grid grid-cols-1 gap-4 text-xs">
               {/* Primary Objective Banner */}
               <div className="rounded-md bg-zinc-50 p-3 border border-zinc-200/70 flex items-start gap-3">
@@ -327,7 +350,10 @@ export function CampaignDetailPage({
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-zinc-900">Primary Objective:</span>
                     <span className="font-medium text-blue-700">
-                      {campaign.objective ? OBJECTIVE_LABELS[campaign.objective] : 'Not specified'}
+                      {campaign.objective
+                        ? (OBJECTIVE_LABELS[campaign.objective as CampaignObjective] ??
+                          campaign.objective)
+                        : 'Not specified'}
                     </span>
                   </div>
                   <p className="text-zinc-500 text-[11px]">
@@ -344,157 +370,131 @@ export function CampaignDetailPage({
                     Target Audience
                   </span>
                   {campaign.audienceDetails?.awarenessLevel && (
-                    <span className="rounded bg-purple-50 px-2 py-0.5 text-[10px] font-medium text-purple-700 border border-purple-200">
+                    <span className="rounded bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 border border-amber-200">
                       {AWARENESS_LABELS[campaign.audienceDetails.awarenessLevel] ??
                         campaign.audienceDetails.awarenessLevel}
                     </span>
                   )}
                 </div>
-
                 {hasAudience ? (
-                  <div className="space-y-2 pt-1 text-zinc-700">
+                  <div className="space-y-1.5 text-zinc-600">
                     {campaign.audienceDetails?.summary && (
-                      <p className="font-medium text-zinc-900">
+                      <p>
+                        <span className="font-medium text-zinc-700">Summary:</span>{' '}
                         {campaign.audienceDetails.summary}
                       </p>
                     )}
                     {campaign.audienceDetails?.problem && (
-                      <div>
-                        <span className="text-zinc-400 block text-[11px]">
-                          Problem / Core Need:
-                        </span>
-                        <p className="text-zinc-700">{campaign.audienceDetails.problem}</p>
-                      </div>
+                      <p>
+                        <span className="font-medium text-zinc-700">Pain Point / Need:</span>{' '}
+                        {campaign.audienceDetails.problem}
+                      </p>
                     )}
                     {campaign.audienceDetails?.geography && (
-                      <div className="text-[11px] text-zinc-500">
-                        Geography:{' '}
-                        <span className="text-zinc-800 font-medium">
-                          {campaign.audienceDetails.geography}
-                        </span>
-                      </div>
-                    )}
-                    {campaign.audienceDetails?.notes && (
-                      <div className="text-[11px] text-zinc-500 italic bg-zinc-50 p-2 rounded">
-                        Notes: {campaign.audienceDetails.notes}
-                      </div>
+                      <p>
+                        <span className="font-medium text-zinc-700">Geography / Market:</span>{' '}
+                        {campaign.audienceDetails.geography}
+                      </p>
                     )}
                   </div>
                 ) : (
-                  <p className="text-zinc-400 italic">No detailed audience defined yet.</p>
+                  <p className="text-zinc-400 italic">No specific audience defined yet.</p>
                 )}
               </div>
 
-              {/* Strategic Direction Sub-card */}
-              <div className="rounded-md border border-zinc-200/80 p-3.5 space-y-3">
-                <span className="font-semibold text-zinc-800 flex items-center gap-1.5">
-                  <Sliders className="size-3.5 text-zinc-500" />
-                  Strategy & Messaging
-                </span>
-
+              {/* Strategy & Message Sub-card */}
+              <div className="rounded-md border border-zinc-200/80 p-3.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-zinc-800 flex items-center gap-1.5">
+                    <Sparkles className="size-3.5 text-zinc-500" />
+                    Core Angle & Offer
+                  </span>
+                </div>
                 {hasStrategy ? (
-                  <div className="space-y-2.5 pt-1">
+                  <div className="space-y-1.5 text-zinc-600">
                     {campaign.strategy?.positioning && (
-                      <div>
-                        <span className="text-zinc-400 block text-[11px]">Positioning & Hook:</span>
-                        <p className="text-zinc-800 font-medium">{campaign.strategy.positioning}</p>
-                      </div>
+                      <p>
+                        <span className="font-medium text-zinc-700">Positioning:</span>{' '}
+                        {campaign.strategy.positioning}
+                      </p>
                     )}
-
                     {(campaign.strategy?.coreAngle || campaign.angle) && (
-                      <div>
-                        <span className="text-zinc-400 block text-[11px]">
-                          Core Creative Angle:
-                        </span>
-                        <p className="text-zinc-800 font-medium">
-                          {campaign.strategy?.coreAngle || campaign.angle}
-                        </p>
-                      </div>
+                      <p>
+                        <span className="font-medium text-zinc-700">Angle / Hook:</span>{' '}
+                        {campaign.strategy?.coreAngle ?? campaign.angle}
+                      </p>
                     )}
-
                     {campaign.strategy?.offerMessage && (
-                      <div>
-                        <span className="text-zinc-400 block text-[11px]">
-                          Offer / Key Message:
-                        </span>
-                        <p className="text-zinc-800 font-medium">
-                          {campaign.strategy.offerMessage}
-                        </p>
-                      </div>
+                      <p>
+                        <span className="font-medium text-zinc-700">Offer / CTA Message:</span>{' '}
+                        {campaign.strategy.offerMessage}
+                      </p>
                     )}
-
                     {campaign.strategy?.hypothesis && (
-                      <div className="rounded bg-amber-50/60 border border-amber-200/60 p-2.5">
-                        <span className="text-amber-800 block text-[11px] font-semibold flex items-center gap-1">
-                          <Sparkles className="size-3 text-amber-600" />
-                          Key Strategic Hypothesis:
-                        </span>
-                        <p className="text-amber-900 text-xs mt-0.5 font-medium">
-                          {campaign.strategy.hypothesis}
-                        </p>
-                      </div>
+                      <p className="text-[11px] text-zinc-500 italic bg-zinc-50 p-2 rounded border border-zinc-150">
+                        <span className="font-medium not-italic text-zinc-700">Hypothesis:</span>{' '}
+                        {campaign.strategy.hypothesis}
+                      </p>
                     )}
                   </div>
                 ) : (
-                  <p className="text-zinc-400 italic">
-                    No specific strategy direction defined yet.
-                  </p>
+                  <p className="text-zinc-400 italic">No strategic angle or offer specified yet.</p>
                 )}
               </div>
             </div>
           </div>
 
-          {/* Section 2: Success Metrics & KPI Targets */}
-          <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs space-y-4">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+          {/* Section 2: Performance Targets & KPIs */}
+          <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs">
+            <div className="flex items-center justify-between mb-3">
               <h2 className="text-sm font-semibold text-zinc-900 flex items-center gap-2">
-                <Target className="size-4 text-zinc-600" />
-                Success Metrics & Targets
+                <Sliders className="size-4 text-emerald-600" />
+                Performance Targets & KPIs
               </h2>
               <Button
-                variant="secondary"
+                variant="ghost"
                 onClick={() => setShowTargetsModal(true)}
-                className="text-xs h-7 px-2.5"
+                className="text-xs text-blue-600 hover:text-blue-700 h-7 px-2 py-0.5"
               >
-                <Sliders className="size-3.5 mr-1" />
                 Configure Targets
               </Button>
             </div>
 
             {campaign.targets.length === 0 ? (
-              <div className="rounded-lg border border-dashed border-zinc-200 p-6 text-center text-xs text-zinc-500">
-                <p className="mb-2">No success targets or KPIs configured for this campaign.</p>
+              <div className="rounded-md border border-dashed border-zinc-200 p-6 text-center text-xs text-zinc-400">
+                <p>No performance targets configured for this campaign yet.</p>
                 <Button
                   variant="secondary"
                   onClick={() => setShowTargetsModal(true)}
-                  className="text-xs"
+                  className="mt-3 text-xs"
                 >
-                  Set KPI Targets
+                  Set Primary KPI
                 </Button>
               </div>
             ) : (
               <div className="space-y-4">
                 {/* Primary KPI Card */}
                 {campaign.primaryTarget && (
-                  <div className="rounded-lg bg-gradient-to-r from-amber-50 to-orange-50/40 border border-amber-200 p-4">
-                    <div className="flex items-center justify-between mb-1.5">
-                      <span className="text-xs font-semibold text-amber-900 inline-flex items-center gap-1.5">
-                        <Star className="size-3.5 fill-amber-500 text-amber-600" />
-                        PRIMARY KPI
+                  <div className="rounded-md border-2 border-emerald-200 bg-emerald-50/40 p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold uppercase tracking-wider text-emerald-800 flex items-center gap-1.5">
+                        <Star className="size-3.5 fill-emerald-600 text-emerald-600" />
+                        Primary KPI
                       </span>
-                      <span className="text-[11px] font-medium text-amber-700 uppercase">
-                        North Star Target
-                      </span>
-                    </div>
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-xl font-bold text-zinc-900">
-                        {formatNumber(campaign.primaryTarget.targetValue)}
-                        {campaign.primaryTarget.unit ? ` ${campaign.primaryTarget.unit}` : ''}
-                      </span>
-                      <span className="text-xs font-medium text-zinc-600">
+                      <Badge tone="success">
                         {METRIC_LABELS[campaign.primaryTarget.metricKey] ??
                           campaign.primaryTarget.metricKey}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 flex items-baseline gap-2">
+                      <span className="text-2xl font-bold tracking-tight text-zinc-900">
+                        {formatNumber(campaign.primaryTarget.targetValue)}
                       </span>
+                      {campaign.primaryTarget.unit && (
+                        <span className="text-xs font-medium text-zinc-500">
+                          {campaign.primaryTarget.unit}
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}
@@ -504,7 +504,7 @@ export function CampaignDetailPage({
                   <div>
                     <h3 className="text-xs font-semibold text-zinc-600 mb-2">Supporting Metrics</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                      {campaign.supportingTargets.map((t) => (
+                      {campaign.supportingTargets.map((t: CampaignTarget) => (
                         <div
                           key={t.id}
                           className="rounded-md border border-zinc-200 bg-zinc-50/50 p-3 flex flex-col justify-between"
@@ -521,15 +521,6 @@ export function CampaignDetailPage({
                     </div>
                   </div>
                 )}
-
-                {/* Integrity Notice (no fake performance progress) */}
-                <div className="rounded-md bg-zinc-50 p-3 text-[11px] text-zinc-500 border border-zinc-200/60 flex items-center gap-2">
-                  <Info className="size-3.5 text-zinc-400 shrink-0" />
-                  <span>
-                    Performance data not connected yet. Real metrics will appear once analytics
-                    tracking is enabled.
-                  </span>
-                </div>
               </div>
             )}
           </div>
@@ -564,7 +555,7 @@ export function CampaignDetailPage({
               </p>
             ) : (
               <div className="divide-y divide-zinc-100">
-                {campaign.accounts.map((acc) => (
+                {campaign.accounts.map((acc: CampaignAccountItem) => (
                   <div key={acc.id} className="flex items-center justify-between py-2.5">
                     <div className="flex items-center gap-2.5">
                       <div className="flex size-7 items-center justify-center rounded bg-zinc-100 text-xs font-semibold text-zinc-700">
@@ -587,46 +578,25 @@ export function CampaignDetailPage({
               </div>
             )}
           </div>
-
-          {/* Section 4: Campaign Research */}
-          <CampaignResearchSection campaign={campaign} />
-
-          {/* Section 5: Campaign Workflows & Execution */}
-          <CampaignWorkflowsSection
-            campaign={campaign}
-            activeWorkflows={activeWorkflows}
-            onRefresh={async () => {
-              await router.invalidate()
-            }}
-          />
         </div>
 
-        {/* Right Column: Parameters & Summary */}
+        {/* Right Column: Research & Meta */}
         <div className="space-y-6">
-          <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs space-y-4">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-zinc-500">
-              Campaign Parameters
-            </h2>
+          {/* Research Section */}
+          <CampaignResearchSection campaign={campaign} />
 
+          {/* Workflows Section */}
+          <CampaignWorkflowsSection campaign={campaign} activeWorkflows={activeWorkflows} />
+
+          {/* Campaign Overview Meta Card */}
+          <div className="rounded-lg border border-zinc-200 bg-white p-5 shadow-xs">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mb-3">
+              Campaign Properties
+            </h3>
             <div className="space-y-3 text-xs">
               <div>
-                <span className="text-zinc-400 block mb-0.5">Brand</span>
-                <span className="font-medium text-zinc-900">{campaign.brandName}</span>
-              </div>
-
-              <div>
-                <span className="text-zinc-400 block mb-0.5">Target Product</span>
-                {campaign.productName && campaign.productId ? (
-                  <Link
-                    to="/products/$productId"
-                    params={{ productId: campaign.productId }}
-                    className="font-medium text-blue-600 hover:underline"
-                  >
-                    {campaign.productName}
-                  </Link>
-                ) : (
-                  <span className="text-zinc-500">General Brand Campaign</span>
-                )}
+                <span className="text-zinc-400 block mb-0.5">Status</span>
+                <Badge tone={statusTone(campaign.status)}>{campaign.status.toUpperCase()}</Badge>
               </div>
 
               <div>
@@ -640,7 +610,8 @@ export function CampaignDetailPage({
                 <div>
                   <span className="text-zinc-400 block mb-0.5">Primary Objective</span>
                   <span className="font-medium text-zinc-900">
-                    {OBJECTIVE_LABELS[campaign.objective]}
+                    {OBJECTIVE_LABELS[campaign.objective as CampaignObjective] ??
+                      campaign.objective}
                   </span>
                 </div>
               )}
@@ -664,13 +635,13 @@ export function CampaignDetailPage({
         </div>
       </div>
 
-      {/* Edit General Modal */}
+      {/* Edit Modal */}
       {showEditModal && (
         <CampaignFormModal
+          campaign={campaign}
           brands={brands}
           productsByBrand={productsByBrand}
           allAccounts={allAccounts}
-          campaign={campaign}
           onClose={() => setShowEditModal(false)}
         />
       )}
@@ -690,7 +661,7 @@ export function CampaignDetailPage({
       {showTargetsModal && (
         <CampaignTargetsModal
           campaign={campaign}
-          metricDefinitions={props.metricDefinitions}
+          metricDefinitions={metricDefinitions}
           onClose={() => setShowTargetsModal(false)}
           onSuccess={async () => {
             await router.invalidate()

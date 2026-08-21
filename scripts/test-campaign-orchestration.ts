@@ -1229,7 +1229,9 @@ test('23. anti-collision: substring collision ID xabcx does NOT leak into campai
           type: 'agent',
           agent: { agentId: researcher.agent.id, versionPolicy: 'current_at_run' },
           task: 'Check {inputs.custom_text}',
-          inputs: [{ key: 'custom_text', value: { source: 'workflow_input', path: 'custom_text' } }],
+          inputs: [
+            { key: 'custom_text', value: { source: 'workflow_input', path: 'custom_text' } },
+          ],
           next: null,
         },
       ],
@@ -1410,4 +1412,3 @@ test('25. anti-collision: wrong scope_type with same ID is not returned', async 
   const runs = await listCampaignWorkflowRuns(db, base.workspaceId, base.brandId)
   assert.equal(runs.length, 0)
 })
-

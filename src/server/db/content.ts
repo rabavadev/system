@@ -56,6 +56,7 @@ export interface ContentRow {
   body: string | null
   status: ContentStatus
   planned_at: string | null
+  selected_variant_id?: string | null
   created_at: string
   updated_at: string
   deleted_at: string | null
@@ -83,6 +84,7 @@ export function toCampaignContentItem(row: ContentRow): CampaignContentItem {
     body: row.body,
     status: row.status,
     plannedAt: row.planned_at,
+    selectedVariantId: row.selected_variant_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,

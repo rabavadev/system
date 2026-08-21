@@ -271,7 +271,8 @@ const SAMPLE_CRITIC_REVISE_JSON = JSON.stringify({
     {
       category: 'differentiation',
       severity: 'medium',
-      message: 'Does not explain how CloudSecure specifically solves the perimeter failure problem.',
+      message:
+        'Does not explain how CloudSecure specifically solves the perimeter failure problem.',
     },
     {
       category: 'call_to_action',
@@ -313,9 +314,7 @@ async function setupSeededScenario() {
   )
 
   raw
-    .prepare(
-      `INSERT INTO campaign_account (campaign_id, account_id, created_at) VALUES (?, ?, ?)`,
-    )
+    .prepare(`INSERT INTO campaign_account (campaign_id, account_id, created_at) VALUES (?, ?, ?)`)
     .run(campaign.id, seed.accountId, NOW)
 
   // Create Content Item
@@ -459,64 +458,55 @@ test('2. pass review cannot trigger Critic-driven revision', async () => {
     NOW,
   )
 
-  await assert.rejects(
-    async () => {
-      await generateCampaignContentRevision(
-        db,
-        {
-          workspaceId: seed.workspaceId,
-          campaignId: campaign.id,
-          contentId: content.id,
-          sourceVariantId: variantV1.id,
-          sourceReviewId: passReview.id,
-        },
-        mockAiDeps(SAMPLE_REVISED_DRAFT_JSON),
-      )
-    },
-    /Only reviews with a "revise" verdict can be revised with Creator/i,
-  )
+  await assert.rejects(async () => {
+    await generateCampaignContentRevision(
+      db,
+      {
+        workspaceId: seed.workspaceId,
+        campaignId: campaign.id,
+        contentId: content.id,
+        sourceVariantId: variantV1.id,
+        sourceReviewId: passReview.id,
+      },
+      mockAiDeps(SAMPLE_REVISED_DRAFT_JSON),
+    )
+  }, /Only reviews with a "revise" verdict can be revised with Creator/i)
 })
 
 test('3. exact source variant required (rejects non-existent / deleted)', async () => {
   const { db, seed, campaign, content, review } = await setupSeededScenario()
 
-  await assert.rejects(
-    async () => {
-      await generateCampaignContentRevision(
-        db,
-        {
-          workspaceId: seed.workspaceId,
-          campaignId: campaign.id,
-          contentId: content.id,
-          sourceVariantId: crypto.randomUUID(),
-          sourceReviewId: review.id,
-        },
-        mockAiDeps(SAMPLE_REVISED_DRAFT_JSON),
-      )
-    },
-    /Source content variant not found/i,
-  )
+  await assert.rejects(async () => {
+    await generateCampaignContentRevision(
+      db,
+      {
+        workspaceId: seed.workspaceId,
+        campaignId: campaign.id,
+        contentId: content.id,
+        sourceVariantId: crypto.randomUUID(),
+        sourceReviewId: review.id,
+      },
+      mockAiDeps(SAMPLE_REVISED_DRAFT_JSON),
+    )
+  }, /Source content variant not found/i)
 })
 
 test('4. exact source review required (rejects non-existent review)', async () => {
   const { db, seed, campaign, content, variantV1 } = await setupSeededScenario()
 
-  await assert.rejects(
-    async () => {
-      await generateCampaignContentRevision(
-        db,
-        {
-          workspaceId: seed.workspaceId,
-          campaignId: campaign.id,
-          contentId: content.id,
-          sourceVariantId: variantV1.id,
-          sourceReviewId: crypto.randomUUID(),
-        },
-        mockAiDeps(SAMPLE_REVISED_DRAFT_JSON),
-      )
-    },
-    /Source Critic review not found/i,
-  )
+  await assert.rejects(async () => {
+    await generateCampaignContentRevision(
+      db,
+      {
+        workspaceId: seed.workspaceId,
+        campaignId: campaign.id,
+        contentId: content.id,
+        sourceVariantId: variantV1.id,
+        sourceReviewId: crypto.randomUUID(),
+      },
+      mockAiDeps(SAMPLE_REVISED_DRAFT_JSON),
+    )
+  }, /Source Critic review not found/i)
 })
 
 test('5 & 6. review must belong to source variant (rejects review of variant A used with variant B)', async () => {
@@ -548,44 +538,38 @@ test('5 & 6. review must belong to source variant (rejects review of variant A u
   )
 
   // Try revising V2 using review that belongs to V1
-  await assert.rejects(
-    async () => {
-      await generateCampaignContentRevision(
-        db,
-        {
-          workspaceId: seed.workspaceId,
-          campaignId: campaign.id,
-          contentId: content.id,
-          sourceVariantId: saveV2.variant.id,
-          sourceReviewId: review.id,
-        },
-        mockAiDeps(SAMPLE_REVISED_DRAFT_JSON),
-      )
-    },
-    /Source Critic review not found or does not belong to this source variant/i,
-  )
+  await assert.rejects(async () => {
+    await generateCampaignContentRevision(
+      db,
+      {
+        workspaceId: seed.workspaceId,
+        campaignId: campaign.id,
+        contentId: content.id,
+        sourceVariantId: saveV2.variant.id,
+        sourceReviewId: review.id,
+      },
+      mockAiDeps(SAMPLE_REVISED_DRAFT_JSON),
+    )
+  }, /Source Critic review not found or does not belong to this source variant/i)
 })
 
 test('7 & 8. cross-workspace variant and review rejected', async () => {
   const { db, seed, campaign, content, variantV1, review } = await setupSeededScenario()
 
   // Foreign workspace
-  await assert.rejects(
-    async () => {
-      await generateCampaignContentRevision(
-        db,
-        {
-          workspaceId: seed.otherWorkspaceId,
-          campaignId: campaign.id,
-          contentId: content.id,
-          sourceVariantId: variantV1.id,
-          sourceReviewId: review.id,
-        },
-        mockAiDeps(SAMPLE_REVISED_DRAFT_JSON),
-      )
-    },
-    /Campaign not found in this workspace/i,
-  )
+  await assert.rejects(async () => {
+    await generateCampaignContentRevision(
+      db,
+      {
+        workspaceId: seed.otherWorkspaceId,
+        campaignId: campaign.id,
+        contentId: content.id,
+        sourceVariantId: variantV1.id,
+        sourceReviewId: review.id,
+      },
+      mockAiDeps(SAMPLE_REVISED_DRAFT_JSON),
+    )
+  }, /Campaign not found in this workspace/i)
 })
 
 test('9, 10, 11, 12. Creator identity, version, execution, model/provider server-derived', async () => {
@@ -996,22 +980,19 @@ test('34. candidate cannot be double-saved', async () => {
     NOW,
   )
 
-  await assert.rejects(
-    async () => {
-      await saveCampaignContentDraft(
-        db,
-        {
-          workspaceId: seed.workspaceId,
-          campaignId: campaign.id,
-          contentId: content.id,
-          candidateId: revGen.candidateId,
-          draft: revGen.draft,
-        },
-        NOW,
-      )
-    },
-    /Candidate draft has already been saved/i,
-  )
+  await assert.rejects(async () => {
+    await saveCampaignContentDraft(
+      db,
+      {
+        workspaceId: seed.workspaceId,
+        campaignId: campaign.id,
+        contentId: content.id,
+        candidateId: revGen.candidateId,
+        draft: revGen.draft,
+      },
+      NOW,
+    )
+  }, /Candidate draft has already been saved/i)
 })
 
 test('35 & 36. new variant can receive separate Critic review, without automatic rerun', async () => {

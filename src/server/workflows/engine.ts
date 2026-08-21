@@ -1,3 +1,4 @@
+import type { WorkflowRunScopeType } from '~/types/domain'
 import { executeAgentTask } from '../agents/task.ts'
 import type { ExecuteAIDeps } from '../ai/executor.ts'
 import { createApprovalRequest, getApprovalWithExpiryCheck } from '../approval/service.ts'
@@ -27,7 +28,6 @@ import {
   updateWorkflowRun,
   validateWorkflowRunScope,
 } from '../db/workflow.ts'
-import type { WorkflowRunScopeType } from '~/types/domain'
 import { type ExecuteToolDeps, executeTool } from '../tools/index.ts'
 import {
   type BindingScope,

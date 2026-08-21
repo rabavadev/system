@@ -353,7 +353,7 @@ export const startWorkflowRunFn = createServerFn({ method: 'POST' })
       workspaceId: workspace.id,
       workflowId: data.workflowId,
       inputs: data.inputs,
-      scope: data.scope,
+      scope: data.scope ?? null,
       deps: engineDeps,
       drive: false,
     })

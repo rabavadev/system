@@ -1608,7 +1608,10 @@ test('startWorkflowRun supports all generic scopes and rejects invalid/cross-wor
   assert.equal(unscopedRun?.scopeId, null)
 
   // 2. Explicit scopes for brand, niche, product, account, campaign, workspace
-  const scopes: Array<{ type: 'workspace' | 'brand' | 'niche' | 'product' | 'account' | 'campaign'; id: string }> = [
+  const scopes: Array<{
+    type: 'workspace' | 'brand' | 'niche' | 'product' | 'account' | 'campaign'
+    id: string
+  }> = [
     { type: 'workspace', id: WS_A },
     { type: 'brand', id: BRAND_A },
     { type: 'niche', id: NICHE_A },
