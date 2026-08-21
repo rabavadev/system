@@ -127,9 +127,10 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Workflow Run Scope Integrity | **VERIFIED** | Verified through `npm run test:workflows` |
 | Local Workers Runtime & Vite Build | **VERIFIED** | Verified through `npm run build` and local development server |
 | Workers AI Live Remote Generation | **NOT CONFIGURED** | Offline Echo / test adapter used in automated suites; live Workers AI binding requires Cloudflare deployment |
-| Workers AI Live Tool Calling | **NOT VERIFIED** | Protocol implemented & unit tested; live remote tool execution pending H4B |
+| Workers AI Live Tool Calling | **NOT CONFIGURED** | Protocol implemented & unit tested; live remote tool execution requires Cloudflare deployment |
 | Brave Live Web Search | **NOT CONFIGURED** | Adapter implemented & mock-tested; live remote API calls require `BRAVE_SEARCH_API_KEY` |
-| Browser End-to-End Sessions | **NOT VERIFIED** | Interactive UI components and server functions verified; full automated browser E2E session suite not configured |
+| Real Model → Search → Model | **NOT CONFIGURED** | Protocol implemented & offline tested; requires live Workers AI and Brave API keys |
+| Browser End-to-End Sessions | **NOT TESTED** | browser automation could not run successfully in local agent environment |
 
 ## Architecture Decisions
 

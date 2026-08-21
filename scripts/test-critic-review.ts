@@ -1997,7 +1997,7 @@ test('47-48. candidate is single-use and marked consumed upon save', async () =>
   )
 })
 
-test('49. deterministic tie-breaking on identical timestamps (ORDER BY created_at DESC, id DESC)', async () => {
+test('49. deterministic tie-breaking on identical timestamps (ORDER BY created_at DESC, rowid DESC)', async () => {
   const { db, raw } = freshDb()
   const base = seedBaseline(raw)
   const agentMap = await ensureBuiltinAgents(db, base.workspaceId)
@@ -2041,6 +2041,7 @@ test('49. deterministic tie-breaking on identical timestamps (ORDER BY created_a
     recommendedChanges: [],
   })
 
+  // Insert Review A first (rowid 1)
   raw
     .prepare(
       `INSERT INTO content_review (
@@ -2059,6 +2060,7 @@ test('49. deterministic tie-breaking on identical timestamps (ORDER BY created_a
       sameTimestamp,
     )
 
+  // Insert Review B second (rowid 2)
   raw
     .prepare(
       `INSERT INTO content_review (
@@ -2079,11 +2081,198 @@ test('49. deterministic tie-breaking on identical timestamps (ORDER BY created_a
 
   const reviews = await listContentReviews(db, base.workspaceId, variant.id)
   assert.equal(reviews.length, 2)
-  assert.equal(reviews[0].id, idB, 'idB should be first due to id DESC tiebreaker')
+  assert.equal(reviews[0].id, idB, 'idB should be first due to rowid DESC tiebreaker')
   assert.equal(reviews[1].id, idA, 'idA should be second')
 
   const latest = await getLatestContentReview(db, base.workspaceId, variant.id)
   assert.ok(latest)
   assert.equal(latest.id, idB, 'Latest review must deterministically be idB on timestamp tie')
   assert.equal(latest.verdict, 'revise')
+})
+
+test('50. no false pass: arbitrary affirmative text strings are rejected', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'No False Pass Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'No False Pass Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Variant text to test against false pass.',
+  })
+
+  const falsePassStrings = [
+    'This draft looks strong and ready.',
+    'This is approved.',
+    'No major issues.',
+    'pass',
+    'approved',
+    'accept',
+    'Looks ready for publication!',
+  ]
+
+  for (const text of falsePassStrings) {
+    // 1. Direct parser throws CriticReviewParseError
+    assert.throws(() => parseContentReviewOutput(text), CriticReviewParseError)
+
+    // 2. Generation returns ok: false, errorCode: malformed_response
+    const genResult = await generateCampaignContentReview(
+      db,
+      {
+        workspaceId: base.workspaceId,
+        campaignId: campaign.id,
+        contentId: item.id,
+        contentVariantId: variant.id,
+      },
+      mockAiDeps(text),
+    )
+
+    assert.equal(genResult.ok, false)
+    if (!genResult.ok) {
+      assert.equal(genResult.errorCode, 'malformed_response')
+      assert.ok(genResult.message)
+    }
+  }
+})
+
+test('51. missing required fields rejected by strict schema', () => {
+  // Missing summary
+  assert.throws(
+    () =>
+      parseContentReviewOutput(
+        JSON.stringify({
+          verdict: 'pass',
+          strengths: [],
+          issues: [],
+          recommendedChanges: [],
+        }),
+      ),
+    CriticReviewParseError,
+  )
+
+  // Missing strengths
+  assert.throws(
+    () =>
+      parseContentReviewOutput(
+        JSON.stringify({
+          verdict: 'pass',
+          summary: 'Summary here',
+          issues: [],
+          recommendedChanges: [],
+        }),
+      ),
+    CriticReviewParseError,
+  )
+
+  // Missing issues
+  assert.throws(
+    () =>
+      parseContentReviewOutput(
+        JSON.stringify({
+          verdict: 'pass',
+          summary: 'Summary here',
+          strengths: [],
+          recommendedChanges: [],
+        }),
+      ),
+    CriticReviewParseError,
+  )
+
+  // Missing recommendedChanges
+  assert.throws(
+    () =>
+      parseContentReviewOutput(
+        JSON.stringify({
+          verdict: 'pass',
+          summary: 'Summary here',
+          strengths: [],
+          issues: [],
+        }),
+      ),
+    CriticReviewParseError,
+  )
+
+  // Empty message in issue
+  assert.throws(
+    () =>
+      parseContentReviewOutput(
+        JSON.stringify({
+          verdict: 'revise',
+          summary: 'Summary here',
+          strengths: [],
+          issues: [{ category: 'tone', severity: 'low', message: '' }],
+          recommendedChanges: [],
+        }),
+      ),
+    CriticReviewParseError,
+  )
+})
+
+test('52. malformed output creates no candidate and no review in database', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Safety DB Check Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Safety DB Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Safety check body.',
+  })
+
+  const initialCandidateCount = raw
+    .prepare(`SELECT COUNT(*) as count FROM content_review_candidate`)
+    .get() as { count: number }
+  const initialReviewCount = raw.prepare(`SELECT COUNT(*) as count FROM content_review`).get() as {
+    count: number
+  }
+
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps('Not valid JSON { verdict: pass }'),
+  )
+
+  assert.equal(genResult.ok, false)
+  if (!genResult.ok) {
+    assert.equal(genResult.errorCode, 'malformed_response')
+  }
+
+  const finalCandidateCount = raw
+    .prepare(`SELECT COUNT(*) as count FROM content_review_candidate`)
+    .get() as { count: number }
+  const finalReviewCount = raw.prepare(`SELECT COUNT(*) as count FROM content_review`).get() as {
+    count: number
+  }
+
+  assert.equal(finalCandidateCount.count, initialCandidateCount.count)
+  assert.equal(finalReviewCount.count, initialReviewCount.count)
 })

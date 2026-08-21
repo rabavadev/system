@@ -537,7 +537,7 @@ export async function listContentReviews(
      LEFT JOIN agent a ON a.id = cr.critic_agent_id
      LEFT JOIN agent_version av ON av.id = cr.critic_agent_version_id
      WHERE cr.workspace_id = ? AND cr.content_variant_id = ?
-     ORDER BY cr.created_at DESC, cr.id DESC`,
+     ORDER BY cr.created_at DESC, cr.rowid DESC`,
     [workspaceId, contentVariantId],
   )
 
@@ -559,7 +559,7 @@ export async function getLatestContentReview(
      LEFT JOIN agent a ON a.id = cr.critic_agent_id
      LEFT JOIN agent_version av ON av.id = cr.critic_agent_version_id
      WHERE cr.workspace_id = ? AND cr.content_variant_id = ?
-     ORDER BY cr.created_at DESC, cr.id DESC
+     ORDER BY cr.created_at DESC, cr.rowid DESC
      LIMIT 1`,
     [workspaceId, contentVariantId],
   )
