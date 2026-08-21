@@ -95,16 +95,24 @@ export interface PostRow {
   account_handle?: string | null
   account_display_name?: string | null
   account_status?: string | null
+  account_deleted_at?: string | null
   platform_id?: string | null
   platform_name?: string | null
   content_id?: string | null
   content_title?: string | null
   content_status?: string | null
+  content_deleted_at?: string | null
   content_selected_variant_id?: string | null
+  content_target_account_id?: string | null
   campaign_id?: string | null
   campaign_name?: string | null
+  campaign_status?: string | null
+  campaign_deleted_at?: string | null
+  is_campaign_account_connected?: number | null
   variant_body?: string | null
   variant_metadata?: string | null
+  variant_status?: string | null
+  variant_deleted_at?: string | null
   variant_platform_id?: string | null
   approval_status?: ContentApprovalStatus | null
   approval_created_at?: string | null
@@ -115,108 +123,275 @@ export interface PostRow {
   latest_approval_actor_type?: string | null
 }
 
-export function derivePostState(row: PostRow): {
-  isCurrentlyEligible: boolean
-  eligibilityReason: string | null
+export interface PublicationEligibilitySnapshot {
+  postId?: string | null
+  postStatus?: PostStatus | null
+  postApprovalId?: string | null
+
+  contentId?: string | null
+  contentExists: boolean
+  contentDeleted: boolean
+  contentStatus: string | null
+  contentSelectedVariantId: string | null
+  contentTargetAccountId: string | null
+
+  variantId?: string | null
+  variantExists: boolean
+  variantDeleted: boolean
+  variantStatus: string | null
+  variantPlatformId: string | null
+
+  latestApprovalId: string | null
+  latestApprovalStatus: string | null
+  latestApprovalActorType: string | null
+
+  accountId?: string | null
+  accountExists: boolean
+  accountDeleted: boolean
+  accountStatus: string | null
+  accountPlatformId: string | null
+
+  campaignRequired: boolean
+  campaignExists: boolean
+  campaignDeleted: boolean
+  campaignStatus: string | null
+  campaignAccountConnected: boolean
+}
+
+/**
+ * Pure evaluator that computes publication eligibility from a normalized snapshot.
+ * Used identically by validatePublicationEligibility() and derivePostState() / toPostDetail().
+ */
+export function evaluatePublicationEligibility(snapshot: PublicationEligibilitySnapshot): {
+  isEligible: boolean
+  reason: string | null
   dispatchStatus: PostDispatchStatus
 } {
-  // Terminal / in-flight states
-  if (row.status === 'published') {
+  // 1. Post Status Guards (Requirements 12 & 13)
+  if (snapshot.postStatus === 'published') {
     return {
-      isCurrentlyEligible: false,
-      eligibilityReason: 'Post is already published.',
+      isEligible: false,
+      reason: 'Post is already published.',
       dispatchStatus: 'published',
     }
   }
-  if (row.status === 'publishing') {
+  if (snapshot.postStatus === 'publishing') {
     return {
-      isCurrentlyEligible: false,
-      eligibilityReason: 'Post is currently publishing.',
+      isEligible: false,
+      reason: 'Post is currently publishing.',
       dispatchStatus: 'publishing',
     }
   }
-  if (row.status === 'failed') {
+  if (snapshot.postStatus === 'failed') {
     return {
-      isCurrentlyEligible: false,
-      eligibilityReason: 'Post execution failed. Explicit retry required.',
+      isEligible: false,
+      reason: 'Post execution failed. Explicit retry required.',
       dispatchStatus: 'failed',
     }
   }
-  if (row.status === 'removed') {
+  if (snapshot.postStatus === 'removed') {
     return {
-      isCurrentlyEligible: false,
-      eligibilityReason: 'Post has been removed.',
+      isEligible: false,
+      reason: 'Post has been removed.',
       dispatchStatus: 'removed',
     }
   }
-
-  // If status is draft or scheduled, check current eligibility
-  if (!row.content_approval_id) {
+  if (
+    snapshot.postStatus !== undefined &&
+    snapshot.postStatus !== null &&
+    snapshot.postStatus !== 'draft' &&
+    snapshot.postStatus !== 'scheduled'
+  ) {
     return {
-      isCurrentlyEligible: false,
-      eligibilityReason: 'Publication intent has no approval lineage and must be prepared again.',
+      isEligible: false,
+      reason: `Post is in ineligible status '${snapshot.postStatus}'.`,
       dispatchStatus: 'needs_reprepare',
     }
   }
 
-  if (row.content_status !== 'ready') {
+  // 2. Post Approval Lineage Check (Requirement 2 & 14)
+  if (snapshot.postId !== undefined && snapshot.postId !== null && !snapshot.postApprovalId) {
     return {
-      isCurrentlyEligible: false,
-      eligibilityReason: `Content is in '${row.content_status ?? 'draft'}' status, not 'ready'.`,
+      isEligible: false,
+      reason: 'Publication intent has no approval lineage and must be prepared again.',
       dispatchStatus: 'needs_reprepare',
     }
   }
 
-  if (row.content_selected_variant_id !== row.content_variant_id) {
+  // 3. Content Guards
+  if (!snapshot.contentExists || snapshot.contentDeleted || snapshot.contentStatus === 'archived') {
     return {
-      isCurrentlyEligible: false,
-      eligibilityReason:
+      isEligible: false,
+      reason: 'Content item not found or is archived.',
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+  if (snapshot.contentStatus !== 'ready') {
+    return {
+      isEligible: false,
+      reason: `Content is in '${snapshot.contentStatus ?? 'draft'}' status, not 'ready'.`,
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+  if (
+    snapshot.variantId &&
+    snapshot.contentSelectedVariantId &&
+    snapshot.contentSelectedVariantId !== snapshot.variantId
+  ) {
+    return {
+      isEligible: false,
+      reason:
         'Content variant is no longer the active approved publication variant for this content item.',
       dispatchStatus: 'needs_reprepare',
     }
   }
 
-  if (
-    !row.latest_approval_id ||
-    row.latest_approval_id !== row.content_approval_id ||
-    row.latest_approval_status !== 'approved'
-  ) {
+  // 4. Variant Guards
+  if (!snapshot.variantExists || snapshot.variantDeleted || snapshot.variantStatus === 'archived') {
     return {
-      isCurrentlyEligible: false,
-      eligibilityReason:
+      isEligible: false,
+      reason: 'Content variant not found or is archived.',
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+
+  // 5. Approval Lineage Guards
+  if (!snapshot.latestApprovalId || snapshot.latestApprovalStatus !== 'approved') {
+    return {
+      isEligible: false,
+      reason: 'Active human editorial approval is missing or was revoked.',
+      dispatchStatus: 'stale',
+    }
+  }
+  if (snapshot.latestApprovalActorType !== 'user') {
+    return {
+      isEligible: false,
+      reason: 'Publication requires human editorial approval.',
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+  if (snapshot.postApprovalId && snapshot.postApprovalId !== snapshot.latestApprovalId) {
+    return {
+      isEligible: false,
+      reason:
         'Post references a stale or revoked approval lineage. Re-approval requires a new publication intent.',
       dispatchStatus: 'stale',
     }
   }
 
-  if (row.latest_approval_actor_type !== 'user') {
+  // 6. Account Lifecycle & Platform Guards
+  if (!snapshot.accountExists || snapshot.accountDeleted) {
     return {
-      isCurrentlyEligible: false,
-      eligibilityReason: 'Publication requires human editorial approval.',
+      isEligible: false,
+      reason: 'Account not found or deleted.',
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+  if (snapshot.accountStatus !== 'active') {
+    return {
+      isEligible: false,
+      reason: `Account is ${snapshot.accountStatus ?? 'inactive'} (must be active to dispatch publication).`,
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+  if (
+    snapshot.accountPlatformId &&
+    snapshot.variantPlatformId &&
+    snapshot.accountPlatformId !== snapshot.variantPlatformId
+  ) {
+    return {
+      isEligible: false,
+      reason: `Platform mismatch: Account platform is '${snapshot.accountPlatformId}' but variant platform is '${snapshot.variantPlatformId}'.`,
+      dispatchStatus: 'needs_reprepare',
+    }
+  }
+  if (
+    snapshot.contentTargetAccountId &&
+    snapshot.accountId &&
+    snapshot.contentTargetAccountId !== snapshot.accountId
+  ) {
+    return {
+      isEligible: false,
+      reason: 'Account does not match the designated target account for this content item.',
       dispatchStatus: 'needs_reprepare',
     }
   }
 
-  if (row.account_status !== 'active') {
-    return {
-      isCurrentlyEligible: false,
-      eligibilityReason: `Account is ${row.account_status ?? 'inactive'} (must be active to dispatch publication).`,
-      dispatchStatus: 'needs_reprepare',
+  // 7. Campaign Existence & Membership Guards
+  if (snapshot.campaignRequired) {
+    if (
+      !snapshot.campaignExists ||
+      snapshot.campaignDeleted ||
+      snapshot.campaignStatus === 'archived'
+    ) {
+      return {
+        isEligible: false,
+        reason: 'Campaign not found or is archived in this workspace.',
+        dispatchStatus: 'needs_reprepare',
+      }
+    }
+    if (!snapshot.campaignAccountConnected) {
+      return {
+        isEligible: false,
+        reason: 'Account is not connected to this campaign.',
+        dispatchStatus: 'needs_reprepare',
+      }
     }
   }
 
-  if (row.platform_id && row.variant_platform_id && row.platform_id !== row.variant_platform_id) {
-    return {
-      isCurrentlyEligible: false,
-      eligibilityReason: `Platform mismatch: Account platform is '${row.platform_id}' but variant platform is '${row.variant_platform_id}'.`,
-      dispatchStatus: 'needs_reprepare',
-    }
-  }
-
+  // 8. Fully Eligible
   return {
-    isCurrentlyEligible: true,
-    eligibilityReason: null,
-    dispatchStatus: row.status === 'scheduled' ? 'scheduled' : 'prepared',
+    isEligible: true,
+    reason: null,
+    dispatchStatus: snapshot.postStatus === 'scheduled' ? 'scheduled' : 'prepared',
+  }
+}
+
+export function derivePostState(row: PostRow): {
+  isCurrentlyEligible: boolean
+  eligibilityReason: string | null
+  dispatchStatus: PostDispatchStatus
+} {
+  const snapshot: PublicationEligibilitySnapshot = {
+    postId: row.id,
+    postStatus: row.status,
+    postApprovalId: row.content_approval_id,
+
+    contentId: row.content_id,
+    contentExists: Boolean(row.content_id),
+    contentDeleted: Boolean(row.content_deleted_at),
+    contentStatus: row.content_status ?? null,
+    contentSelectedVariantId: row.content_selected_variant_id ?? null,
+    contentTargetAccountId: row.content_target_account_id ?? null,
+
+    variantId: row.content_variant_id,
+    variantExists: Boolean(row.variant_platform_id !== undefined || row.variant_body !== undefined),
+    variantDeleted: Boolean(row.variant_deleted_at),
+    variantStatus: row.variant_status ?? null,
+    variantPlatformId: row.variant_platform_id ?? null,
+
+    latestApprovalId: row.latest_approval_id ?? null,
+    latestApprovalStatus: row.latest_approval_status ?? null,
+    latestApprovalActorType: row.latest_approval_actor_type ?? null,
+
+    accountId: row.account_id,
+    accountExists: Boolean(row.account_handle !== undefined && row.account_handle !== null),
+    accountDeleted: Boolean(row.account_deleted_at),
+    accountStatus: row.account_status ?? null,
+    accountPlatformId: row.platform_id ?? null,
+
+    campaignRequired: Boolean(row.campaign_id),
+    campaignExists: Boolean(row.campaign_name !== undefined && row.campaign_name !== null),
+    campaignDeleted: Boolean(row.campaign_deleted_at),
+    campaignStatus: row.campaign_status ?? null,
+    campaignAccountConnected: Boolean(row.is_campaign_account_connected),
+  }
+
+  const res = evaluatePublicationEligibility(snapshot)
+  return {
+    isCurrentlyEligible: res.isEligible,
+    eligibilityReason: res.reason,
+    dispatchStatus: res.dispatchStatus,
   }
 }
 
@@ -279,16 +454,32 @@ const POST_DETAIL_SELECT_FIELDS = `
   a.handle AS account_handle,
   a.display_name AS account_display_name,
   a.status AS account_status,
+  a.deleted_at AS account_deleted_at,
   a.platform_id,
   pl.name AS platform_name,
   c.id AS content_id,
   c.title AS content_title,
   c.status AS content_status,
+  c.deleted_at AS content_deleted_at,
   c.selected_variant_id AS content_selected_variant_id,
+  c.target_account_id AS content_target_account_id,
   c.campaign_id,
   cmp.name AS campaign_name,
+  cmp.status AS campaign_status,
+  cmp.deleted_at AS campaign_deleted_at,
+  (
+    CASE
+      WHEN c.campaign_id IS NULL THEN 1
+      ELSE (
+        SELECT 1 FROM campaign_account ca_acc
+        WHERE ca_acc.campaign_id = c.campaign_id AND ca_acc.account_id = p.account_id
+      )
+    END
+  ) AS is_campaign_account_connected,
   v.body AS variant_body,
   v.metadata AS variant_metadata,
+  v.status AS variant_status,
+  v.deleted_at AS variant_deleted_at,
   v.platform_id AS variant_platform_id,
   ca.status AS approval_status,
   ca.created_at AS approval_created_at,
@@ -322,11 +513,11 @@ const POST_DETAIL_SELECT_FIELDS = `
 
 const POST_DETAIL_FROM_CLAUSE = `
   FROM post p
-  JOIN content_variant v ON v.id = p.content_variant_id
-  JOIN content c ON c.id = v.content_id AND c.workspace_id = p.workspace_id
-  JOIN account a ON a.id = p.account_id AND a.workspace_id = p.workspace_id AND a.deleted_at IS NULL
-  JOIN platform pl ON pl.id = a.platform_id
-  LEFT JOIN campaign cmp ON cmp.id = c.campaign_id AND cmp.workspace_id = p.workspace_id AND cmp.deleted_at IS NULL
+  LEFT JOIN content_variant v ON v.id = p.content_variant_id
+  LEFT JOIN content c ON c.id = v.content_id AND c.workspace_id = p.workspace_id
+  LEFT JOIN account a ON a.id = p.account_id AND a.workspace_id = p.workspace_id
+  LEFT JOIN platform pl ON pl.id = a.platform_id
+  LEFT JOIN campaign cmp ON cmp.id = c.campaign_id AND cmp.workspace_id = p.workspace_id
   LEFT JOIN content_approval ca ON ca.id = p.content_approval_id AND ca.workspace_id = p.workspace_id AND ca.content_variant_id = p.content_variant_id
 `
 
@@ -358,63 +549,82 @@ export async function createPublicationIntent(
   const now = nowOverride ?? nowIso()
 
   // 1. Validate Workspace
-  const workspace = await queryFirst<{ id: string }>(db, `SELECT id FROM workspace WHERE id = ?`, [
-    data.workspaceId,
-  ])
-  if (!workspace) {
+  const workspaceRow = await queryFirst<{ id: string }>(
+    db,
+    `SELECT id FROM workspace WHERE id = ?`,
+    [data.workspaceId],
+  )
+  if (!workspaceRow) {
     throw new IntegrityError('Workspace not found.')
   }
 
-  // 2. Validate Content Item
+  // 2. Validate Content Item & Lifecycle
   const contentRow = await queryFirst<ContentRow>(
     db,
     `SELECT * FROM content WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
     [data.contentId, data.workspaceId],
   )
-  if (!contentRow || contentRow.status === 'archived') {
-    throw new IntegrityError('Content item not found or is archived.')
+  if (!contentRow) {
+    throw new IntegrityError('Content item not found in this workspace.')
+  }
+  if (contentRow.status === 'archived') {
+    throw new IntegrityError('Content item is archived and cannot be published.')
   }
   if (contentRow.status !== 'ready') {
     throw new IntegrityError(
       `Content item is in '${contentRow.status}' status, but must be in 'ready' status for publication.`,
     )
   }
-  if (contentRow.selected_variant_id !== data.contentVariantId) {
+
+  // Server-Authoritative Campaign Lineage Derivation (Requirement 11)
+  const serverCampaignId = contentRow.campaign_id ?? null
+  if (data.campaignId && serverCampaignId && data.campaignId !== serverCampaignId) {
     throw new IntegrityError(
-      'Requested variant is not the currently approved publication candidate for this content item.',
+      'Campaign ID does not match persisted content campaign lineage.',
+    )
+  }
+  if (data.campaignId && !serverCampaignId) {
+    throw new IntegrityError(
+      'Content does not belong to a campaign, but a campaign ID was provided.',
     )
   }
 
-  // 3. Campaign Authority & Lineage (Server Derived from Content)
-  const serverCampaignId = contentRow.campaign_id ?? null
-  if (data.campaignId !== undefined) {
-    if (data.campaignId !== serverCampaignId) {
-      throw new IntegrityError('Campaign ID does not match persisted content campaign lineage.')
-    }
-  }
-
+  // 3. Validate Campaign Lifecycle (if attached)
   if (serverCampaignId) {
-    const campaign = await queryFirst<CampaignRow>(
+    const campaignRow = await queryFirst<CampaignRow>(
       db,
       `SELECT * FROM campaign WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
       [serverCampaignId, data.workspaceId],
     )
-    if (!campaign || campaign.status === 'archived') {
-      throw new IntegrityError('Campaign not found or is archived in this workspace.')
+    if (!campaignRow) {
+      throw new IntegrityError('Campaign not found in this workspace.')
+    }
+    if (campaignRow.status === 'archived') {
+      throw new IntegrityError('Campaign is archived and cannot be published.')
     }
   }
 
-  // 4. Validate Exact Content Variant
+  // 4. Validate Content Variant
   const variantRow = await queryFirst<ContentVariantRow>(
     db,
     `SELECT * FROM content_variant WHERE id = ? AND content_id = ? AND deleted_at IS NULL`,
     [data.contentVariantId, data.contentId],
   )
   if (!variantRow) {
-    throw new IntegrityError('Content variant not found or does not belong to this content item.')
+    throw new IntegrityError('Content variant not found for this content item.')
+  }
+  if (variantRow.status === 'archived') {
+    throw new IntegrityError('Content variant is archived.')
   }
 
-  // 5. Validate Active Human Editorial Approval (Requirement 4)
+  // Verify variant is the current selected publication variant
+  if (contentRow.selected_variant_id !== data.contentVariantId) {
+    throw new IntegrityError(
+      'Requested variant is not the currently approved publication candidate for this content item.',
+    )
+  }
+
+  // 5. Validate Active Content Approval & Lineage (Requirements 3 & 4)
   const latestApproval = await queryFirst<ContentApprovalRow>(
     db,
     `SELECT * FROM content_approval 
@@ -439,16 +649,16 @@ export async function createPublicationIntent(
     [data.accountId, data.workspaceId],
   )
   if (!accountRow) {
-    throw new IntegrityError('Account not found or is deleted in this workspace.')
+    throw new IntegrityError('Account not found in this workspace.')
   }
   if (accountRow.status !== 'active') {
     throw new IntegrityError(
-      `Account is '${accountRow.status}', but must be in 'active' status to prepare publication.`,
+      `Account is '${accountRow.status}', but must be active to prepare publication.`,
     )
   }
   if (accountRow.platform_id !== variantRow.platform_id) {
     throw new IntegrityError(
-      `Platform mismatch: Account platform is '${accountRow.platform_id}' but variant platform is '${variantRow.platform_id}'.`,
+      `Platform mismatch: Account belongs to platform '${accountRow.platform_id}' but variant is for platform '${variantRow.platform_id}'.`,
     )
   }
   if (contentRow.target_account_id && contentRow.target_account_id !== data.accountId) {
@@ -459,69 +669,67 @@ export async function createPublicationIntent(
 
   // Campaign Account Linkage Verification
   if (serverCampaignId) {
-    const campaignAccount = await queryFirst<{ campaign_id: string; account_id: string }>(
+    const campaignAccountRow = await queryFirst<{ campaign_id: string; account_id: string }>(
       db,
       `SELECT campaign_id, account_id FROM campaign_account WHERE campaign_id = ? AND account_id = ?`,
       [serverCampaignId, data.accountId],
     )
-    if (!campaignAccount) {
-      throw new IntegrityError('Account is not connected to this campaign.')
+    if (!campaignAccountRow) {
+      throw new IntegrityError(
+        'Account is not connected to this campaign.',
+      )
     }
   }
 
-  // 7. Request-Bound Idempotency & Active Duplicate Protection
+  // 7. Check Active Post Uniqueness and Request-Bound Idempotency
   const cleanIdempotencyKey = data.idempotencyKey?.trim() || null
 
   if (cleanIdempotencyKey) {
-    const existingByIdempotency = await getPostByQuery(
+    const existingPostWithKey = await getPostByQuery(
       db,
       `SELECT ${POST_DETAIL_SELECT_FIELDS}
        ${POST_DETAIL_FROM_CLAUSE}
        WHERE p.workspace_id = ? AND p.idempotency_key = ?`,
       [data.workspaceId, cleanIdempotencyKey],
     )
-    if (existingByIdempotency) {
-      // Verify that this idempotency key was bound to the exact same request parameters
-      const sameVariant = existingByIdempotency.contentVariantId === data.contentVariantId
-      const sameAccount = existingByIdempotency.accountId === data.accountId
-      const sameApproval = existingByIdempotency.contentApprovalId === latestApproval.id
-      const sameSchedule =
-        (existingByIdempotency.scheduledAt ?? null) === (data.scheduledAt ?? null)
-
-      if (sameVariant && sameAccount && sameApproval && sameSchedule) {
-        return existingByIdempotency
+    if (existingPostWithKey) {
+      if (
+        existingPostWithKey.contentVariantId === data.contentVariantId &&
+        existingPostWithKey.accountId === data.accountId
+      ) {
+        return existingPostWithKey
       }
       throw new IntegrityError(
-        'idempotency_key_conflict: Idempotency key was already used for a different publication request.',
+        'idempotency_key_conflict: Idempotency key already used for a different publication intent.',
       )
     }
   }
 
-  // Check if an identical active publication intent already exists for the CURRENT approval
   const existingActivePost = await getPostByQuery(
     db,
     `SELECT ${POST_DETAIL_SELECT_FIELDS}
      ${POST_DETAIL_FROM_CLAUSE}
-     WHERE p.workspace_id = ?
-       AND p.content_variant_id = ? AND p.account_id = ? AND p.content_approval_id = ?
+     WHERE p.workspace_id = ? AND p.content_variant_id = ? AND p.account_id = ? AND p.content_approval_id = ?
        AND p.status IN ('draft', 'scheduled')
      ORDER BY p.created_at DESC, p.rowid DESC
      LIMIT 1`,
     [data.workspaceId, data.contentVariantId, data.accountId, latestApproval.id],
   )
-  if (existingActivePost && !cleanIdempotencyKey) {
+  if (existingActivePost) {
     return existingActivePost
   }
 
-  // 8. Insert Post Record
-  const postId = newId()
+  // 8. Determine Initial Status
   const initialStatus: PostStatus = data.scheduledAt ? 'scheduled' : 'draft'
+  const postId = newId('post')
 
+  // 9. Insert Post Record
   await execute(
     db,
     `INSERT INTO post (
-       id, workspace_id, content_variant_id, account_id, content_approval_id,
-       status, external_id, url, scheduled_at, published_at, error,
+       id, workspace_id, content_variant_id, account_id,
+       content_approval_id, status, external_id, url,
+       scheduled_at, published_at, error,
        idempotency_key, created_at, updated_at
      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, ?)`,
     [
@@ -538,10 +746,30 @@ export async function createPublicationIntent(
     ],
   )
 
-  // 9. Emit Publication Events
+  // 10. Write Safe Audit Log
+  await writeAuditLog(db, {
+    workspaceId: data.workspaceId,
+    actorType: 'user',
+    action: 'create',
+    entityType: 'post',
+    entityId: postId,
+    newValueJson: JSON.stringify({
+      postId,
+      campaignId: serverCampaignId,
+      contentId: data.contentId,
+      contentVariantId: data.contentVariantId,
+      accountId: data.accountId,
+      contentApprovalId: latestApproval.id,
+      status: initialStatus,
+      scheduledAt: data.scheduledAt ?? null,
+      hasIdempotencyKey: Boolean(cleanIdempotencyKey),
+    }),
+  })
+
+  // 11. Emit Publication Event
   await emitEventSafe(db, {
     workspaceId: data.workspaceId,
-    eventType: 'post.created',
+    eventType: 'publication.prepared',
     actorType: 'user',
     subjectType: 'post',
     subjectId: postId,
@@ -557,7 +785,7 @@ export async function createPublicationIntent(
     }),
   })
 
-  // 10. Fetch & Return Created Post Detail
+  // 12. Fetch & Return Created Post Detail
   const createdPost = await getPostDetail(db, data.workspaceId, postId)
   if (!createdPost) {
     throw new Error('Failed to retrieve newly created post.')
@@ -568,8 +796,7 @@ export async function createPublicationIntent(
 
 /**
  * Validates whether a post or publication request is currently eligible for publishing.
- * Re-checks current live readiness: content is ready, variant is selected, approval is active,
- * post approval lineage is current, account is active, platform matches, and campaign membership is intact.
+ * Re-checks current live readiness using the same canonical evaluator as derivePostState().
  */
 export async function validatePublicationEligibility(
   db: SqlDatabase,
@@ -577,143 +804,58 @@ export async function validatePublicationEligibility(
     | { workspaceId: string; postId: string }
     | { workspaceId: string; contentId: string; contentVariantId: string; accountId: string },
 ): Promise<PublicationEligibilityResult> {
-  let contentId: string
-  let contentVariantId: string
-  let accountId: string
-  let expectedApprovalId: string | null = null
-  let postStatus: PostStatus | undefined
-
   if ('postId' in target) {
     const postRow = await queryFirst<PostRow>(
       db,
-      `SELECT p.*, v.content_id
-       FROM post p
-       JOIN content_variant v ON v.id = p.content_variant_id
-       JOIN content c ON c.id = v.content_id AND c.workspace_id = p.workspace_id
-       JOIN account a ON a.id = p.account_id AND a.workspace_id = p.workspace_id AND a.deleted_at IS NULL
+      `SELECT ${POST_DETAIL_SELECT_FIELDS}
+       ${POST_DETAIL_FROM_CLAUSE}
        WHERE p.id = ? AND p.workspace_id = ?`,
       [target.postId, target.workspaceId],
     )
-    if (!postRow || !postRow.content_id) {
+    if (!postRow) {
       return {
         eligible: false,
         reason: 'Post record not found in this workspace.',
         postId: target.postId,
       }
     }
-    contentId = postRow.content_id
-    contentVariantId = postRow.content_variant_id
-    accountId = postRow.account_id
-    expectedApprovalId = postRow.content_approval_id
-    postStatus = postRow.status
 
-    // Legacy Null Approval Lineage Check (Requirement 2 & 14)
-    if (!postRow.content_approval_id) {
-      return {
-        eligible: false,
-        reason: 'Publication intent has no approval lineage and must be prepared again.',
-        postId: target.postId,
-        postStatus: postRow.status,
-      }
+    const derived = derivePostState(postRow)
+    return {
+      eligible: derived.isCurrentlyEligible,
+      reason: derived.eligibilityReason ?? undefined,
+      postId: target.postId,
+      contentId: postRow.content_id ?? undefined,
+      contentVariantId: postRow.content_variant_id,
+      accountId: postRow.account_id,
+      platformId: postRow.platform_id ?? undefined,
+      approvalId: postRow.latest_approval_id ?? undefined,
+      isReady: derived.isCurrentlyEligible,
+      hasApproval: derived.isCurrentlyEligible,
+      accountActive: postRow.account_status === 'active' && !postRow.account_deleted_at,
+      platformMatched: Boolean(
+        postRow.platform_id &&
+          postRow.variant_platform_id &&
+          postRow.platform_id === postRow.variant_platform_id,
+      ),
+      postStatus: postRow.status,
     }
-
-    // Post Status Guard (Requirements 12 & 13)
-    if (postRow.status === 'published') {
-      return {
-        eligible: false,
-        reason: 'Post is already published.',
-        postId: target.postId,
-        postStatus: postRow.status,
-      }
-    }
-    if (postRow.status === 'publishing') {
-      return {
-        eligible: false,
-        reason: 'Post is currently publishing.',
-        postId: target.postId,
-        postStatus: postRow.status,
-      }
-    }
-    if (postRow.status === 'removed') {
-      return {
-        eligible: false,
-        reason: 'Post has been removed.',
-        postId: target.postId,
-        postStatus: postRow.status,
-      }
-    }
-    if (postRow.status === 'failed') {
-      return {
-        eligible: false,
-        reason: 'Post has failed. Explicit retry required.',
-        postId: target.postId,
-        postStatus: postRow.status,
-      }
-    }
-    if (postRow.status !== 'draft' && postRow.status !== 'scheduled') {
-      return {
-        eligible: false,
-        reason: `Post is in ineligible status '${postRow.status}'.`,
-        postId: target.postId,
-        postStatus: postRow.status,
-      }
-    }
-  } else {
-    contentId = target.contentId
-    contentVariantId = target.contentVariantId
-    accountId = target.accountId
   }
 
-  // 1. Content check
+  const contentId = target.contentId
+  const contentVariantId = target.contentVariantId
+  const accountId = target.accountId
+
   const content = await queryFirst<ContentRow>(
     db,
-    `SELECT * FROM content WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+    `SELECT * FROM content WHERE id = ? AND workspace_id = ?`,
     [contentId, target.workspaceId],
   )
-  if (!content || content.status === 'archived') {
-    return {
-      eligible: false,
-      reason: 'Content item not found or is archived.',
-      contentId,
-      postStatus,
-    }
-  }
-  if (content.status !== 'ready') {
-    return {
-      eligible: false,
-      reason: `Content is in '${content.status}' status, not 'ready'.`,
-      contentId,
-      isReady: false,
-      postStatus,
-    }
-  }
-  if (content.selected_variant_id !== contentVariantId) {
-    return {
-      eligible: false,
-      reason:
-        'Content variant is no longer the active approved publication variant for this content item.',
-      contentId,
-      contentVariantId,
-      postStatus,
-    }
-  }
-
-  // 2. Variant check
   const variant = await queryFirst<ContentVariantRow>(
     db,
-    `SELECT * FROM content_variant WHERE id = ? AND content_id = ? AND deleted_at IS NULL`,
+    `SELECT * FROM content_variant WHERE id = ? AND content_id = ?`,
     [contentVariantId, contentId],
   )
-  if (!variant || variant.status === 'archived') {
-    return {
-      eligible: false,
-      reason: 'Content variant not found or is archived.',
-      contentVariantId,
-      postStatus,
-    }
-  }
-
-  // 3. Approval check (Requirements 3, 4, 12, 13, 14)
   const latestApproval = await queryFirst<ContentApprovalRow>(
     db,
     `SELECT * FROM content_approval 
@@ -721,126 +863,73 @@ export async function validatePublicationEligibility(
      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     [target.workspaceId, contentId, contentVariantId],
   )
-  if (!latestApproval || latestApproval.status !== 'approved') {
-    return {
-      eligible: false,
-      reason: 'Active human editorial approval is missing or was revoked.',
-      contentId,
-      contentVariantId,
-      hasApproval: false,
-      postStatus,
-    }
-  }
-
-  if (latestApproval.actor_type !== 'user') {
-    return {
-      eligible: false,
-      reason: 'Publication requires human editorial approval.',
-      contentId,
-      contentVariantId,
-      hasApproval: false,
-      postStatus,
-    }
-  }
-
-  // If validating a prepared post, verify its content_approval_id is CURRENT
-  if (expectedApprovalId && expectedApprovalId !== latestApproval.id) {
-    return {
-      eligible: false,
-      reason:
-        'Post references a stale or revoked approval lineage. Re-approval requires a new publication intent.',
-      contentId,
-      contentVariantId,
-      approvalId: latestApproval.id,
-      hasApproval: true,
-      postStatus,
-    }
-  }
-
-  // 4. Account check (Requirements 6 & 7)
   const account = await queryFirst<AccountRow>(
     db,
-    `SELECT * FROM account WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+    `SELECT * FROM account WHERE id = ? AND workspace_id = ?`,
     [accountId, target.workspaceId],
   )
-  if (!account) {
-    return {
-      eligible: false,
-      reason: 'Account not found or deleted.',
-      accountId,
-      accountActive: false,
-      postStatus,
-    }
-  }
-  if (account.status !== 'active') {
-    return {
-      eligible: false,
-      reason: `Account is ${account.status} (must be active to dispatch publication).`,
-      accountId,
-      accountActive: false,
-      postStatus,
-    }
-  }
-  if (account.platform_id !== variant.platform_id) {
-    return {
-      eligible: false,
-      reason: `Platform mismatch: Account platform is '${account.platform_id}' but variant platform is '${variant.platform_id}'.`,
-      platformMatched: false,
-      postStatus,
-    }
-  }
-  if (content.target_account_id && content.target_account_id !== accountId) {
-    return {
-      eligible: false,
-      reason: 'Account does not match the designated target account for this content item.',
-      accountId,
-      postStatus,
-    }
-  }
 
-  // 5. Campaign check & Campaign Account Connection
-  if (content.campaign_id) {
-    const campaign = await queryFirst<CampaignRow>(
+  let campaign: CampaignRow | null = null
+  let isCampaignAccountConnected = false
+  if (content?.campaign_id) {
+    campaign = await queryFirst<CampaignRow>(
       db,
-      `SELECT * FROM campaign WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+      `SELECT * FROM campaign WHERE id = ? AND workspace_id = ?`,
       [content.campaign_id, target.workspaceId],
     )
-    if (!campaign || campaign.status === 'archived') {
-      return {
-        eligible: false,
-        reason: 'Campaign not found or is archived in this workspace.',
-        postStatus,
-      }
-    }
-
     const campaignAccount = await queryFirst<{ campaign_id: string; account_id: string }>(
       db,
       `SELECT campaign_id, account_id FROM campaign_account WHERE campaign_id = ? AND account_id = ?`,
       [content.campaign_id, accountId],
     )
-    if (!campaignAccount) {
-      return {
-        eligible: false,
-        reason: 'Account is not connected to this campaign.',
-        accountId,
-        postStatus,
-      }
-    }
+    isCampaignAccountConnected = Boolean(campaignAccount)
   }
 
+  const snapshot: PublicationEligibilitySnapshot = {
+    contentId,
+    contentExists: Boolean(content),
+    contentDeleted: Boolean(content?.deleted_at),
+    contentStatus: content?.status ?? null,
+    contentSelectedVariantId: content?.selected_variant_id ?? null,
+    contentTargetAccountId: content?.target_account_id ?? null,
+
+    variantId: contentVariantId,
+    variantExists: Boolean(variant),
+    variantDeleted: Boolean(variant?.deleted_at),
+    variantStatus: variant?.status ?? null,
+    variantPlatformId: variant?.platform_id ?? null,
+
+    latestApprovalId: latestApproval?.id ?? null,
+    latestApprovalStatus: latestApproval?.status ?? null,
+    latestApprovalActorType: latestApproval?.actor_type ?? null,
+
+    accountId,
+    accountExists: Boolean(account),
+    accountDeleted: Boolean(account?.deleted_at),
+    accountStatus: account?.status ?? null,
+    accountPlatformId: account?.platform_id ?? null,
+
+    campaignRequired: Boolean(content?.campaign_id),
+    campaignExists: Boolean(campaign),
+    campaignDeleted: Boolean(campaign?.deleted_at),
+    campaignStatus: campaign?.status ?? null,
+    campaignAccountConnected: isCampaignAccountConnected,
+  }
+
+  const evaluation = evaluatePublicationEligibility(snapshot)
   return {
-    eligible: true,
-    postId: 'postId' in target ? target.postId : undefined,
+    eligible: evaluation.isEligible,
+    reason: evaluation.reason ?? undefined,
     contentId,
     contentVariantId,
     accountId,
-    platformId: account.platform_id,
-    approvalId: latestApproval.id,
-    isReady: true,
-    hasApproval: true,
-    accountActive: true,
-    platformMatched: true,
-    postStatus,
+    platformId: account?.platform_id,
+    approvalId: latestApproval?.id,
+    isReady: evaluation.isEligible,
+    hasApproval: evaluation.isEligible,
+    accountActive: Boolean(account && account.status === 'active' && !account.deleted_at),
+    platformMatched: Boolean(account && variant && account.platform_id === variant.platform_id),
+    postStatus: undefined,
   }
 }
 

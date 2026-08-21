@@ -1913,3 +1913,561 @@ test('42. active intent unique constraint at database level prevents duplicate a
     /UNIQUE constraint failed/i,
   )
 })
+
+test('43. legacy post with content_approval_id = NULL is ineligible and marked needs_reprepare', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Legacy Null Approval Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Legacy Null Post',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Legacy null approval body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  const legacyPostId = crypto.randomUUID()
+  raw
+    .prepare(
+      `INSERT INTO post (id, workspace_id, content_variant_id, account_id, content_approval_id, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, NULL, 'draft', ?, ?)`,
+    )
+    .run(legacyPostId, base.workspaceId, variant.id, base.accountId, NOW, NOW)
+
+  // 1. validatePublicationEligibility rejects with explicit null lineage reason
+  const elig = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: legacyPostId,
+  })
+  assert.equal(elig.eligible, false)
+  assert.match(elig.reason ?? '', /no approval lineage/i)
+
+  // 2. getPostDetail derives isCurrentlyEligible: false and dispatchStatus: 'needs_reprepare'
+  const detail = await getPostDetail(db, base.workspaceId, legacyPostId)
+  assert.ok(detail)
+  assert.equal(detail.isCurrentlyEligible, false)
+  assert.equal(detail.dispatchStatus, 'needs_reprepare')
+  assert.match(detail.eligibilityReason ?? '', /no approval lineage/i)
+})
+
+test('44. append-only revocation leaves Approval A intact but marks Post stale and ineligible', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Revocation Append Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Revocation Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Revocation test body.',
+  })
+
+  const app = await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  const post = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+  assert.equal(post.isCurrentlyEligible, true)
+  assert.equal(post.dispatchStatus, 'prepared')
+
+  // Revoke approval
+  await revokeCampaignContentApproval(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+  })
+
+  // Verify approval row A is NOT mutated
+  const appRow = raw
+    .prepare(`SELECT status FROM content_approval WHERE id = ?`)
+    .get(app.approval.id) as { status: string }
+  assert.equal(appRow.status, 'approved')
+
+  // Both validatePublicationEligibility and getPostDetail report false
+  const elig = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(elig.eligible, false)
+  assert.match(elig.reason ?? '', /revoked|stale|draft|ready/i)
+
+  const detail = await getPostDetail(db, base.workspaceId, post.id)
+  assert.ok(detail)
+  assert.equal(detail.isCurrentlyEligible, false)
+  assert.equal(detail.dispatchStatus, 'needs_reprepare')
+})
+
+test('45. target account mutation makes prepared post ineligible in both validator and post detail', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  // Create second account B on same platform
+  const accountBId = crypto.randomUUID()
+  raw
+    .prepare(
+      `INSERT INTO account (id, workspace_id, platform_id, handle, display_name, status, created_at, updated_at)
+       VALUES (?, ?, ?, '@acme_b', 'Acme B', 'active', ?, ?)`,
+    )
+    .run(accountBId, base.workspaceId, base.platformId, NOW, NOW)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId, accountBId],
+    name: 'Target Account Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Target Account Post',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Target account body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  const post = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+  assert.equal(post.isCurrentlyEligible, true)
+
+  // Mutate Content target_account_id to accountB
+  raw.prepare(`UPDATE content SET target_account_id = ? WHERE id = ?`).run(accountBId, item.id)
+
+  // 1. Canonical validator reports false
+  const elig = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(elig.eligible, false)
+  assert.match(elig.reason ?? '', /designated target account/i)
+
+  // 2. Server-derived detail reports false & needs_reprepare
+  const detail = await getPostDetail(db, base.workspaceId, post.id)
+  assert.ok(detail)
+  assert.equal(detail.isCurrentlyEligible, false)
+  assert.equal(detail.dispatchStatus, 'needs_reprepare')
+  assert.match(detail.eligibilityReason ?? '', /designated target account/i)
+})
+
+test('46. campaign archive makes prepared post ineligible in both validator and post detail', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Campaign Archive Test',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Archive Campaign Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Archive campaign body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  const post = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+  assert.equal(post.isCurrentlyEligible, true)
+
+  // Archive campaign
+  raw.prepare(`UPDATE campaign SET status = 'archived' WHERE id = ?`).run(campaign.id)
+
+  const elig = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(elig.eligible, false)
+  assert.match(elig.reason ?? '', /Campaign not found or is archived/i)
+
+  const detail = await getPostDetail(db, base.workspaceId, post.id)
+  assert.ok(detail)
+  assert.equal(detail.isCurrentlyEligible, false)
+  assert.equal(detail.dispatchStatus, 'needs_reprepare')
+  assert.match(detail.eligibilityReason ?? '', /Campaign not found or is archived/i)
+})
+
+test('47. campaign_account removal and restoration dynamically alters eligibility in both validator and post detail', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Membership Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Membership Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Membership body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  const post = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+  assert.equal(post.isCurrentlyEligible, true)
+
+  // 1. Remove account from campaign_account
+  raw
+    .prepare(`DELETE FROM campaign_account WHERE campaign_id = ? AND account_id = ?`)
+    .run(campaign.id, base.accountId)
+
+  const eligRemoved = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(eligRemoved.eligible, false)
+  assert.match(eligRemoved.reason ?? '', /not connected to this campaign/i)
+
+  const detailRemoved = await getPostDetail(db, base.workspaceId, post.id)
+  assert.ok(detailRemoved)
+  assert.equal(detailRemoved.isCurrentlyEligible, false)
+  assert.equal(detailRemoved.dispatchStatus, 'needs_reprepare')
+  assert.match(detailRemoved.eligibilityReason ?? '', /not connected to this campaign/i)
+
+  // 2. Reconnect account to campaign_account
+  raw
+    .prepare(`INSERT INTO campaign_account (campaign_id, account_id, created_at) VALUES (?, ?, ?)`)
+    .run(campaign.id, base.accountId, NOW)
+
+  const eligRestored = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(eligRestored.eligible, true)
+
+  const detailRestored = await getPostDetail(db, base.workspaceId, post.id)
+  assert.ok(detailRestored)
+  assert.equal(detailRestored.isCurrentlyEligible, true)
+  assert.equal(detailRestored.dispatchStatus, 'prepared')
+})
+
+test('48. content soft-deletion marks prepared post ineligible', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Soft Delete Content Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Soft Delete Content Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Soft delete body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  const post = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+  assert.equal(post.isCurrentlyEligible, true)
+
+  // Soft delete content
+  raw.prepare(`UPDATE content SET deleted_at = ? WHERE id = ?`).run(NOW, item.id)
+
+  const elig = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(elig.eligible, false)
+  assert.match(elig.reason ?? '', /Content item not found or is archived/i)
+
+  const detail = await getPostDetail(db, base.workspaceId, post.id)
+  assert.ok(detail)
+  assert.equal(detail.isCurrentlyEligible, false)
+  assert.equal(detail.dispatchStatus, 'needs_reprepare')
+})
+
+test('49. variant soft-deletion marks prepared post ineligible', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Soft Delete Variant Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Soft Delete Variant Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Soft delete variant body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  const post = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+  assert.equal(post.isCurrentlyEligible, true)
+
+  // Soft delete variant
+  raw.prepare(`UPDATE content_variant SET deleted_at = ? WHERE id = ?`).run(NOW, variant.id)
+
+  const elig = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    postId: post.id,
+  })
+  assert.equal(elig.eligible, false)
+  assert.match(elig.reason ?? '', /Content variant not found or is archived/i)
+
+  const detail = await getPostDetail(db, base.workspaceId, post.id)
+  assert.ok(detail)
+  assert.equal(detail.isCurrentlyEligible, false)
+  assert.equal(detail.dispatchStatus, 'needs_reprepare')
+})
+
+test('50. non-user actor_type approval cannot create or validate publication intent', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'System Actor Approval Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'System Actor Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'System actor body.',
+  })
+
+  // Insert approval with actor_type = 'system'
+  const sysApprovalId = crypto.randomUUID()
+  raw
+    .prepare(
+      `INSERT INTO content_approval (id, workspace_id, campaign_id, content_id, content_variant_id, status, actor_type, actor_id, note, critic_override, created_at)
+       VALUES (?, ?, ?, ?, ?, 'approved', 'system', 'system-auto', NULL, 0, ?)`,
+    )
+    .run(sysApprovalId, base.workspaceId, campaign.id, item.id, variant.id, NOW)
+
+  raw
+    .prepare(`UPDATE content SET status = 'ready', selected_variant_id = ? WHERE id = ?`)
+    .run(variant.id, item.id)
+
+  // 1. createPublicationIntent rejects non-human approval
+  await assert.rejects(
+    () =>
+      createPublicationIntent(db, {
+        workspaceId: base.workspaceId,
+        contentId: item.id,
+        contentVariantId: variant.id,
+        accountId: base.accountId,
+      }),
+    /human editorial approval/i,
+  )
+
+  // 2. validatePublicationEligibility returns false
+  const elig = await validatePublicationEligibility(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+  })
+  assert.equal(elig.eligible, false)
+  assert.match(elig.reason ?? '', /human editorial approval/i)
+})
+
+test('51. idempotent retry returns existing post with ZERO duplicate audit logs or events', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Idempotency Zero Duplicates Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Zero Dupes Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Zero dupes body.',
+  })
+
+  await approveCampaignContentVariant(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+  })
+
+  const idempotencyKey = 'strict-idempotency-key-001'
+
+  // 1. Initial publication intent creation
+  const post1 = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+    idempotencyKey,
+  })
+  assert.ok(post1.id)
+
+  // Verify exactly 1 audit log and 1 event
+  const auditLogsInitial = raw
+    .prepare(`SELECT COUNT(*) as cnt FROM audit_log WHERE entity_id = ? AND entity_type = 'post'`)
+    .get(post1.id) as { cnt: number }
+  assert.equal(auditLogsInitial.cnt, 1)
+
+  const eventsInitial = await listRecentEvents(db, base.workspaceId, 'publication', 10)
+  const prepEventsInitial = eventsInitial.filter(
+    (e) => e.event_type === 'publication.prepared' && e.subject_id === post1.id,
+  )
+  assert.equal(prepEventsInitial.length, 1)
+
+  // 2. Retry with same idempotency key
+  const post1Retry = await createPublicationIntent(db, {
+    workspaceId: base.workspaceId,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    accountId: base.accountId,
+    idempotencyKey,
+  })
+  assert.equal(post1Retry.id, post1.id)
+
+  // Verify still exactly 1 audit log and 1 event (no duplicates emitted on replay)
+  const auditLogsAfter = raw
+    .prepare(`SELECT COUNT(*) as cnt FROM audit_log WHERE entity_id = ? AND entity_type = 'post'`)
+    .get(post1.id) as { cnt: number }
+  assert.equal(auditLogsAfter.cnt, 1)
+
+  const eventsAfter = await listRecentEvents(db, base.workspaceId, 'publication', 10)
+  const prepEventsAfter = eventsAfter.filter(
+    (e) => e.event_type === 'publication.prepared' && e.subject_id === post1.id,
+  )
+  assert.equal(prepEventsAfter.length, 1)
+})
