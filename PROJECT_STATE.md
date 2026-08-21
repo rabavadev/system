@@ -80,7 +80,8 @@ Shared components: src/components/ui/*, src/components/layout/*
 - **HARDENING 15E.1.1 — Publication Integrity Closure Before External Adapters**: Rebuilt `post` table with `workspace_id NOT NULL REFERENCES workspace(id) ON DELETE RESTRICT` (migration 0023), backfilled legacy posts, removed all NULL-workspace query wildcards, enforced `account.status === 'active'` (rejecting paused/archived/deleted accounts), derived Campaign identity strictly from Content, hardened pre-dispatch eligibility to verify current approval lineage and post status (`draft`/`scheduled` only), enforced request-bound idempotency conflict rejection, and established database partial unique index `idx_post_active_intent`.
 - **HARDENING 15E.1.2 — Close Publication Lineage + Read-Isolation Gaps**: Hardened pre-dispatch validation for legacy posts without approval lineage (`content_approval_id = NULL`), verified append-only approval semantics (revocation inserts a new row and leaves prior approval rows untouched, invalidating old posts), enforced human-authoritative approval requirements (`actor_type === 'user'`), ensured tenant isolation across all joined entities in Post read queries (`a.workspace_id = p.workspace_id`, `ca.workspace_id = p.workspace_id`, `cmp.workspace_id = p.workspace_id`), server-derived current post eligibility and dispatch statuses (`isCurrentlyEligible`, `dispatchStatus`), and updated UI to determine publication readiness from live server eligibility.
 - **HARDENING 15E.1.3 — Restore Publication Audit Contract + Eligibility Parity**: Restored safe post creation audit logging (`audit_log` action `create`, entity `post`), restored canonical domain event emission (`publication.prepared`), and unified publication eligibility evaluation via a single normalized snapshot evaluator (`evaluatePublicationEligibility`) shared identically between server pre-dispatch validation (`validatePublicationEligibility`) and UI/query derivation (`derivePostState` / `toPostDetail`), eliminating drift across content/variant soft deletion, account mutations, campaign archiving, and campaign membership changes.
-- **STEP 15E.2**: Platform connectors / external publishing execution (FUTURE PHASE).
+- **STEP 15E.2 — Approval-Gated Publication Dispatch Boundary**: Connected publication preparation (`post` in `draft`/`scheduled`) to the STEP 11 Approval Policy system via action `content.publish` (`inherentRisks: ['write', 'external']`). Enforces explicit user Publish initiation (no auto-publishing), server-authoritative Post reload, pre-approval eligibility re-validation, hard minimum REVIEW policy elevation (AUTO elevated to REVIEW with `source: 'tool_requirement'`), immutable snapshot with SHA-256 fingerprinting, deduplication/idempotency on repeated requests, `dispatchStatus: 'awaiting_approval'`, safe approval-time revalidation (revocations/account mutations/tampering block dispatch), and safe stubbed dispatch execution returning `not_configured` without fake success or external platform calls.
+- **STEP 15E.3**: Platform connectors / external publishing adapters (FUTURE PHASE).
 
 ## Content Lifecycle & Publishing Boundary
 
@@ -94,23 +95,30 @@ Campaign Content Item (draft)
   → [Optional] Human Reviews & Saves Revised Variant (content_variant: immutable V2, parent_variant_id = V1)
   → Human Final Editorial Approval (content_approval: approved, content.status = 'ready', content.selected_variant_id = variant_id)
   → Server-Authoritative Publication Preparation (post: status = 'draft' | 'scheduled', external_id = null, url = null, published_at = null, content_approval_id linked)
+  → Explicit User Publish Initiation (server reloads post & re-validates eligibility)
+  → Approval Policy Gate (action 'content.publish', hard minimum REVIEW elevation)
+  → Approval Request Created (approval: status = 'pending', snapshotJson, SHA-256 fingerprint, post dispatchStatus = 'awaiting_approval')
+  → Human Decides in Approval Center (approved / rejected / expired)
+  → Approval-Time Live Revalidation (rechecks current eligibility & snapshot integrity)
+  → Safe Dispatch Execution Boundary (STEP 15E.2 stub: fails safely as not_configured; zero external platform writes; post remains draft)
   → [Optional] Human Revocation (content_approval: revoked, content.status = 'draft', content.selected_variant_id = null, subsequent publication validation fails)
 ```
 
 ### Critical Invariants:
 1. **READY != PUBLISHED**: Marking content as `ready` is an internal editorial status signifying approval. It performs **ZERO** external network calls, interacts with **NO** platform APIs, and schedules **NO** automated publishing jobs.
 2. **PREPARED POST != EXTERNALLY SENT**: A `post` record in `draft` status is an internal publication intent linked to the exact approved variant, target account, and approval audit ID. All external fields (`external_id`, `url`, `published_at`) remain `NULL`.
-3. **Publisher Agent Status**: The `Publisher` agent is explicitly `disabled` (`status: 'disabled'`).
-4. **Platform Publish Tool**: The `platform.publish` tool is an unavailable stub (`Not available yet`, `status: 'unavailable'`).
-5. **Human Primacy & Server-Authoritative Override**: Critic verdict `pass` never auto-approves content. Critic verdict `revise` strictly blocks approval on the server unless the human operator explicitly provides `overrideCritic: true` (`critic_override = 1`). Notes are documentation only and do not authorize approval.
+3. **APPROVAL != PUBLISHED**: An approved publication request (`approval.status = 'approved'`) authorizes dispatch, but does not mutate `post.status` to `published` or invent platform IDs/URLs.
+4. **Publisher Agent Status**: The `Publisher` agent is explicitly `disabled` (`status: 'disabled'`).
+5. **Platform Publish Tool**: The `platform.publish` tool is an unavailable stub (`Not available yet`, `status: 'unavailable'`).
+6. **Human Primacy & Server-Authoritative Override**: Critic verdict `pass` never auto-approves content. Critic verdict `revise` strictly blocks approval on the server unless the human operator explicitly provides `overrideCritic: true` (`critic_override = 1`). Notes are documentation only and do not authorize approval.
 
 ## Approval System Disambiguation
 
 The architecture contains two distinct approval subsystems that serve separate purposes:
 
-1. **Tool / Workflow Approval Policy (`approval_policy`, `approval_request`)**:
+1. **Tool / Workflow / Dispatch Approval Policy (`approval_policy`, `approval` table)**:
    - Modes: `auto`, `review`, `blocked`.
-   - Governs sensitive agent and workflow tool executions (e.g. `web.search`, `workflow.run`, external writes).
+   - Governs sensitive agent and workflow tool executions (e.g. `web.search`, `workflow.run`, external writes) and publication dispatch (`content.publish`).
    - Generates approval requests with action snapshots, SHA-256 fingerprinting, and resume tokens.
 2. **Human Content Editorial Approval (`content_approval`, `selected_variant_id`, `content.status = 'ready'`)**:
    - Governs editorial readiness of content variants for campaign publishing.
@@ -121,7 +129,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 
 | Capability / Runtime Area | Verification Status | Notes |
 |---|---|---|
-| Unit & Integration Tests (22 suites) | **VERIFIED** | All automated tests run and pass in local Node / SQLite environment |
+| Unit & Integration Tests (23 suites) | **VERIFIED** | All automated tests run and pass in local Node / SQLite environment |
 | Database Migrations (0001–0023) | **VERIFIED** | Verified through `npm run db:test` (23/23 tests pass) |
 | Context Engine & Ranking | **VERIFIED** | Verified through `npm run test:context` |
 | Policy & Approval Engine | **VERIFIED** | Verified through `npm run test:policy`, `test:approvals`, `test:approvals-ux` |

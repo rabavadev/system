@@ -11,6 +11,8 @@ import { getAgentById } from '~/server/db/agent'
 import { countPendingApprovals, listApprovalRequests } from '~/server/db/approval'
 import { listBrands } from '~/server/db/brand'
 import { getDb } from '~/server/db/client'
+import { emitEventSafe } from '~/server/db/event'
+import { dispatchApprovedPublication } from '~/server/db/post'
 import type { SqlDatabase } from '~/server/db/sql'
 import { getWorkflowById, getWorkflowRunById } from '~/server/db/workflow'
 import { getDefaultWorkspace } from '~/server/db/workspace'
@@ -289,6 +291,34 @@ export const decideApprovalFn = createServerFn({ method: 'POST' })
           ok: false,
           message: err instanceof Error ? err.message : 'Unknown resume error',
         }
+      }
+    } else if (record.actionKey === 'content.publish') {
+      if (data.decision === 'approved') {
+        try {
+          const dispatchRes = await dispatchApprovedPublication(db, {
+            workspaceId: workspace.id,
+            approvalRequestId: record.id,
+          })
+          resumeResult = { ok: dispatchRes.ok, message: dispatchRes.message }
+        } catch (err) {
+          resumeResult = {
+            ok: false,
+            message: err instanceof Error ? err.message : 'Dispatch error',
+          }
+        }
+      } else if (data.decision === 'rejected' && record.subjectId) {
+        await emitEventSafe(db, {
+          workspaceId: workspace.id,
+          eventType: 'publication.approval_rejected',
+          actorType: 'user',
+          subjectType: 'post',
+          subjectId: record.subjectId,
+          payloadJson: JSON.stringify({
+            postId: record.subjectId,
+            approvalRequestId: record.id,
+            note: data.note ?? null,
+          }),
+        })
       }
     }
 

@@ -7,6 +7,15 @@ import {
   normalizeStoredRisks,
   updateApprovalDecision,
 } from '../db/approval.ts'
+
+export {
+  findPendingApproval,
+  getApprovalRequest,
+  getApprovalRequestById,
+  insertApprovalRequest,
+  normalizeStoredRisks,
+  updateApprovalDecision,
+}
 import { writeAuditLog } from '../db/audit.ts'
 import { emitEventSafe } from '../db/event.ts'
 import { newId, nowIso, queryFirst, type SqlDatabase } from '../db/sql.ts'

@@ -574,6 +574,7 @@ export interface Post {
 export type PostDispatchStatus =
   | 'prepared'
   | 'scheduled'
+  | 'awaiting_approval'
   | 'needs_reprepare'
   | 'stale'
   | 'published'
@@ -600,6 +601,8 @@ export interface PostDetail extends Post {
   isCurrentlyEligible?: boolean | undefined
   eligibilityReason?: string | null | undefined
   dispatchStatus?: PostDispatchStatus | undefined
+  pendingApprovalRequestId?: string | null | undefined
+  latestPublishApprovalStatus?: string | null | undefined
 }
 
 export interface PublicationEligibilityResult {

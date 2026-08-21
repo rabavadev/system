@@ -61,7 +61,11 @@ import { emitEventSafe } from '~/server/db/event'
 import { listMetricDefinitions } from '~/server/db/metric'
 import {
   createPublicationIntent,
+  type DispatchPublicationResult,
+  dispatchApprovedPublication,
   listPostsForContent,
+  type RequestPublicationDispatchResult,
+  requestPublicationDispatch,
   validatePublicationEligibility,
 } from '~/server/db/post'
 import { listProducts, type ProductSummary } from '~/server/db/product'
@@ -679,3 +683,28 @@ export const validatePublicationEligibilityFn = createServerFn({ method: 'GET' }
       accountId: data.accountId,
     })
   })
+
+export const requestPublicationDispatchFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ postId: z.uuid() }))
+  .handler(async ({ data }): Promise<RequestPublicationDispatchResult> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) throw new Error('Workspace not found')
+    return requestPublicationDispatch(db, {
+      workspaceId: workspace.id,
+      postId: data.postId,
+    })
+  })
+
+export const dispatchApprovedPublicationFn = createServerFn({ method: 'POST' })
+  .validator(z.object({ approvalRequestId: z.uuid() }))
+  .handler(async ({ data }): Promise<DispatchPublicationResult> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) throw new Error('Workspace not found')
+    return dispatchApprovedPublication(db, {
+      workspaceId: workspace.id,
+      approvalRequestId: data.approvalRequestId,
+    })
+  })
+

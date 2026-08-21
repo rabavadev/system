@@ -43,6 +43,7 @@ import {
   listContentReviewsFn,
   listContentVariantsFn,
   listPostsForContentFn,
+  requestPublicationDispatchFn,
   revokeCampaignContentApprovalFn,
   saveCampaignContentDraftFn,
   saveCampaignContentReviewFn,
@@ -116,9 +117,10 @@ export function CampaignDraftModal({
   const [showOverrideConfirm, setShowOverrideConfirm] = useState(false)
   const [overrideNote, setOverrideNote] = useState('')
 
-  // STEP 15E.1: Publication Intent states
+  // STEP 15E.1 & 15E.2: Publication Intent & Dispatch states
   const [posts, setPosts] = useState<PostDetail[]>([])
   const [isPreparingPublication, startPreparingPublication] = useTransition()
+  const [isRequestingPublish, startRequestingPublish] = useTransition()
 
   const [isGenerating, startGenerating] = useTransition()
   const [isRevising, startRevising] = useTransition()
@@ -483,6 +485,34 @@ export function CampaignDraftModal({
         await onSuccess?.()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to prepare publication.')
+      }
+    })
+  }
+
+  const handleRequestPublish = (postId: string) => {
+    setError(null)
+    setSuccessMessage(null)
+    startRequestingPublish(async () => {
+      try {
+        const result = await requestPublicationDispatchFn({
+          data: { postId },
+        })
+
+        if (result.status === 'blocked') {
+          setError(`Publication blocked by policy: ${result.reason}`)
+        } else {
+          setSuccessMessage(
+            'Publication approval requested! Review request created in Approval Center.',
+          )
+        }
+
+        const updatedPosts = await listPostsForContentFn({
+          data: { contentId: activeItem.id },
+        })
+        setPosts(updatedPosts)
+        await onSuccess?.()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to request publication.')
       }
     })
   }
@@ -1262,6 +1292,8 @@ export function CampaignDraftModal({
                                 return <Badge tone="success">Prepared</Badge>
                               case 'scheduled':
                                 return <Badge tone="success">Scheduled internally</Badge>
+                              case 'awaiting_approval':
+                                return <Badge tone="warning">Waiting for Approval</Badge>
                               case 'stale':
                                 return <Badge tone="warning">No longer Ready</Badge>
                               case 'needs_reprepare':
@@ -1278,6 +1310,11 @@ export function CampaignDraftModal({
                                 return <Badge tone="neutral">{post.status}</Badge>
                             }
                           }
+
+                          const canRequestPublish =
+                            post.isCurrentlyEligible &&
+                            (post.dispatchStatus === 'prepared' ||
+                              post.dispatchStatus === 'scheduled')
 
                           return (
                             <div
@@ -1296,6 +1333,23 @@ export function CampaignDraftModal({
                               </div>
                               <div className="flex items-center gap-2">
                                 {getDispatchBadge()}
+                                {canRequestPublish && (
+                                  <Button
+                                    variant="secondary"
+                                    onClick={() => handleRequestPublish(post.id)}
+                                    disabled={isRequestingPublish || isPreparingPublication}
+                                    className="h-6 px-2 text-[11px] bg-white hover:bg-zinc-100 text-sky-700 border-sky-300"
+                                  >
+                                    {isRequestingPublish ? (
+                                      <>
+                                        <Loader2 className="size-2.5 mr-1 animate-spin" />
+                                        Requesting...
+                                      </>
+                                    ) : (
+                                      'Publish'
+                                    )}
+                                  </Button>
+                                )}
                                 <span className="text-[11px] text-zinc-400">
                                   {new Date(post.createdAt).toLocaleTimeString([], {
                                     hour: '2-digit',

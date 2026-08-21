@@ -8,6 +8,10 @@ import type {
   PostStatus,
   PublicationEligibilityResult,
 } from '~/types/domain'
+import { createApprovalRequest, getApprovalRequest } from '../approval/service.ts'
+import { verifySnapshotIntegrity } from '../approval/snapshot.ts'
+import type { ApprovalRequestRecord } from '../approval/types.ts'
+import { prepareToolExecution } from '../tools/executor.ts'
 import { writeAuditLog } from './audit.ts'
 import { emitEventSafe } from './event.ts'
 import { IntegrityError } from './relations.ts'
@@ -121,6 +125,8 @@ export interface PostRow {
   latest_approval_id?: string | null
   latest_approval_status?: ContentApprovalStatus | null
   latest_approval_actor_type?: string | null
+  pending_approval_request_id?: string | null
+  latest_publish_approval_status?: string | null
 }
 
 export interface PublicationEligibilitySnapshot {
@@ -156,6 +162,9 @@ export interface PublicationEligibilitySnapshot {
   campaignDeleted: boolean
   campaignStatus: string | null
   campaignAccountConnected: boolean
+
+  hasPendingApproval?: boolean
+  latestPublishApprovalStatus?: string | null
 }
 
 /**
@@ -340,6 +349,14 @@ export function evaluatePublicationEligibility(snapshot: PublicationEligibilityS
   }
 
   // 8. Fully Eligible
+  if (snapshot.hasPendingApproval) {
+    return {
+      isEligible: true,
+      reason: null,
+      dispatchStatus: 'awaiting_approval',
+    }
+  }
+
   return {
     isEligible: true,
     reason: null,
@@ -385,6 +402,9 @@ export function derivePostState(row: PostRow): {
     campaignDeleted: Boolean(row.campaign_deleted_at),
     campaignStatus: row.campaign_status ?? null,
     campaignAccountConnected: Boolean(row.is_campaign_account_connected),
+
+    hasPendingApproval: Boolean(row.pending_approval_request_id),
+    latestPublishApprovalStatus: row.latest_publish_approval_status ?? null,
   }
 
   const res = evaluatePublicationEligibility(snapshot)
@@ -446,6 +466,8 @@ export function toPostDetail(row: PostRow): PostDetail {
     isCurrentlyEligible,
     eligibilityReason,
     dispatchStatus,
+    pendingApprovalRequestId: row.pending_approval_request_id ?? undefined,
+    latestPublishApprovalStatus: row.latest_publish_approval_status ?? undefined,
   }
 }
 
@@ -508,7 +530,27 @@ const POST_DETAIL_SELECT_FIELDS = `
       AND ca2.content_variant_id = p.content_variant_id
     ORDER BY ca2.created_at DESC, ca2.rowid DESC
     LIMIT 1
-  ) AS latest_approval_actor_type
+  ) AS latest_approval_actor_type,
+  (
+    SELECT ar.id FROM approval ar
+    WHERE ar.workspace_id = p.workspace_id
+      AND ar.action_key = 'content.publish'
+      AND ar.subject_type = 'post'
+      AND ar.subject_id = p.id
+      AND ar.status = 'pending'
+      AND (ar.expires_at IS NULL OR ar.expires_at > datetime('now'))
+    ORDER BY ar.created_at DESC, ar.rowid DESC
+    LIMIT 1
+  ) AS pending_approval_request_id,
+  (
+    SELECT ar.status FROM approval ar
+    WHERE ar.workspace_id = p.workspace_id
+      AND ar.action_key = 'content.publish'
+      AND ar.subject_type = 'post'
+      AND ar.subject_id = p.id
+    ORDER BY ar.created_at DESC, ar.rowid DESC
+    LIMIT 1
+  ) AS latest_publish_approval_status
 `
 
 const POST_DETAIL_FROM_CLAUSE = `
@@ -997,4 +1039,312 @@ async function getPostByQuery(
 ): Promise<PostDetail | null> {
   const row = await queryFirst<PostRow>(db, sql, params)
   return row ? toPostDetail(row) : null
+}
+
+export const requestPublicationDispatchInput = z.object({
+  workspaceId: z.string().uuid(),
+  postId: z.string().uuid(),
+})
+
+export type RequestPublicationDispatchInput = z.input<typeof requestPublicationDispatchInput>
+
+export interface RequestPublicationDispatchResult {
+  status: 'pending' | 'blocked'
+  reason: string
+  approvalRequest: ApprovalRequestRecord | null
+  isDuplicate?: boolean
+  post: PostDetail
+}
+
+/**
+ * Initiates an approval-gated publication dispatch request for an exact Post.
+ * Re-validates canonical publication eligibility and resolves through the STEP 11 Approval Policy.
+ */
+export async function requestPublicationDispatch(
+  db: SqlDatabase,
+  rawInput: unknown,
+): Promise<RequestPublicationDispatchResult> {
+  const data = requestPublicationDispatchInput.parse(rawInput)
+
+  // 1. Validate Workspace
+  const workspaceRow = await queryFirst<{ id: string }>(
+    db,
+    `SELECT id FROM workspace WHERE id = ?`,
+    [data.workspaceId],
+  )
+  if (!workspaceRow) {
+    throw new IntegrityError('Workspace not found.')
+  }
+
+  // 2. Fetch authoritative exact Post record
+  const post = await getPostDetail(db, data.workspaceId, data.postId)
+  if (!post) {
+    throw new IntegrityError('Post record not found in this workspace.')
+  }
+
+  // 3. Re-validate publication eligibility before creating approval
+  const elig = await validatePublicationEligibility(db, {
+    workspaceId: data.workspaceId,
+    postId: data.postId,
+  })
+  if (!elig.eligible) {
+    throw new IntegrityError(
+      `Post is not currently eligible for publication: ${elig.reason ?? 'ineligible'}`,
+    )
+  }
+
+  // 4. Resolve campaign / brand scope for policy
+  let brandId: string | null = null
+  if (post.campaignId) {
+    const campaign = await queryFirst<{ brand_id: string }>(
+      db,
+      `SELECT brand_id FROM campaign WHERE id = ? AND workspace_id = ?`,
+      [post.campaignId, data.workspaceId],
+    )
+    if (campaign) {
+      brandId = campaign.brand_id
+    }
+  }
+
+  // 5. Create Approval Request through canonical Approval Service
+  // Hard minimum review: ensures external publishing requires human review even if workspace policy is AUTO.
+  const approvalRes = await createApprovalRequest(db, {
+    workspaceId: data.workspaceId,
+    actionKey: 'content.publish',
+    origin: 'user',
+    minimumMode: 'review',
+    brandId,
+    subjectType: 'post',
+    subjectId: post.id,
+    risk: ['write', 'external'],
+    summary: `Publish approved draft to ${post.accountHandle ? '@' + post.accountHandle.replace(/^@/, '') : (post.accountDisplayName ?? 'account')}`,
+    payload: {
+      postId: post.id,
+      workspaceId: post.workspaceId,
+      campaignId: post.campaignId ?? null,
+      contentId: post.contentId,
+      contentVariantId: post.contentVariantId,
+      contentApprovalId: post.contentApprovalId,
+      accountId: post.accountId,
+      platformId: post.platformId ?? null,
+      scheduledAt: post.scheduledAt ?? null,
+      idempotencyKey: post.idempotencyKey ?? null,
+    },
+  })
+
+  // 6. Handle BLOCKED
+  if (approvalRes.status === 'blocked') {
+    await emitEventSafe(db, {
+      workspaceId: data.workspaceId,
+      eventType: 'publication.approval_blocked',
+      actorType: 'user',
+      subjectType: 'post',
+      subjectId: post.id,
+      payloadJson: JSON.stringify({
+        postId: post.id,
+        reason: approvalRes.reason,
+      }),
+    })
+
+    await writeAuditLog(db, {
+      workspaceId: data.workspaceId,
+      actorType: 'user',
+      action: 'update',
+      entityType: 'post',
+      entityId: post.id,
+      newValueJson: JSON.stringify({
+        postId: post.id,
+        reason: approvalRes.reason,
+      }),
+    })
+
+    const updatedPost = await getPostDetail(db, data.workspaceId, data.postId)
+    return {
+      status: 'blocked',
+      reason: approvalRes.reason,
+      approvalRequest: null,
+      post: updatedPost ?? post,
+    }
+  }
+
+  // 7. Handle REVIEW (Pending)
+  if (!approvalRes.isDuplicate) {
+    await emitEventSafe(db, {
+      workspaceId: data.workspaceId,
+      eventType: 'publication.approval_requested',
+      actorType: 'user',
+      subjectType: 'post',
+      subjectId: post.id,
+      payloadJson: JSON.stringify({
+        postId: post.id,
+        approvalRequestId: approvalRes.request.id,
+        campaignId: post.campaignId ?? null,
+        contentId: post.contentId,
+        contentVariantId: post.contentVariantId,
+        accountId: post.accountId,
+        policySource: approvalRes.request.policySource,
+      }),
+    })
+
+    await writeAuditLog(db, {
+      workspaceId: data.workspaceId,
+      actorType: 'user',
+      action: 'update',
+      entityType: 'post',
+      entityId: post.id,
+      newValueJson: JSON.stringify({
+        postId: post.id,
+        approvalRequestId: approvalRes.request.id,
+        effectivePolicyMode: 'review',
+        policySource: approvalRes.request.policySource,
+      }),
+    })
+  }
+
+  const updatedPost = await getPostDetail(db, data.workspaceId, data.postId)
+  return {
+    status: 'pending',
+    reason: approvalRes.reason,
+    approvalRequest: approvalRes.request,
+    isDuplicate: approvalRes.isDuplicate,
+    post: updatedPost ?? post,
+  }
+}
+
+export interface DispatchPublicationResult {
+  ok: boolean
+  code: 'not_approved' | 'ineligible' | 'not_configured' | 'integrity_error'
+  message: string
+  postId?: string
+}
+
+/**
+ * Handles the dispatch boundary for an approved publication request.
+ * Re-validates live publication eligibility and snapshot integrity at approval time.
+ * In STEP 15E.2, fails safely without external connectors or fake publication success.
+ */
+export async function dispatchApprovedPublication(
+  db: SqlDatabase,
+  input: { workspaceId: string; approvalRequestId: string },
+): Promise<DispatchPublicationResult> {
+  const req = await getApprovalRequest(db, {
+    workspaceId: input.workspaceId,
+    id: input.approvalRequestId,
+  })
+  if (!req) {
+    throw new IntegrityError('Approval request not found.')
+  }
+
+  if (req.actionKey !== 'content.publish') {
+    throw new IntegrityError(
+      `Approval request is for action '${req.actionKey}', not 'content.publish'.`,
+    )
+  }
+
+  if (req.status !== 'approved') {
+    return {
+      ok: false,
+      code: 'not_approved',
+      message: `Approval request is ${req.status}, but must be approved to attempt dispatch.`,
+      postId: req.subjectId ?? undefined,
+    }
+  }
+
+  // Verify Snapshot Integrity
+  const isIntact = verifySnapshotIntegrity('content.publish', req.snapshotJson, req.fingerprint)
+  if (!isIntact) {
+    throw new IntegrityError('Approval request snapshot integrity violation.')
+  }
+
+  let parsedPayload: Record<string, unknown> = {}
+  try {
+    parsedPayload = JSON.parse(req.snapshotJson)
+  } catch {
+    throw new IntegrityError('Malformed approval request snapshot.')
+  }
+
+  const postId = typeof parsedPayload.postId === 'string' ? parsedPayload.postId : req.subjectId
+  if (!postId) {
+    throw new IntegrityError('Approval request snapshot missing postId.')
+  }
+
+  // 1. Approval-Time Revalidation: Recheck current live publication eligibility
+  const elig = await validatePublicationEligibility(db, {
+    workspaceId: input.workspaceId,
+    postId,
+  })
+  if (!elig.eligible) {
+    await emitEventSafe(db, {
+      workspaceId: input.workspaceId,
+      eventType: 'publication.dispatch_unavailable',
+      actorType: 'system',
+      subjectType: 'post',
+      subjectId: postId,
+      payloadJson: JSON.stringify({
+        postId,
+        approvalRequestId: req.id,
+        reason: `Post is no longer eligible for publication: ${elig.reason}`,
+      }),
+    })
+
+    return {
+      ok: false,
+      code: 'ineligible',
+      message: `Post is no longer eligible for publication: ${elig.reason}`,
+      postId,
+    }
+  }
+
+  // 2. Future tool execution boundary check
+  const prep = prepareToolExecution({
+    workspaceId: input.workspaceId,
+    toolKey: 'platform.publish',
+    args: {
+      accountId: elig.accountId,
+      contentVariantId: elig.contentVariantId,
+    },
+    caller: {
+      agentId: 'publisher',
+      agentName: 'Publisher',
+      agentStatus: 'disabled',
+      agentVersionId: 'publisher-v1',
+      capabilities: ['publish'],
+    },
+  })
+
+  // Since platform.publish is unavailable in STEP 15E.2:
+  await emitEventSafe(db, {
+    workspaceId: input.workspaceId,
+    eventType: 'publication.dispatch_unavailable',
+    actorType: 'system',
+    subjectType: 'post',
+    subjectId: postId,
+    payloadJson: JSON.stringify({
+      postId,
+      approvalRequestId: req.id,
+      reason: prep.ok ? 'Platform publication adapter is not configured.' : prep.error.message,
+    }),
+  })
+
+  await writeAuditLog(db, {
+    workspaceId: input.workspaceId,
+    actorType: 'system',
+    action: 'update',
+    entityType: 'post',
+    entityId: postId,
+    newValueJson: JSON.stringify({
+      postId,
+      approvalRequestId: req.id,
+      success: false,
+      reason: 'Platform publication adapter is not configured or available.',
+    }),
+  })
+
+  return {
+    ok: false,
+    code: 'not_configured',
+    message:
+      'Platform publication adapter is not configured or available yet. Zero external network publishing performed.',
+    postId,
+  }
 }
