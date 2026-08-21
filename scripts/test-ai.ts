@@ -704,9 +704,9 @@ test('composer: structure, empty context, and context summary', () => {
   assert.equal(composed.contextSummary.scopeSource, 'workspace')
 })
 
-/* ---- 25-28. HARDENING H2A: Workers AI Tool Protocol Tests ---- */
+/* ---- 25-28. HARDENING H2A.1: Workers AI Tool Protocol Strictness Tests ---- */
 
-test('HARDENING H2A: Workers AI receives tool definitions with real parameters schema', async () => {
+test('HARDENING H2A.1: Workers AI receives tool definitions matching installed Cloudflare types', async () => {
   let capturedInput: unknown = null
   const adapter = createWorkersAiAdapter({
     run: async (_model, input) => {
@@ -750,15 +750,15 @@ test('HARDENING H2A: Workers AI receives tool definitions with real parameters s
 
   assert.ok(typedInput.tools, 'Tools array must be passed to provider')
   assert.equal(typedInput.tools.length, 1)
-  assert.equal(typedInput.tools[0].type, 'function')
-  assert.equal(typedInput.tools[0].function.name, 'web.search')
-  assert.equal(typedInput.tools[0].function.description, 'Searches the public web.')
-  assert.deepEqual(typedInput.tools[0].function.parameters, toolSchema)
+  assert.equal(typedInput.tools[0]?.type, 'function')
+  assert.equal(typedInput.tools[0]?.function.name, 'web.search')
+  assert.equal(typedInput.tools[0]?.function.description, 'Searches the public web.')
+  assert.deepEqual(typedInput.tools[0]?.function.parameters, toolSchema)
 })
 
-test('HARDENING H2A: Workers AI normalizes provider tool calls and preserves call IDs', async () => {
-  // Case A: standard OpenAI / Cloudflare format with explicit ID
-  const adapterWithId = createWorkersAiAdapter({
+test('HARDENING H2A.1: Workers AI parses documented function and flat tool calls preserving exact provider IDs', async () => {
+  // Case A: standard function format with explicit ID (AiTextGenerationToolOutput / ChatCompletionMessageToolCall)
+  const adapterFunctionWithId = createWorkersAiAdapter({
     run: async () => ({
       response: null,
       tool_calls: [
@@ -774,7 +774,7 @@ test('HARDENING H2A: Workers AI normalizes provider tool calls and preserves cal
     }),
   })
 
-  const resA = await adapterWithId.execute({
+  const resA = await adapterFunctionWithId.execute({
     model: 'model',
     messages: [{ role: 'user', content: 'Search' }],
     generation: { maxTokens: 50, temperature: 0 },
@@ -784,19 +784,22 @@ test('HARDENING H2A: Workers AI normalizes provider tool calls and preserves cal
   assert.equal(resA.finishReason, 'tool_calls')
   assert.ok(resA.toolCalls)
   assert.equal(resA.toolCalls.length, 1)
-  assert.equal(resA.toolCalls[0].id, 'call_exact_id_123')
-  assert.equal(resA.toolCalls[0].toolKey, 'web.search')
-  assert.deepEqual(resA.toolCalls[0].args, { query: 'llama 3.3', limit: 5 })
+  assert.equal(resA.toolCalls[0]?.id, 'call_exact_id_123')
+  assert.equal(resA.toolCalls[0]?.toolKey, 'web.search')
+  assert.deepEqual(resA.toolCalls[0]?.args, { query: 'llama 3.3', limit: 5 })
 
-  // Case B: stringified arguments
+  // Case B: JSON stringified arguments in function format
   const adapterStringArgs = createWorkersAiAdapter({
     run: async () => ({
       response: 'Searching...',
       tool_calls: [
         {
           id: 'call_str_args',
-          name: 'web.search',
-          arguments: JSON.stringify({ query: 'parsed from string' }),
+          type: 'function',
+          function: {
+            name: 'web.search',
+            arguments: JSON.stringify({ query: 'parsed from string' }),
+          },
         },
       ],
     }),
@@ -812,34 +815,92 @@ test('HARDENING H2A: Workers AI normalizes provider tool calls and preserves cal
   assert.equal(resB.content, 'Searching...')
   assert.equal(resB.finishReason, 'tool_calls')
   assert.ok(resB.toolCalls)
-  assert.deepEqual(resB.toolCalls[0].args, { query: 'parsed from string' })
+  assert.equal(resB.toolCalls[0]?.id, 'call_str_args')
+  assert.deepEqual(resB.toolCalls[0]?.args, { query: 'parsed from string' })
 
-  // Case C: multiple tool calls preserve distinct IDs
-  const adapterMultiple = createWorkersAiAdapter({
+  // Case C: flat format with required ID
+  const adapterFlatWithId = createWorkersAiAdapter({
     run: async () => ({
+      response: null,
       tool_calls: [
-        { id: 'call_1', name: 'web.search', arguments: { query: 'q1' } },
-        { id: 'call_2', name: 'web.search', arguments: { query: 'q2' } },
+        {
+          id: 'call_flat_789',
+          name: 'web.search',
+          arguments: { query: 'flat format' },
+        },
       ],
     }),
   })
 
-  const resC = await adapterMultiple.execute({
+  const resC = await adapterFlatWithId.execute({
     model: 'model',
-    messages: [{ role: 'user', content: 'Search twice' }],
+    messages: [{ role: 'user', content: 'Search' }],
     generation: { maxTokens: 50, temperature: 0 },
     signal: new AbortController().signal,
   })
 
   assert.ok(resC.toolCalls)
-  assert.equal(resC.toolCalls.length, 2)
-  assert.equal(resC.toolCalls[0].id, 'call_1')
-  assert.deepEqual(resC.toolCalls[0].args, { query: 'q1' })
-  assert.equal(resC.toolCalls[1].id, 'call_2')
-  assert.deepEqual(resC.toolCalls[1].args, { query: 'q2' })
+  assert.equal(resC.toolCalls[0]?.id, 'call_flat_789')
+  assert.equal(resC.toolCalls[0]?.toolKey, 'web.search')
+  assert.deepEqual(resC.toolCalls[0]?.args, { query: 'flat format' })
 })
 
-test('HARDENING H2A: Workers AI serializes multi-turn tool history with call correlation', async () => {
+test('HARDENING H2A.1: Workers AI requires provider tool-call ID and never invents synthetic IDs', async () => {
+  // Provider responses missing ID or with empty/invalid ID must reject with malformed_response
+  const invalidIdCases = [
+    {
+      raw: { response: null, tool_calls: [{ name: 'web.search', arguments: {} }] },
+      desc: 'missing ID in flat format',
+    },
+    {
+      raw: {
+        response: null,
+        tool_calls: [{ type: 'function', function: { name: 'web.search', arguments: {} } }],
+      },
+      desc: 'missing ID in function format',
+    },
+    {
+      raw: { response: null, tool_calls: [{ id: '', name: 'web.search', arguments: {} }] },
+      desc: 'empty string ID',
+    },
+    {
+      raw: { response: null, tool_calls: [{ id: '   ', name: 'web.search', arguments: {} }] },
+      desc: 'whitespace-only ID',
+    },
+    {
+      raw: { response: null, tool_calls: [{ id: 12345, name: 'web.search', arguments: {} }] },
+      desc: 'numeric ID',
+    },
+    {
+      raw: { response: null, tool_calls: [{ id: null, name: 'web.search', arguments: {} }] },
+      desc: 'null ID',
+    },
+  ]
+
+  for (const { raw, desc } of invalidIdCases) {
+    const adapter = createWorkersAiAdapter({ run: async () => raw })
+    await assert.rejects(
+      adapter.execute({
+        model: 'model',
+        messages: [{ role: 'user', content: 'test' }],
+        generation: { maxTokens: 10, temperature: 0 },
+        signal: new AbortController().signal,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof AIAdapterError, `Expected AIAdapterError for ${desc}`)
+        assert.equal(err.code, 'malformed_response', `Expected malformed_response code for ${desc}`)
+        assert.match(
+          err.message,
+          /tool call ID/i,
+          `Expected message mentioning tool call ID for ${desc}`,
+        )
+        return true
+      },
+    )
+  }
+})
+
+test('HARDENING H2A.1: Workers AI serializes multi-turn tool history with call correlation', async () => {
   let capturedMessages: unknown = null
   const adapter = createWorkersAiAdapter({
     run: async (_model, input) => {
@@ -885,49 +946,133 @@ test('HARDENING H2A: Workers AI serializes multi-turn tool history with call cor
   assert.equal(msgs.length, 3)
 
   // Turn 1: user
-  assert.equal(msgs[0].role, 'user')
-  assert.equal(msgs[0].content, 'Find info.')
+  assert.equal(msgs[0]?.role, 'user')
+  assert.equal(msgs[0]?.content, 'Find info.')
 
   // Turn 2: assistant with tool_calls
-  assert.equal(msgs[1].role, 'assistant')
-  assert.ok(msgs[1].tool_calls)
-  assert.equal(msgs[1].tool_calls[0].id, 'call_correlate_1')
-  assert.equal(msgs[1].tool_calls[0].type, 'function')
-  assert.equal(msgs[1].tool_calls[0].function.name, 'web.search')
-  assert.deepEqual(msgs[1].tool_calls[0].function.arguments, { query: 'growth' })
+  assert.equal(msgs[1]?.role, 'assistant')
+  assert.ok(msgs[1]?.tool_calls)
+  assert.equal(msgs[1]?.tool_calls[0]?.id, 'call_correlate_1')
+  assert.equal(msgs[1]?.tool_calls[0]?.type, 'function')
+  assert.equal(msgs[1]?.tool_calls[0]?.function.name, 'web.search')
+  assert.deepEqual(msgs[1]?.tool_calls[0]?.function.arguments, { query: 'growth' })
 
   // Turn 3: tool result with tool_call_id and name
-  assert.equal(msgs[2].role, 'tool')
-  assert.equal(msgs[2].tool_call_id, 'call_correlate_1')
-  assert.equal(msgs[2].name, 'web.search')
-  assert.ok(msgs[2].content?.includes('Growth Post'))
+  assert.equal(msgs[2]?.role, 'tool')
+  assert.equal(msgs[2]?.tool_call_id, 'call_correlate_1')
+  assert.equal(msgs[2]?.name, 'web.search')
+  assert.ok(msgs[2]?.content?.includes('Growth Post'))
 })
 
-test('HARDENING H2A: Workers AI rejects malformed tool call payloads safely', async () => {
+test('HARDENING H2A.1: Multiple tool calls in single turn preserve distinct provider IDs', async () => {
+  const adapterMultiple = createWorkersAiAdapter({
+    run: async () => ({
+      tool_calls: [
+        {
+          id: 'provider_call_alpha',
+          type: 'function',
+          function: { name: 'web.search', arguments: { query: 'alpha query' } },
+        },
+        {
+          id: 'provider_call_beta',
+          name: 'web.search',
+          arguments: { query: 'beta query' },
+        },
+      ],
+    }),
+  })
+
+  const res = await adapterMultiple.execute({
+    model: 'model',
+    messages: [{ role: 'user', content: 'Search twice' }],
+    generation: { maxTokens: 50, temperature: 0 },
+    signal: new AbortController().signal,
+  })
+
+  assert.ok(res.toolCalls)
+  assert.equal(res.toolCalls.length, 2)
+  assert.equal(res.toolCalls[0]?.id, 'provider_call_alpha')
+  assert.deepEqual(res.toolCalls[0]?.args, { query: 'alpha query' })
+  assert.equal(res.toolCalls[1]?.id, 'provider_call_beta')
+  assert.deepEqual(res.toolCalls[1]?.args, { query: 'beta query' })
+})
+
+test('HARDENING H2A.1: Workers AI rejects unsupported alternate shapes and malformed payloads safely', async () => {
   const testCases = [
     // Non-array tool_calls
     { raw: { response: null, tool_calls: 'not-an-array' }, desc: 'non-array tool_calls' },
     // Null element
     { raw: { response: null, tool_calls: [null] }, desc: 'null element' },
-    // Missing tool name
+    // Primitive element in array
+    { raw: { response: null, tool_calls: ['invalid'] }, desc: 'string element' },
+    // Missing tool name (flat)
     {
       raw: { response: null, tool_calls: [{ id: 'c1', arguments: {} }] },
-      desc: 'missing tool name',
+      desc: 'missing tool name (flat)',
+    },
+    // Missing tool name in function object
+    {
+      raw: {
+        response: null,
+        tool_calls: [{ id: 'c1', type: 'function', function: { arguments: {} } }],
+      },
+      desc: 'missing tool name (function)',
+    },
+    // Function property is not an object
+    {
+      raw: {
+        response: null,
+        tool_calls: [{ id: 'c1', type: 'function', function: 'web.search' }],
+      },
+      desc: 'function is string instead of object',
+    },
+    // Unsupported speculative shape: `tool` instead of `name`
+    {
+      raw: {
+        response: null,
+        tool_calls: [{ id: 'c1', tool: 'web.search', arguments: {} }],
+      },
+      desc: 'unsupported speculative tool property',
     },
     // Malformed JSON string arguments
     {
-      raw: { response: null, tool_calls: [{ name: 'web.search', arguments: '{invalid-json' }] },
+      raw: {
+        response: null,
+        tool_calls: [{ id: 'c1', name: 'web.search', arguments: '{invalid-json' }],
+      },
       desc: 'malformed JSON arguments',
     },
     // Arguments is number
     {
-      raw: { response: null, tool_calls: [{ name: 'web.search', arguments: 12345 }] },
+      raw: {
+        response: null,
+        tool_calls: [{ id: 'c1', name: 'web.search', arguments: 12345 }],
+      },
       desc: 'number arguments',
     },
     // Arguments is array
     {
-      raw: { response: null, tool_calls: [{ name: 'web.search', arguments: [1, 2] }] },
+      raw: {
+        response: null,
+        tool_calls: [{ id: 'c1', name: 'web.search', arguments: [1, 2] }],
+      },
       desc: 'array arguments',
+    },
+    // Arguments is JSON-stringified array
+    {
+      raw: {
+        response: null,
+        tool_calls: [{ id: 'c1', name: 'web.search', arguments: JSON.stringify([1, 2]) }],
+      },
+      desc: 'JSON stringified array arguments',
+    },
+    // Arguments is null
+    {
+      raw: {
+        response: null,
+        tool_calls: [{ id: 'c1', name: 'web.search', arguments: null }],
+      },
+      desc: 'null arguments',
     },
   ]
 

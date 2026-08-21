@@ -29,7 +29,7 @@ export interface WorkersAiLike {
             tool_calls?: Array<{
               id: string
               type: 'function'
-              function: { name: string; arguments: Record<string, unknown> }
+              function: { name: string; arguments: Record<string, unknown> | string }
             }>
           }
         | {
@@ -39,7 +39,14 @@ export interface WorkersAiLike {
             name?: string
           }
       >
-      tools?: unknown
+      tools?: Array<{
+        type: 'function'
+        function: {
+          name: string
+          description: string
+          parameters?: Record<string, unknown>
+        }
+      }>
       max_tokens?: number
       temperature?: number
     },
@@ -91,29 +98,61 @@ function parseWorkersAiToolCalls(raw: unknown): AIToolCall[] | undefined {
       )
     }
 
+    // 1. Tool Call ID — required by installed Workers AI protocol (AiTextGenerationToolOutput / ChatCompletionMessageToolCall).
+    // Synthetic IDs (e.g. call-N) are NEVER fabricated. Missing/empty ID => malformed_response.
     const rawId = Reflect.get(item, 'id')
-    const id = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : `call-${i + 1}`
-
-    const fnObj = Reflect.get(item, 'function')
-    const fnName =
-      typeof fnObj === 'object' && fnObj !== null && typeof Reflect.get(fnObj, 'name') === 'string'
-        ? (Reflect.get(fnObj, 'name') as string)
-        : undefined
-    const fnArgs =
-      typeof fnObj === 'object' && fnObj !== null ? Reflect.get(fnObj, 'arguments') : undefined
-
-    const rawName = Reflect.get(item, 'name') || Reflect.get(item, 'tool') || fnName
-    if (typeof rawName !== 'string' || !rawName.trim()) {
+    if (typeof rawId !== 'string' || !rawId.trim()) {
       throw new AIAdapterError(
         'malformed_response',
-        'The provider returned a tool call missing tool name.',
+        'The provider returned a tool call missing a valid tool call ID.',
         true,
       )
     }
-    const toolKey = rawName.trim()
+    const id = rawId.trim()
 
-    let rawArgs = Reflect.get(item, 'arguments') ?? Reflect.get(item, 'args') ?? fnArgs ?? {}
-    if (typeof rawArgs === 'string') {
+    // 2. Tool Name & Raw Arguments — strictly support installed Workers AI formats:
+    // Format A (Function structure): { id, function: { name, arguments } }
+    // Format B (Flat structure): { id, name, arguments }
+    // Reject unknown/speculative shapes (e.g. `tool`, `function_call`, `args`)
+    let toolKey: string
+    let rawArgs: unknown
+
+    if ('function' in item) {
+      const fnObj = Reflect.get(item, 'function')
+      if (typeof fnObj !== 'object' || fnObj === null || Array.isArray(fnObj)) {
+        throw new AIAdapterError(
+          'malformed_response',
+          'The provider returned an invalid function object in tool call.',
+          true,
+        )
+      }
+      const fnName = Reflect.get(fnObj, 'name')
+      if (typeof fnName !== 'string' || !fnName.trim()) {
+        throw new AIAdapterError(
+          'malformed_response',
+          'The provider returned a tool call missing function name.',
+          true,
+        )
+      }
+      toolKey = fnName.trim()
+      rawArgs = Reflect.get(fnObj, 'arguments')
+    } else {
+      const rawName = Reflect.get(item, 'name')
+      if (typeof rawName !== 'string' || !rawName.trim()) {
+        throw new AIAdapterError(
+          'malformed_response',
+          'The provider returned a tool call missing tool name.',
+          true,
+        )
+      }
+      toolKey = rawName.trim()
+      rawArgs = Reflect.get(item, 'arguments')
+    }
+
+    // 3. Arguments format — JSON string or object per installed types.
+    if (rawArgs === undefined) {
+      rawArgs = {}
+    } else if (typeof rawArgs === 'string') {
       try {
         rawArgs = JSON.parse(rawArgs)
       } catch {
