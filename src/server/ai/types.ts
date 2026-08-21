@@ -31,7 +31,7 @@ export interface AIToolDefinition {
   key: string
   name: string
   description: string
-  inputSchema?: unknown
+  inputSchema?: Record<string, unknown> | undefined
 }
 
 /**

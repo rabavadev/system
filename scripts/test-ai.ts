@@ -703,3 +703,248 @@ test('composer: structure, empty context, and context summary', () => {
   assert.ok(!composed.messages[1]?.content.includes('# Goals'))
   assert.equal(composed.contextSummary.scopeSource, 'workspace')
 })
+
+/* ---- 25-28. HARDENING H2A: Workers AI Tool Protocol Tests ---- */
+
+test('HARDENING H2A: Workers AI receives tool definitions with real parameters schema', async () => {
+  let capturedInput: unknown = null
+  const adapter = createWorkersAiAdapter({
+    run: async (_model, input) => {
+      capturedInput = input
+      return { response: 'Understood.' }
+    },
+  })
+
+  const toolSchema = {
+    type: 'object',
+    properties: {
+      query: { type: 'string', minLength: 1, maxLength: 300 },
+      limit: { type: 'integer', minimum: 1, maximum: 10, default: 5 },
+      freshness: { type: 'string', enum: ['day', 'week', 'month', 'year', 'all'] },
+    },
+    required: ['query'],
+    additionalProperties: false,
+  }
+
+  await adapter.execute({
+    model: '@cf/meta/llama-3.3-70b-instruct-fp8-fast',
+    messages: [{ role: 'user', content: 'Search something.' }],
+    tools: [
+      {
+        key: 'web.search',
+        name: 'Web search',
+        description: 'Searches the public web.',
+        inputSchema: toolSchema,
+      },
+    ],
+    generation: { maxTokens: 100, temperature: 0.2 },
+    signal: new AbortController().signal,
+  })
+
+  const typedInput = capturedInput as {
+    tools: Array<{
+      type: string
+      function: { name: string; description: string; parameters: Record<string, unknown> }
+    }>
+  }
+
+  assert.ok(typedInput.tools, 'Tools array must be passed to provider')
+  assert.equal(typedInput.tools.length, 1)
+  assert.equal(typedInput.tools[0].type, 'function')
+  assert.equal(typedInput.tools[0].function.name, 'web.search')
+  assert.equal(typedInput.tools[0].function.description, 'Searches the public web.')
+  assert.deepEqual(typedInput.tools[0].function.parameters, toolSchema)
+})
+
+test('HARDENING H2A: Workers AI normalizes provider tool calls and preserves call IDs', async () => {
+  // Case A: standard OpenAI / Cloudflare format with explicit ID
+  const adapterWithId = createWorkersAiAdapter({
+    run: async () => ({
+      response: null,
+      tool_calls: [
+        {
+          id: 'call_exact_id_123',
+          type: 'function',
+          function: {
+            name: 'web.search',
+            arguments: { query: 'llama 3.3', limit: 5 },
+          },
+        },
+      ],
+    }),
+  })
+
+  const resA = await adapterWithId.execute({
+    model: 'model',
+    messages: [{ role: 'user', content: 'Search' }],
+    generation: { maxTokens: 50, temperature: 0 },
+    signal: new AbortController().signal,
+  })
+
+  assert.equal(resA.finishReason, 'tool_calls')
+  assert.ok(resA.toolCalls)
+  assert.equal(resA.toolCalls.length, 1)
+  assert.equal(resA.toolCalls[0].id, 'call_exact_id_123')
+  assert.equal(resA.toolCalls[0].toolKey, 'web.search')
+  assert.deepEqual(resA.toolCalls[0].args, { query: 'llama 3.3', limit: 5 })
+
+  // Case B: stringified arguments
+  const adapterStringArgs = createWorkersAiAdapter({
+    run: async () => ({
+      response: 'Searching...',
+      tool_calls: [
+        {
+          id: 'call_str_args',
+          name: 'web.search',
+          arguments: JSON.stringify({ query: 'parsed from string' }),
+        },
+      ],
+    }),
+  })
+
+  const resB = await adapterStringArgs.execute({
+    model: 'model',
+    messages: [{ role: 'user', content: 'Search' }],
+    generation: { maxTokens: 50, temperature: 0 },
+    signal: new AbortController().signal,
+  })
+
+  assert.equal(resB.content, 'Searching...')
+  assert.equal(resB.finishReason, 'tool_calls')
+  assert.ok(resB.toolCalls)
+  assert.deepEqual(resB.toolCalls[0].args, { query: 'parsed from string' })
+
+  // Case C: multiple tool calls preserve distinct IDs
+  const adapterMultiple = createWorkersAiAdapter({
+    run: async () => ({
+      tool_calls: [
+        { id: 'call_1', name: 'web.search', arguments: { query: 'q1' } },
+        { id: 'call_2', name: 'web.search', arguments: { query: 'q2' } },
+      ],
+    }),
+  })
+
+  const resC = await adapterMultiple.execute({
+    model: 'model',
+    messages: [{ role: 'user', content: 'Search twice' }],
+    generation: { maxTokens: 50, temperature: 0 },
+    signal: new AbortController().signal,
+  })
+
+  assert.ok(resC.toolCalls)
+  assert.equal(resC.toolCalls.length, 2)
+  assert.equal(resC.toolCalls[0].id, 'call_1')
+  assert.deepEqual(resC.toolCalls[0].args, { query: 'q1' })
+  assert.equal(resC.toolCalls[1].id, 'call_2')
+  assert.deepEqual(resC.toolCalls[1].args, { query: 'q2' })
+})
+
+test('HARDENING H2A: Workers AI serializes multi-turn tool history with call correlation', async () => {
+  let capturedMessages: unknown = null
+  const adapter = createWorkersAiAdapter({
+    run: async (_model, input) => {
+      capturedMessages = input.messages
+      return { response: 'Final response after tool result.' }
+    },
+  })
+
+  await adapter.execute({
+    model: 'model',
+    messages: [
+      { role: 'user', content: 'Find info.' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'call_correlate_1', toolKey: 'web.search', args: { query: 'growth' } }],
+      },
+      {
+        role: 'tool',
+        content: JSON.stringify({
+          results: [{ title: 'Growth Post', url: 'https://example.com' }],
+        }),
+        toolCallId: 'call_correlate_1',
+        toolKey: 'web.search',
+      },
+    ],
+    generation: { maxTokens: 100, temperature: 0.1 },
+    signal: new AbortController().signal,
+  })
+
+  const msgs = capturedMessages as Array<{
+    role: string
+    content?: string
+    tool_calls?: Array<{
+      id: string
+      type: string
+      function: { name: string; arguments: Record<string, unknown> }
+    }>
+    tool_call_id?: string
+    name?: string
+  }>
+
+  assert.equal(msgs.length, 3)
+
+  // Turn 1: user
+  assert.equal(msgs[0].role, 'user')
+  assert.equal(msgs[0].content, 'Find info.')
+
+  // Turn 2: assistant with tool_calls
+  assert.equal(msgs[1].role, 'assistant')
+  assert.ok(msgs[1].tool_calls)
+  assert.equal(msgs[1].tool_calls[0].id, 'call_correlate_1')
+  assert.equal(msgs[1].tool_calls[0].type, 'function')
+  assert.equal(msgs[1].tool_calls[0].function.name, 'web.search')
+  assert.deepEqual(msgs[1].tool_calls[0].function.arguments, { query: 'growth' })
+
+  // Turn 3: tool result with tool_call_id and name
+  assert.equal(msgs[2].role, 'tool')
+  assert.equal(msgs[2].tool_call_id, 'call_correlate_1')
+  assert.equal(msgs[2].name, 'web.search')
+  assert.ok(msgs[2].content?.includes('Growth Post'))
+})
+
+test('HARDENING H2A: Workers AI rejects malformed tool call payloads safely', async () => {
+  const testCases = [
+    // Non-array tool_calls
+    { raw: { response: null, tool_calls: 'not-an-array' }, desc: 'non-array tool_calls' },
+    // Null element
+    { raw: { response: null, tool_calls: [null] }, desc: 'null element' },
+    // Missing tool name
+    {
+      raw: { response: null, tool_calls: [{ id: 'c1', arguments: {} }] },
+      desc: 'missing tool name',
+    },
+    // Malformed JSON string arguments
+    {
+      raw: { response: null, tool_calls: [{ name: 'web.search', arguments: '{invalid-json' }] },
+      desc: 'malformed JSON arguments',
+    },
+    // Arguments is number
+    {
+      raw: { response: null, tool_calls: [{ name: 'web.search', arguments: 12345 }] },
+      desc: 'number arguments',
+    },
+    // Arguments is array
+    {
+      raw: { response: null, tool_calls: [{ name: 'web.search', arguments: [1, 2] }] },
+      desc: 'array arguments',
+    },
+  ]
+
+  for (const { raw, desc } of testCases) {
+    const adapter = createWorkersAiAdapter({ run: async () => raw })
+    await assert.rejects(
+      adapter.execute({
+        model: 'model',
+        messages: [{ role: 'user', content: 'test' }],
+        generation: { maxTokens: 10, temperature: 0 },
+        signal: new AbortController().signal,
+      }),
+      (err: unknown) => {
+        assert.ok(err instanceof AIAdapterError, `Expected AIAdapterError for ${desc}`)
+        assert.equal(err.code, 'malformed_response', `Expected malformed_response code for ${desc}`)
+        return true
+      },
+    )
+  }
+})

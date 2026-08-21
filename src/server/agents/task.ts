@@ -15,9 +15,12 @@ import {
   type ExecuteToolDeps,
   executeTool,
   getAvailableTools,
+  getToolDefinition,
+  listToolDefinitions,
   prepareToolExecution,
   type ToolCaller,
   type ToolKey,
+  toAIToolDefinition,
 } from '../tools/index.ts'
 import type { AgentHandle } from './registry.ts'
 
@@ -153,11 +156,14 @@ export async function executeAgentTask(input: AgentTaskInput): Promise<AgentTask
   }
 
   const availableTools = getAvailableTools(caller, input.toolDeps)
-  const modelTools: AIToolDefinition[] = availableTools.map((t) => ({
-    key: t.key,
-    name: t.name,
-    description: t.description,
-  }))
+  const allDefinitions = input.toolDeps?.definitions ?? listToolDefinitions()
+  const defMap = new Map(allDefinitions.map((d) => [d.key, d]))
+  const modelTools: AIToolDefinition[] = availableTools
+    .map((t) => {
+      const def = defMap.get(t.key) ?? getToolDefinition(t.key)
+      return def ? toAIToolDefinition(def) : null
+    })
+    .filter((t): t is AIToolDefinition => t !== null)
 
   let toolCallCount = 0
   const toolTraces: AIToolTraceSummary[] = []

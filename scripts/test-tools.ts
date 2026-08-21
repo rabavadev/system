@@ -22,6 +22,7 @@ import {
   createWebSearchAdapter,
   executeTool,
   getAvailableTools,
+  getToolDefinition,
   listToolDefinitions,
   MockWebSearchClient,
   TOOL_KEYS,
@@ -30,6 +31,8 @@ import {
   type ToolDefinition,
   ToolError,
   type ToolKey,
+  toAIToolDefinition,
+  zodToJsonSchema,
 } from '../src/server/tools/index.ts'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
@@ -1356,4 +1359,135 @@ test('BraveSearchClient maps HTTP 401/403, 429, 500, and network failure to appr
     () => clientNetErr.search('query', 5),
     (err: unknown) => err instanceof ToolError && err.code === 'execution_failed',
   )
+})
+
+// 39. HARDENING H2A: web.search model Tool definition contains real JSON inputSchema
+test('39. web.search model Tool definition exposes faithful, safe JSON Schema', () => {
+  const def = getToolDefinition('web.search')
+  assert.ok(def, 'web.search definition must exist')
+
+  const aiDef = toAIToolDefinition(def)
+  assert.equal(aiDef.key, 'web.search')
+  assert.equal(aiDef.name, 'Web search')
+  assert.ok(aiDef.description.includes('public web'))
+
+  const schema = aiDef.inputSchema as Record<string, unknown>
+  assert.ok(schema, 'inputSchema must be defined on AIToolDefinition')
+  assert.equal(schema.type, 'object')
+
+  const properties = schema.properties as Record<string, Record<string, unknown>>
+  assert.ok(properties, 'properties must exist')
+
+  // 1-4. query properties
+  assert.ok(properties.query, 'query property must exist')
+  assert.equal(properties.query.type, 'string')
+  assert.equal(properties.query.minLength, 1)
+  assert.equal(properties.query.maxLength, 300)
+
+  // 5-6. limit properties
+  assert.ok(properties.limit, 'limit property must exist')
+  assert.equal(properties.limit.type, 'integer')
+  assert.equal(properties.limit.minimum, 1)
+  assert.equal(properties.limit.maximum, 10)
+  assert.equal(properties.limit.default, 5)
+
+  // 7. freshness properties
+  assert.ok(properties.freshness, 'freshness property must exist')
+  assert.equal(properties.freshness.type, 'string')
+  assert.deepEqual(properties.freshness.enum, ['day', 'week', 'month', 'year', 'all'])
+
+  // Required fields: query is required
+  const required = schema.required as string[]
+  assert.ok(Array.isArray(required))
+  assert.ok(required.includes('query'))
+
+  // 8. No secrets or adapter internals in schema
+  const schemaStr = JSON.stringify(schema)
+  assert.equal(schemaStr.includes('apiKey'), false)
+  assert.equal(schemaStr.includes('BRAVE'), false)
+  assert.equal(schemaStr.includes('secret'), false)
+  assert.equal(schemaStr.includes('adapter'), false)
+})
+
+// 40. HARDENING H2A: zodToJsonSchema converts all registered tools without throwing
+test('40. toAIToolDefinition converts every registered tool to safe JSON Schema', () => {
+  const definitions = listToolDefinitions()
+  assert.ok(definitions.length >= 10)
+
+  for (const def of definitions) {
+    const rawJsonSchema = zodToJsonSchema(def.inputSchema)
+    assert.ok(rawJsonSchema, `zodToJsonSchema for ${def.key} must be valid`)
+    assert.equal(rawJsonSchema.type, 'object')
+
+    const aiDef = toAIToolDefinition(def)
+    assert.equal(aiDef.key, def.key)
+    assert.equal(aiDef.name, def.name)
+    assert.equal(aiDef.description, def.description)
+    assert.deepEqual(aiDef.inputSchema, rawJsonSchema)
+
+    const schema = aiDef.inputSchema as Record<string, unknown>
+    assert.ok(schema, `Schema for ${def.key} must be valid`)
+    assert.equal(schema.type, 'object', `Schema for ${def.key} must be an object`)
+    assert.ok(schema.properties !== undefined, `Properties for ${def.key} must be defined`)
+
+    const str = JSON.stringify(aiDef)
+    assert.equal(str.includes('apiKey'), false)
+    assert.equal(str.includes('secret'), false)
+    assert.equal(str.includes('SqlDatabase'), false)
+    assert.equal(str.includes('D1Database'), false)
+  }
+})
+
+// 41. HARDENING H2A: unavailable and unpermitted tools are excluded from available tools
+test('41. unavailable tools and agents without capability do not receive tool definitions', () => {
+  const configuredDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: new MockWebSearchClient() })],
+    ]),
+  }
+
+  // Chief lacks web_search capability even with configured adapter
+  const chiefTools = getAvailableTools(CHIEF, configuredDeps)
+  assert.equal(
+    chiefTools.some((t) => t.key === 'web.search'),
+    false,
+  )
+
+  // Researcher has web_search capability and receives web.search when configured
+  const researcherTools = getAvailableTools(RESEARCHER, configuredDeps)
+  assert.equal(
+    researcherTools.some((t) => t.key === 'web.search'),
+    true,
+  )
+
+  // Unconfigured web.search is excluded even for Researcher
+  const unconfiguredTools = getAvailableTools(RESEARCHER)
+  assert.equal(
+    unconfiguredTools.some((t) => t.key === 'web.search'),
+    false,
+  )
+
+  // Unavailable tools (e.g. files.list, files.read, analytics.read) never appear in available tools
+  assert.equal(
+    researcherTools.some((t) => t.key === 'files.list'),
+    false,
+  )
+  assert.equal(
+    researcherTools.some((t) => t.key === 'files.read'),
+    false,
+  )
+  assert.equal(
+    researcherTools.some((t) => t.key === 'analytics.read'),
+    false,
+  )
+
+  // Disabled agent gets empty tool list
+  const disabledCaller: ToolCaller = {
+    agentId: crypto.randomUUID(),
+    agentVersionId: crypto.randomUUID(),
+    agentName: 'Disabled',
+    agentStatus: 'disabled',
+    capabilities: ['web_search', 'read_context'],
+  }
+  assert.deepEqual(getAvailableTools(disabledCaller), [])
 })

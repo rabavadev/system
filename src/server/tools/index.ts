@@ -25,7 +25,9 @@ export {
   getToolDefinition,
   listToolDefinitions,
   listToolDescriptors,
+  toAIToolDefinition,
   toToolDescriptor,
+  zodToJsonSchema,
 } from './registry.ts'
 export type {
   ToolAdapter,

@@ -2069,3 +2069,249 @@ test('H1B.1: executeTool static guard prevents direct unauthorized execution of 
   assert.equal(res.ok, false)
   assert.equal(res.error?.code, 'approval_required')
 })
+
+test('HARDENING H2A: Researcher receives real Tool inputSchema and executes multi-turn tool loop end to end', async () => {
+  const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.read',
+    mode: 'auto',
+  })
+
+  const mockClient = new MockWebSearchClient({
+    resultsByQuery: {
+      'latest AI trends': [
+        {
+          title: 'Trend 1: Agentic Systems',
+          url: 'https://example.com/trend1',
+          snippet: 'Agents are rising.',
+        },
+        {
+          title: 'Trend 2: Reasoning Models',
+          url: 'https://example.com/trend2',
+          snippet: 'Reasoning is key.',
+        },
+      ],
+    },
+  })
+
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
+
+  let turn = 0
+  let capturedTools: unknown = null
+
+  const { adapter } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      capturedTools = input.tools
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call_h2a_search_1',
+            toolKey: 'web.search',
+            args: { query: 'latest AI trends', limit: 2 },
+          },
+        ],
+        finishReason: 'tool_calls',
+        usage: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
+      }
+    }
+
+    // Turn 2: inspect continuation messages
+    const toolMsg = input.messages.find((m) => m.role === 'tool')
+    assert.ok(toolMsg, 'Must receive tool response message')
+    assert.equal(toolMsg.toolCallId, 'call_h2a_search_1')
+    assert.equal(toolMsg.toolKey, 'web.search')
+    assert.ok(toolMsg.content.includes('Trend 1: Agentic Systems'))
+
+    return {
+      content: 'Here are the latest AI trends: Agentic Systems and Reasoning Models.',
+      finishReason: 'stop',
+      usage: { inputTokens: 100, outputTokens: 25, totalTokens: 125 },
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    researcher.id,
+    'What are the latest AI trends?',
+    adapter,
+    toolDeps,
+  )
+
+  assert.ok(reply.ok)
+  assert.equal(
+    reply.message.content,
+    'Here are the latest AI trends: Agentic Systems and Reasoning Models.',
+  )
+
+  // Check that the model received real JSON schema for web.search
+  const tools = capturedTools as Array<{ key: string; inputSchema: Record<string, unknown> }>
+  assert.ok(Array.isArray(tools))
+  const searchTool = tools.find((t) => t.key === 'web.search')
+  assert.ok(searchTool)
+  assert.ok(searchTool.inputSchema)
+  assert.equal(searchTool.inputSchema.type, 'object')
+  const props = searchTool.inputSchema.properties as Record<string, unknown>
+  assert.ok(props.query)
+  assert.ok(props.limit)
+
+  // Verify tool execution
+  assert.equal(mockClient.calls.length, 1)
+  assert.equal(mockClient.calls[0].query, 'latest AI trends')
+  assert.equal(mockClient.calls[0].limit, 2)
+  assert.equal(reply.execution.toolCalls?.length, 1)
+  assert.equal(reply.execution.toolCalls[0].status, 'succeeded')
+})
+
+test('HARDENING H2A: Server Zod validation strictly guards execution even with invalid model arguments', async () => {
+  const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.read',
+    mode: 'auto',
+  })
+
+  const mockClient = new MockWebSearchClient({
+    results: [{ title: 'Never called', url: 'https://example.com' }],
+  })
+
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
+
+  let turn = 0
+  const { adapter } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      // Model sends limit 999 which violates limit <= 10 Zod schema
+      return {
+        content: null,
+        toolCalls: [
+          {
+            id: 'call_invalid_limit',
+            toolKey: 'web.search',
+            args: { query: 'valid query', limit: 999 },
+          },
+        ],
+        finishReason: 'tool_calls',
+        usage: { inputTokens: 50, outputTokens: 10, totalTokens: 60 },
+      }
+    }
+
+    // Turn 2: Model receives invalid_input error
+    const toolMsg = input.messages.find((m) => m.role === 'tool')
+    assert.ok(toolMsg)
+    assert.match(toolMsg.content, /invalid_input/)
+    return {
+      content: 'I corrected my search parameter error.',
+      finishReason: 'stop',
+      usage: { inputTokens: 70, outputTokens: 10, totalTokens: 80 },
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    researcher.id,
+    'Search with bad params.',
+    adapter,
+    toolDeps,
+  )
+
+  assert.ok(reply.ok)
+  assert.equal(mockClient.calls.length, 0, 'Adapter must never be invoked on invalid args')
+  assert.equal(reply.execution.toolCalls?.length, 1)
+  assert.equal(reply.execution.toolCalls[0].status, 'failed')
+  assert.equal(reply.execution.toolCalls[0].error, 'invalid_input')
+})
+
+test('HARDENING H2A: Multiple tool calls in one turn preserve separate correlation IDs', async () => {
+  const db = freshDb()
+  await setApprovalPolicy(db, {
+    workspaceId: WS,
+    scopeType: 'workspace',
+    scopeId: WS,
+    actionKey: 'external.read',
+    mode: 'auto',
+  })
+
+  const mockClient = new MockWebSearchClient({
+    resultsByQuery: {
+      'topic one': [{ title: 'Topic 1', url: 'https://topic1.com' }],
+      'topic two': [{ title: 'Topic 2', url: 'https://topic2.com' }],
+    },
+  })
+
+  const toolDeps: ExecuteToolDeps = {
+    adapters: new Map<ToolKey, ToolAdapter>([
+      ['web.search', createWebSearchAdapter({ client: mockClient })],
+    ]),
+  }
+
+  let turn = 0
+  const { adapter } = recordingAdapter((input) => {
+    turn += 1
+    if (turn === 1) {
+      return {
+        content: null,
+        toolCalls: [
+          { id: 'call_first_topic', toolKey: 'web.search', args: { query: 'topic one' } },
+          { id: 'call_second_topic', toolKey: 'web.search', args: { query: 'topic two' } },
+        ],
+        finishReason: 'tool_calls',
+        usage: { inputTokens: 50, outputTokens: 20, totalTokens: 70 },
+      }
+    }
+
+    // Turn 2: verify each tool message has its own correlated ID
+    const toolMsgs = input.messages.filter((m) => m.role === 'tool')
+    assert.equal(toolMsgs.length, 2)
+    assert.equal(toolMsgs[0].toolCallId, 'call_first_topic')
+    assert.ok(toolMsgs[0].content.includes('Topic 1'))
+    assert.equal(toolMsgs[1].toolCallId, 'call_second_topic')
+    assert.ok(toolMsgs[1].content.includes('Topic 2'))
+
+    return {
+      content: 'Combined summary of topic one and topic two.',
+      finishReason: 'stop',
+      usage: { inputTokens: 120, outputTokens: 20, totalTokens: 140 },
+    }
+  })
+
+  const conversation = await createConversation(db, { workspaceId: WS })
+  const researcher = await builtinByName(db, 'Researcher')
+
+  const reply = await sendTo(
+    db,
+    conversation.id,
+    researcher.id,
+    'Compare topic one and two.',
+    adapter,
+    toolDeps,
+  )
+
+  assert.ok(reply.ok)
+  assert.equal(mockClient.calls.length, 2)
+  assert.equal(reply.execution.toolCalls?.length, 2)
+  assert.equal(reply.execution.toolCalls[0].status, 'succeeded')
+  assert.equal(reply.execution.toolCalls[1].status, 'succeeded')
+})
