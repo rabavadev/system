@@ -524,34 +524,7 @@ export const saveCampaignContentReviewFn = createServerFn({ method: 'POST' })
       campaignId: z.uuid(),
       contentId: z.uuid(),
       contentVariantId: z.uuid(),
-      verdict: z.enum(['pass', 'revise']),
-      review: z.object({
-        verdict: z.enum(['pass', 'revise']),
-        summary: z.string().min(1, 'Review summary cannot be empty'),
-        strengths: z.array(z.string()).default([]),
-        issues: z
-          .array(
-            z.object({
-              category: z.string(),
-              severity: z.enum(['low', 'medium', 'high']),
-              message: z.string(),
-            }),
-          )
-          .default([]),
-        recommendedChanges: z.array(z.string()).default([]),
-      }),
-      provenance: z
-        .object({
-          criticAgentId: z.string().uuid(),
-          criticAgentName: z.string(),
-          criticAgentVersionId: z.string().uuid(),
-          versionNumber: z.number(),
-          executionId: z.string().uuid(),
-          model: z.string(),
-          createdAt: z.string(),
-        })
-        .nullable()
-        .optional(),
+      candidateId: z.uuid(),
     }),
   )
   .handler(async ({ data }): Promise<ContentReviewDetail> => {
@@ -563,9 +536,7 @@ export const saveCampaignContentReviewFn = createServerFn({ method: 'POST' })
       campaignId: data.campaignId,
       contentId: data.contentId,
       contentVariantId: data.contentVariantId,
-      verdict: data.verdict,
-      review: data.review,
-      provenance: data.provenance,
+      candidateId: data.candidateId,
     })
   })
 

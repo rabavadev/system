@@ -3,6 +3,7 @@ import { z } from 'zod'
 import type { ContentReviewDetail, ContentStatus, ReviewVerdict } from '../../types/domain.ts'
 import {
   composeContentReviewTask,
+  computeReviewHash,
   type GeneratedContentReview,
   parseContentReviewOutput,
 } from '../agents/content-review.ts'
@@ -10,25 +11,30 @@ import { ensureBuiltinAgents } from '../agents/registry.ts'
 import { executeAgentTask } from '../agents/task.ts'
 import type { ExecuteAIDeps } from '../ai/executor.ts'
 import { buildContext } from '../context/engine.ts'
+import { getAgentById, getAgentVersion } from './agent.ts'
 import { writeAuditLog } from './audit.ts'
 import { type ContentRow, toCampaignContentItem } from './content.ts'
 import { type ContentVariantRow, toContentVariantDetail } from './content-variant.ts'
 import { emitEventSafe } from './event.ts'
 import { IntegrityError } from './relations.ts'
-import { execute, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
+import { execute, newId, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
 
 export interface CriticReviewProvenance {
+  candidateId?: string | null
   criticAgentId: string
   criticAgentName: string
   criticAgentVersionId: string
   versionNumber: number
   executionId: string
-  model: string
+  model: string | null
+  provider?: string | null
   createdAt: string
+  reviewHash?: string | null
 }
 
 export interface GenerateContentReviewSuccess {
   ok: true
+  candidateId: string
   review: GeneratedContentReview
   provenance: CriticReviewProvenance
   contentVariantId: string
@@ -56,35 +62,29 @@ export const saveContentReviewInput = z.object({
   campaignId: z.string().uuid(),
   contentId: z.string().uuid(),
   contentVariantId: z.string().uuid(),
-  verdict: z.enum(['pass', 'revise']),
-  review: z.object({
-    verdict: z.enum(['pass', 'revise']),
-    summary: z.string().min(1, 'Review summary cannot be empty'),
-    strengths: z.array(z.string()).default([]),
-    issues: z
-      .array(
-        z.object({
-          category: z.string(),
-          severity: z.enum(['low', 'medium', 'high']),
-          message: z.string(),
-        }),
-      )
-      .default([]),
-    recommendedChanges: z.array(z.string()).default([]),
-  }),
-  provenance: z
-    .object({
-      criticAgentId: z.string().uuid(),
-      criticAgentName: z.string(),
-      criticAgentVersionId: z.string().uuid(),
-      versionNumber: z.number(),
-      executionId: z.string().uuid(),
-      model: z.string(),
-      createdAt: z.string(),
-    })
-    .nullable()
-    .optional(),
+  candidateId: z.string().uuid(),
 })
+
+export type SaveContentReviewInput = z.input<typeof saveContentReviewInput>
+
+export interface ContentReviewCandidateRow {
+  id: string
+  workspace_id: string
+  campaign_id: string
+  content_id: string
+  content_variant_id: string
+  critic_agent_id: string
+  critic_agent_version_id: string
+  ai_execution_id: string
+  provider: string | null
+  model: string | null
+  verdict: 'pass' | 'revise'
+  review_json: string
+  review_hash: string
+  created_at: string
+  saved_at: string | null
+  saved_review_id: string | null
+}
 
 export interface ContentReviewRow {
   id: string
@@ -143,8 +143,8 @@ export function toContentReviewDetail(row: ContentReviewRow): ContentReviewDetai
 }
 
 /**
- * Generate an editorial review for ONE saved Campaign content variant using the Critic agent.
- * Does NOT persist review to database.
+ * Generate an editorial review candidate for ONE saved Campaign content variant using the Critic agent.
+ * Persists a server-authoritative candidate record with hash and lineage, but does NOT create final content_review.
  */
 export async function generateCampaignContentReview(
   db: SqlDatabase,
@@ -248,19 +248,53 @@ export async function generateCampaignContentReview(
 
   // 8. Parse structured review
   const review = parseContentReviewOutput(result.content)
+  const reviewHash = computeReviewHash(review)
+  const candidateId = newId()
+  const now = nowIso()
+  const model = result.execution.model ?? null
+  const provider = result.execution.provider ?? null
 
-  // 9. Construct generation provenance
+  // 9. Persist review candidate server-side
+  await execute(
+    db,
+    `INSERT INTO content_review_candidate (
+      id, workspace_id, campaign_id, content_id, content_variant_id,
+      critic_agent_id, critic_agent_version_id, ai_execution_id, provider, model,
+      verdict, review_json, review_hash, created_at, saved_at, saved_review_id
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+    [
+      candidateId,
+      data.workspaceId,
+      data.campaignId,
+      data.contentId,
+      data.contentVariantId,
+      criticHandle.agent.id,
+      criticHandle.version.id,
+      result.execution.executionId,
+      provider,
+      model,
+      review.verdict,
+      JSON.stringify(review),
+      reviewHash,
+      now,
+    ],
+  )
+
+  // 10. Construct generation provenance
   const provenance: CriticReviewProvenance = {
+    candidateId,
     criticAgentId: criticHandle.agent.id,
     criticAgentName: criticHandle.agent.name,
     criticAgentVersionId: criticHandle.version.id,
     versionNumber: criticHandle.version.version,
     executionId: result.execution.executionId,
-    model: result.execution.model ?? 'default',
-    createdAt: nowIso(),
+    model,
+    provider,
+    createdAt: now,
+    reviewHash,
   }
 
-  // 10. Emit domain event (safe audit log)
+  // 11. Emit domain event (safe audit log)
   await emitEventSafe(db, {
     workspaceId: data.workspaceId,
     eventType: 'content.review_generated',
@@ -272,6 +306,7 @@ export async function generateCampaignContentReview(
       campaignId: data.campaignId,
       contentId: data.contentId,
       contentVariantId: data.contentVariantId,
+      reviewCandidateId: candidateId,
       executionId: result.execution.executionId,
       agentVersionId: criticHandle.version.id,
       verdict: review.verdict,
@@ -280,6 +315,7 @@ export async function generateCampaignContentReview(
 
   return {
     ok: true,
+    candidateId,
     review,
     provenance,
     contentVariantId: data.contentVariantId,
@@ -288,6 +324,7 @@ export async function generateCampaignContentReview(
 
 /**
  * Persist an editorial review for a saved content variant.
+ * Derives review data, verdict, and provenance authoritatively from a server-side content_review_candidate.
  * Creates an immutable review record without overwriting previous reviews.
  */
 export async function saveCampaignContentReview(
@@ -331,21 +368,41 @@ export async function saveCampaignContentReview(
     throw new IntegrityError('Content variant not found or is archived.')
   }
 
-  // 4. Resolve Critic Agent Identity & Version
-  const agentMap = await ensureBuiltinAgents(db, data.workspaceId)
-  const criticHandle = agentMap.get('critic')
-  const criticAgentId =
-    data.provenance?.criticAgentId ?? criticHandle?.agent.id ?? crypto.randomUUID()
-  const criticAgentVersionId =
-    data.provenance?.criticAgentVersionId ?? criticHandle?.version.id ?? crypto.randomUUID()
-  const criticAgentName = data.provenance?.criticAgentName ?? criticHandle?.agent.name ?? 'Critic'
-  const criticVersionNumber = data.provenance?.versionNumber ?? criticHandle?.version.version ?? 1
-  const executionId = data.provenance?.executionId ?? crypto.randomUUID()
+  // 4. Load and Validate Review Candidate
+  const candidate = await queryFirst<ContentReviewCandidateRow>(
+    db,
+    `SELECT * FROM content_review_candidate WHERE id = ?`,
+    [data.candidateId],
+  )
+  if (!candidate || candidate.workspace_id !== data.workspaceId) {
+    throw new IntegrityError('Candidate review not found in this workspace.')
+  }
+  if (candidate.campaign_id !== data.campaignId) {
+    throw new IntegrityError('Candidate review does not belong to this campaign.')
+  }
+  if (candidate.content_id !== data.contentId) {
+    throw new IntegrityError('Candidate review does not belong to this content item.')
+  }
+  if (candidate.content_variant_id !== data.contentVariantId) {
+    throw new IntegrityError('Candidate review does not belong to this content variant.')
+  }
+  if (candidate.saved_at !== null || candidate.saved_review_id !== null) {
+    throw new IntegrityError('Candidate review has already been saved.')
+  }
 
-  const reviewId = crypto.randomUUID()
-  const reviewJson = JSON.stringify(data.review)
+  // 5. Validate Critic Agent & Version Integrity
+  const criticAgent = await getAgentById(db, candidate.critic_agent_id)
+  if (!criticAgent || criticAgent.workspaceId !== data.workspaceId) {
+    throw new IntegrityError('Critic agent associated with this candidate is invalid.')
+  }
+  const criticVersion = await getAgentVersion(db, candidate.critic_agent_version_id)
+  if (!criticVersion || criticVersion.agentId !== criticAgent.id) {
+    throw new IntegrityError('Critic agent version associated with this candidate is invalid.')
+  }
 
-  // 5. Insert immutable content_review row
+  const reviewId = newId()
+
+  // 6. Insert immutable content_review row derived strictly from candidate
   await execute(
     db,
     `INSERT INTO content_review (
@@ -358,19 +415,27 @@ export async function saveCampaignContentReview(
       data.workspaceId,
       data.contentId,
       data.contentVariantId,
-      criticAgentId,
-      criticAgentVersionId,
-      executionId,
-      data.verdict,
-      reviewJson,
+      candidate.critic_agent_id,
+      candidate.critic_agent_version_id,
+      candidate.ai_execution_id,
+      candidate.verdict,
+      candidate.review_json,
       now,
     ],
   )
 
-  // 6. Write Audit Log
+  // 7. Mark candidate as saved / consumed
+  await execute(
+    db,
+    `UPDATE content_review_candidate SET saved_at = ?, saved_review_id = ? WHERE id = ?`,
+    [now, reviewId, candidate.id],
+  )
+
+  // 8. Write Audit Log
   await writeAuditLog(db, {
     workspaceId: data.workspaceId,
-    actorType: 'user',
+    actorType: 'agent',
+    actorId: candidate.critic_agent_id,
     action: 'create',
     entityType: 'content_review',
     entityId: reviewId,
@@ -378,14 +443,15 @@ export async function saveCampaignContentReview(
       campaignId: data.campaignId,
       contentId: data.contentId,
       contentVariantId: data.contentVariantId,
-      verdict: data.verdict,
-      criticAgentId,
-      criticAgentVersionId,
-      executionId,
+      verdict: candidate.verdict,
+      reviewCandidateId: candidate.id,
+      criticAgentId: candidate.critic_agent_id,
+      criticAgentVersionId: candidate.critic_agent_version_id,
+      executionId: candidate.ai_execution_id,
     }),
   })
 
-  // 7. Emit Domain Event
+  // 9. Emit Domain Event
   await emitEventSafe(db, {
     workspaceId: data.workspaceId,
     eventType: 'content.review_saved',
@@ -394,33 +460,52 @@ export async function saveCampaignContentReview(
     subjectId: data.contentId,
     payloadJson: JSON.stringify({
       reviewId,
+      reviewCandidateId: candidate.id,
       campaignId: data.campaignId,
       contentId: data.contentId,
       contentVariantId: data.contentVariantId,
-      verdict: data.verdict,
-      criticAgentId,
-      criticAgentVersionId,
-      executionId,
+      verdict: candidate.verdict,
+      criticAgentId: candidate.critic_agent_id,
+      criticAgentVersionId: candidate.critic_agent_version_id,
+      executionId: candidate.ai_execution_id,
     }),
   })
+
+  let parsedJson: {
+    summary?: string
+    strengths?: string[]
+    issues?: Array<{ category: string; severity: 'low' | 'medium' | 'high'; message: string }>
+    recommendedChanges?: string[]
+  } = {}
+  try {
+    parsedJson = JSON.parse(candidate.review_json)
+  } catch {
+    // fallback
+  }
 
   return {
     id: reviewId,
     workspaceId: data.workspaceId,
     contentId: data.contentId,
     contentVariantId: data.contentVariantId,
-    criticAgentId,
-    criticAgentVersionId,
-    aiExecutionId: executionId,
-    verdict: data.verdict,
-    reviewJson,
+    criticAgentId: candidate.critic_agent_id,
+    criticAgentVersionId: candidate.critic_agent_version_id,
+    aiExecutionId: candidate.ai_execution_id,
+    verdict: candidate.verdict,
+    reviewJson: candidate.review_json,
     createdAt: now,
-    criticAgentName,
-    criticAgentVersionNumber: criticVersionNumber,
-    summary: data.review.summary,
-    strengths: data.review.strengths,
-    issues: data.review.issues,
-    recommendedChanges: data.review.recommendedChanges,
+    criticAgentName: criticAgent.name,
+    criticAgentVersionNumber: criticVersion.version,
+    summary:
+      parsedJson.summary ??
+      (candidate.verdict === 'pass'
+        ? 'Draft passes editorial review.'
+        : 'Draft requires revisions.'),
+    strengths: Array.isArray(parsedJson.strengths) ? parsedJson.strengths : [],
+    issues: Array.isArray(parsedJson.issues) ? parsedJson.issues : [],
+    recommendedChanges: Array.isArray(parsedJson.recommendedChanges)
+      ? parsedJson.recommendedChanges
+      : [],
   }
 }
 

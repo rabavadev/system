@@ -460,19 +460,33 @@ test('5. exact variant ID used', async () => {
 
   assert.notEqual(v1.id, v2.id)
 
+  const gen1 = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: v1.id,
+    },
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'revise',
+        summary: 'Draft 1 is too brief.',
+        strengths: [],
+        issues: [{ category: 'clarity', severity: 'high', message: 'Not enough detail' }],
+        recommendedChanges: ['Add examples'],
+      }),
+    ),
+  )
+  assert.equal(gen1.ok, true)
+  if (!gen1.ok) throw new Error('gen1 failed')
+
   const rev1 = await saveCampaignContentReview(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
     contentId: item.id,
     contentVariantId: v1.id,
-    verdict: 'revise',
-    review: {
-      verdict: 'revise',
-      summary: 'Draft 1 is too brief.',
-      strengths: [],
-      issues: [{ category: 'clarity', severity: 'high', message: 'Not enough detail' }],
-      recommendedChanges: ['Add examples'],
-    },
+    candidateId: gen1.candidateId,
   })
 
   assert.equal(rev1.contentVariantId, v1.id)
@@ -880,19 +894,33 @@ test('20. Save explicitly persists review', async () => {
     body: 'Draft to review.',
   })
 
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'pass',
+        summary: 'Solid copy that aligns with campaign goals.',
+        strengths: ['Crisp call to action'],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
+  )
+  assert.equal(genResult.ok, true)
+  if (!genResult.ok) throw new Error('critic gen failed')
+
   const savedReview = await saveCampaignContentReview(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
     contentId: item.id,
     contentVariantId: variant.id,
-    verdict: 'pass',
-    review: {
-      verdict: 'pass',
-      summary: 'Solid copy that aligns with campaign goals.',
-      strengths: ['Crisp call to action'],
-      issues: [],
-      recommendedChanges: [],
-    },
+    candidateId: genResult.candidateId,
   })
 
   assert.ok(savedReview.id)
@@ -928,19 +956,33 @@ test('21. review references exact variant', async () => {
     body: 'Referenced body text.',
   })
 
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'revise',
+        summary: 'Needs work',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
+  )
+  assert.equal(genResult.ok, true)
+  if (!genResult.ok) throw new Error('critic gen failed')
+
   const savedReview = await saveCampaignContentReview(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
     contentId: item.id,
     contentVariantId: variant.id,
-    verdict: 'revise',
-    review: {
-      verdict: 'revise',
-      summary: 'Needs work',
-      strengths: [],
-      issues: [],
-      recommendedChanges: [],
-    },
+    candidateId: genResult.candidateId,
   })
 
   const row = raw.prepare(`SELECT * FROM content_review WHERE id = ?`).get(savedReview.id) as {
@@ -993,9 +1035,7 @@ test('22. Critic provenance preserved', async () => {
     campaignId: campaign.id,
     contentId: item.id,
     contentVariantId: variant.id,
-    verdict: genResult.review.verdict,
-    review: genResult.review,
-    provenance: genResult.provenance,
+    candidateId: genResult.candidateId,
   })
 
   assert.equal(savedReview.criticAgentName, 'Critic')
@@ -1029,6 +1069,27 @@ test('23. second review creates history, not overwrite', async () => {
   })
 
   // Review 1
+  const gen1 = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'revise',
+        summary: 'Review 1: Needs stronger hook.',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
+  )
+  assert.equal(gen1.ok, true)
+  if (!gen1.ok) throw new Error('gen1 failed')
+
   const r1 = await saveCampaignContentReview(
     db,
     {
@@ -1036,19 +1097,33 @@ test('23. second review creates history, not overwrite', async () => {
       campaignId: campaign.id,
       contentId: item.id,
       contentVariantId: variant.id,
-      verdict: 'revise',
-      review: {
-        verdict: 'revise',
-        summary: 'Review 1: Needs stronger hook.',
-        strengths: [],
-        issues: [],
-        recommendedChanges: [],
-      },
+      candidateId: gen1.candidateId,
     },
     '2026-08-20T10:00:01.000Z',
   )
 
   // Review 2
+  const gen2 = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'pass',
+        summary: 'Review 2: Hook is now acceptable.',
+        strengths: ['Good hook'],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
+  )
+  assert.equal(gen2.ok, true)
+  if (!gen2.ok) throw new Error('gen2 failed')
+
   const r2 = await saveCampaignContentReview(
     db,
     {
@@ -1056,14 +1131,7 @@ test('23. second review creates history, not overwrite', async () => {
       campaignId: campaign.id,
       contentId: item.id,
       contentVariantId: variant.id,
-      verdict: 'pass',
-      review: {
-        verdict: 'pass',
-        summary: 'Review 2: Hook is now acceptable.',
-        strengths: ['Good hook'],
-        issues: [],
-        recommendedChanges: [],
-      },
+      candidateId: gen2.candidateId,
     },
     '2026-08-20T10:00:02.000Z',
   )
@@ -1106,19 +1174,33 @@ test('24. Critic cannot alter original variant', async () => {
     callToAction: 'Original CTA',
   })
 
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'revise',
+        summary: 'Change everything!',
+        strengths: [],
+        issues: [{ category: 'general', severity: 'high', message: 'Needs rewrite' }],
+        recommendedChanges: ['Rewrite body'],
+      }),
+    ),
+  )
+  assert.equal(genResult.ok, true)
+  if (!genResult.ok) throw new Error('gen failed')
+
   await saveCampaignContentReview(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
     contentId: item.id,
     contentVariantId: variant.id,
-    verdict: 'revise',
-    review: {
-      verdict: 'revise',
-      summary: 'Change everything!',
-      strengths: [],
-      issues: [{ category: 'general', severity: 'high', message: 'Needs rewrite' }],
-      recommendedChanges: ['Rewrite body'],
-    },
+    candidateId: genResult.candidateId,
   })
 
   const fetchedVariant = await getLatestContentVariant(db, base.workspaceId, item.id)
@@ -1151,20 +1233,33 @@ test('25. content does not become Ready automatically', async () => {
     body: 'Some copy',
   })
 
-  // Pass review
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'pass',
+        summary: 'Passes review.',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
+  )
+  assert.equal(genResult.ok, true)
+  if (!genResult.ok) throw new Error('gen failed')
+
   await saveCampaignContentReview(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
     contentId: item.id,
     contentVariantId: variant.id,
-    verdict: 'pass',
-    review: {
-      verdict: 'pass',
-      summary: 'Passes review.',
-      strengths: [],
-      issues: [],
-      recommendedChanges: [],
-    },
+    candidateId: genResult.candidateId,
   })
 
   const fetchedContent = await getCampaignContentDetail(db, base.workspaceId, item.id)
@@ -1196,19 +1291,33 @@ test('26. content does not become Published', async () => {
     body: 'Some copy',
   })
 
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'pass',
+        summary: 'Passes review.',
+        strengths: [],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
+  )
+  assert.equal(genResult.ok, true)
+  if (!genResult.ok) throw new Error('gen failed')
+
   await saveCampaignContentReview(db, {
     workspaceId: base.workspaceId,
     campaignId: campaign.id,
     contentId: item.id,
     contentVariantId: variant.id,
-    verdict: 'pass',
-    review: {
-      verdict: 'pass',
-      summary: 'Passes review.',
-      strengths: [],
-      issues: [],
-      recommendedChanges: [],
-    },
+    candidateId: genResult.candidateId,
   })
 
   // Check no post rows were created
@@ -1365,9 +1474,7 @@ test('30. events/audit safe (content.review_generated, content.review_saved)', a
     campaignId: campaign.id,
     contentId: item.id,
     contentVariantId: variant.id,
-    verdict: genResult.review.verdict,
-    review: genResult.review,
-    provenance: genResult.provenance,
+    candidateId: genResult.candidateId,
   })
 
   const events = await listRecentEvents(db, base.workspaceId, 'content.review_', 20)
@@ -1401,4 +1508,393 @@ test('31. existing Creator/Campaign/Agent/AI tests stay green', async () => {
   })
 
   assert.ok(campaign.id)
+})
+
+test('32-36. candidate architecture: review generation creates server-persisted candidate with full lineage', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Candidate Lineage Test',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Candidate Lineage Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Lineage draft body',
+  })
+
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'pass',
+        summary: 'Excellent copy with clear focus.',
+        strengths: ['Clear message'],
+        issues: [],
+        recommendedChanges: [],
+      }),
+    ),
+  )
+
+  assert.equal(genResult.ok, true)
+  if (!genResult.ok) throw new Error('gen failed')
+
+  // Candidate row created
+  const candidateRow = raw
+    .prepare(`SELECT * FROM content_review_candidate WHERE id = ?`)
+    .get(genResult.candidateId) as {
+    id: string
+    workspace_id: string
+    campaign_id: string
+    content_id: string
+    content_variant_id: string
+    critic_agent_id: string
+    critic_agent_version_id: string
+    ai_execution_id: string
+    provider: string
+    model: string | null
+    verdict: string
+    review_json: string
+    review_hash: string
+    saved_at: string | null
+    saved_review_id: string | null
+  }
+
+  assert.ok(candidateRow, 'Candidate row must exist in database')
+  assert.equal(candidateRow.workspace_id, base.workspaceId)
+  assert.equal(candidateRow.campaign_id, campaign.id)
+  assert.equal(candidateRow.content_id, item.id)
+  assert.equal(candidateRow.content_variant_id, variant.id)
+  assert.ok(candidateRow.critic_agent_id)
+  assert.ok(candidateRow.critic_agent_version_id)
+  assert.ok(candidateRow.ai_execution_id)
+  assert.equal(candidateRow.verdict, 'pass')
+  assert.equal(candidateRow.saved_at, null)
+  assert.equal(candidateRow.saved_review_id, null)
+  assert.ok(candidateRow.review_hash)
+
+  // content_review table is still empty
+  const reviewCount = raw.prepare(`SELECT COUNT(*) as count FROM content_review`).get() as {
+    count: number
+  }
+  assert.equal(reviewCount.count, 0, 'No content_review row created during generation')
+})
+
+test('37-39. candidate provider, model and review_hash are deterministic and truthful', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Provider Model Truth Test',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Truth Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Truth body',
+  })
+
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(JSON.stringify({ verdict: 'revise', summary: 'Truth summary' })),
+  )
+
+  assert.equal(genResult.ok, true)
+  if (!genResult.ok) throw new Error('gen failed')
+
+  const candidateRow = raw
+    .prepare(`SELECT * FROM content_review_candidate WHERE id = ?`)
+    .get(genResult.candidateId) as {
+    provider: string
+    model: string | null
+    review_hash: string
+  }
+
+  assert.equal(candidateRow.provider, 'echo')
+  assert.equal(candidateRow.model, '@cf/meta/llama-3.3-70b-instruct-fp8-fast')
+  assert.match(candidateRow.review_hash, /^[a-f0-9]{64}$/) // Valid SHA-256 hex
+})
+
+test('40-44. Save strictly validates candidate binding (workspace, campaign, content, variant)', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Candidate Validation Campaign',
+  })
+
+  const otherCampaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Other Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Candidate Item',
+    contentType: 'post',
+  })
+
+  const otherItem = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Other Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Candidate validation body',
+  })
+
+  const { variant: otherVariant } = await seedDraftVariant(
+    db,
+    base.workspaceId,
+    campaign.id,
+    item.id,
+    {
+      body: 'Other variant body',
+    },
+  )
+
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(JSON.stringify({ verdict: 'pass', summary: 'Good' })),
+  )
+  assert.equal(genResult.ok, true)
+  if (!genResult.ok) throw new Error('gen failed')
+
+  // 1. Wrong workspace
+  await assert.rejects(
+    () =>
+      saveCampaignContentReview(db, {
+        workspaceId: base.otherWorkspaceId,
+        campaignId: campaign.id,
+        contentId: item.id,
+        contentVariantId: variant.id,
+        candidateId: genResult.candidateId,
+      }),
+    /Campaign not found in this workspace|Review candidate does not match workspace/,
+  )
+
+  // 2. Wrong campaign
+  await assert.rejects(
+    () =>
+      saveCampaignContentReview(db, {
+        workspaceId: base.workspaceId,
+        campaignId: otherCampaign.id,
+        contentId: item.id,
+        contentVariantId: variant.id,
+        candidateId: genResult.candidateId,
+      }),
+    /Content item not found|Review candidate does not match campaign/,
+  )
+
+  // 3. Wrong content
+  await assert.rejects(
+    () =>
+      saveCampaignContentReview(db, {
+        workspaceId: base.workspaceId,
+        campaignId: campaign.id,
+        contentId: otherItem.id,
+        contentVariantId: variant.id,
+        candidateId: genResult.candidateId,
+      }),
+    /Content variant not found|Review candidate does not match content item/,
+  )
+
+  // 4. Wrong variant
+  await assert.rejects(
+    () =>
+      saveCampaignContentReview(db, {
+        workspaceId: base.workspaceId,
+        campaignId: campaign.id,
+        contentId: item.id,
+        contentVariantId: otherVariant.id,
+        candidateId: genResult.candidateId,
+      }),
+    /Candidate review does not belong to this content variant/,
+  )
+})
+
+test('45. client cannot forge verdict, review JSON, or provenance', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Anti-Forgery Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Anti-Forgery Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Anti forgery body',
+  })
+
+  // AI gave verdict = revise
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(
+      JSON.stringify({
+        verdict: 'revise',
+        summary: 'AI genuinely requested revision.',
+        strengths: [],
+        issues: [{ category: 'accuracy', severity: 'high', message: 'Inaccurate claim' }],
+        recommendedChanges: ['Fix accuracy'],
+      }),
+    ),
+  )
+  assert.equal(genResult.ok, true)
+  if (!genResult.ok) throw new Error('gen failed')
+
+  // Save review strictly from candidate
+  const saved = await saveCampaignContentReview(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    candidateId: genResult.candidateId,
+  })
+
+  // Saved verdict MUST be 'revise' derived strictly from candidate row in SQLite
+  assert.equal(saved.verdict, 'revise')
+  assert.equal(saved.summary, 'AI genuinely requested revision.')
+
+  // Check persisted content_review row
+  const row = raw.prepare(`SELECT * FROM content_review WHERE id = ?`).get(saved.id) as {
+    verdict: string
+    review_json: string
+  }
+  assert.equal(row.verdict, 'revise')
+  const parsed = JSON.parse(row.review_json)
+  assert.equal(parsed.verdict, 'revise')
+  assert.equal(parsed.issues[0].message, 'Inaccurate claim')
+})
+
+test('47-48. candidate is single-use and marked consumed upon save', async () => {
+  const { db, raw } = freshDb()
+  const base = seedBaseline(raw)
+
+  const campaign = await createCampaign(db, {
+    workspaceId: base.workspaceId,
+    brandId: base.brandId,
+    accountIds: [base.accountId],
+    name: 'Single Use Candidate Campaign',
+  })
+
+  const item = await createCampaignContent(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    targetAccountId: base.accountId,
+    title: 'Single Use Item',
+    contentType: 'post',
+  })
+
+  const { variant } = await seedDraftVariant(db, base.workspaceId, campaign.id, item.id, {
+    body: 'Single use candidate test body',
+  })
+
+  const genResult = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: base.workspaceId,
+      campaignId: campaign.id,
+      contentId: item.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(JSON.stringify({ verdict: 'pass', summary: 'Looks great' })),
+  )
+  assert.equal(genResult.ok, true)
+  if (!genResult.ok) throw new Error('gen failed')
+
+  // 1. First save succeeds
+  const saved = await saveCampaignContentReview(db, {
+    workspaceId: base.workspaceId,
+    campaignId: campaign.id,
+    contentId: item.id,
+    contentVariantId: variant.id,
+    candidateId: genResult.candidateId,
+  })
+  assert.ok(saved.id)
+
+  // Candidate row now marked consumed
+  const candidateRow = raw
+    .prepare(`SELECT * FROM content_review_candidate WHERE id = ?`)
+    .get(genResult.candidateId) as {
+    saved_at: string | null
+    saved_review_id: string | null
+  }
+  assert.ok(candidateRow.saved_at)
+  assert.equal(candidateRow.saved_review_id, saved.id)
+
+  // 2. Second save with same candidateId throws IntegrityError
+  await assert.rejects(
+    () =>
+      saveCampaignContentReview(db, {
+        workspaceId: base.workspaceId,
+        campaignId: campaign.id,
+        contentId: item.id,
+        contentVariantId: variant.id,
+        candidateId: genResult.candidateId,
+      }),
+    /Candidate review has already been saved/,
+  )
 })

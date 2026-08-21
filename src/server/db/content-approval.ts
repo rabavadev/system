@@ -125,7 +125,14 @@ export async function approveCampaignContentVariant(
   // 4. Check Latest Critic Review on this variant
   const latestReview = await getLatestContentReview(db, data.workspaceId, data.contentVariantId)
   const isCriticRevise = latestReview?.verdict === 'revise'
-  const criticOverride = isCriticRevise && Boolean(data.overrideCritic || data.note)
+
+  if (isCriticRevise && data.overrideCritic !== true) {
+    throw new IntegrityError(
+      'Critic review returned revise for this variant. Explicit override (overrideCritic: true) is required to approve.',
+    )
+  }
+
+  const criticOverride = isCriticRevise && data.overrideCritic === true
 
   // 5. Idempotency Check: if this variant is already the active approved variant
   if (contentRow.status === 'ready' && contentRow.selected_variant_id === data.contentVariantId) {

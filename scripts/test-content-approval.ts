@@ -517,9 +517,7 @@ test('16. Critic pass does not auto-approve content', async () => {
     campaignId: campaign.id,
     contentId: contentItem.id,
     contentVariantId: variant.id,
-    verdict: 'pass',
-    review: reviewResult.review,
-    provenance: reviewResult.provenance,
+    candidateId: reviewResult.candidateId,
   })
 
   // Verify parent content is still draft and NOT approved
@@ -565,9 +563,7 @@ test('17-18. Critic revise does not permanently block human approval and records
     campaignId: campaign.id,
     contentId: contentItem.id,
     contentVariantId: variant.id,
-    verdict: 'revise',
-    review: reviewResult.review,
-    provenance: reviewResult.provenance,
+    candidateId: reviewResult.candidateId,
   })
 
   // Human explicitly approves despite revise verdict
@@ -698,9 +694,7 @@ test('21-24. revision lineage: approval of V2 does not approve V1 and new V3 doe
     campaignId: campaign.id,
     contentId: contentItem.id,
     contentVariantId: variant1.id,
-    verdict: 'revise',
-    review: reviewResult.review,
-    provenance: reviewResult.provenance,
+    candidateId: reviewResult.candidateId,
   })
 
   // 2. Creator produces V2 revision
@@ -980,4 +974,177 @@ test('33. No publishing test: post table is empty and no external platform write
   const contentReloaded = await getCampaignContentDetail(db, seed.workspaceId, contentItem.id)
   assert.equal(contentReloaded?.status, 'ready')
   assert.notEqual(contentReloaded?.status, 'published')
+})
+
+test('34. revise + no override => rejected with zero side effects', async () => {
+  const { db, raw } = freshDb()
+  const seed = seedBaseline(raw)
+  const { campaign, contentItem, variant } = await setupContentWithVariant(db, seed)
+
+  const reviewGen = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: seed.workspaceId,
+      campaignId: campaign.id,
+      contentId: contentItem.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(JSON.stringify({ verdict: 'revise', summary: 'Need changes' })),
+  )
+  assert.equal(reviewGen.ok, true)
+  if (!reviewGen.ok) throw new Error('review failed')
+
+  await saveCampaignContentReview(db, {
+    workspaceId: seed.workspaceId,
+    campaignId: campaign.id,
+    contentId: contentItem.id,
+    contentVariantId: variant.id,
+    candidateId: reviewGen.candidateId,
+  })
+
+  // Attempt approval without overrideCritic
+  await assert.rejects(
+    () =>
+      approveCampaignContentVariant(db, {
+        workspaceId: seed.workspaceId,
+        campaignId: campaign.id,
+        contentId: contentItem.id,
+        contentVariantId: variant.id,
+      }),
+    /Explicit override \(overrideCritic: true\) is required to approve/,
+  )
+
+  // Verify zero side effects
+  const content = await getCampaignContentDetail(db, seed.workspaceId, contentItem.id)
+  assert.equal(content?.status, 'draft')
+  assert.equal(content?.selectedVariantId, null)
+
+  const approvals = await listContentApprovals(db, seed.workspaceId, contentItem.id)
+  assert.equal(approvals.length, 0)
+})
+
+test('35. revise + overrideCritic=false => rejected', async () => {
+  const { db, raw } = freshDb()
+  const seed = seedBaseline(raw)
+  const { campaign, contentItem, variant } = await setupContentWithVariant(db, seed)
+
+  const reviewGen = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: seed.workspaceId,
+      campaignId: campaign.id,
+      contentId: contentItem.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(JSON.stringify({ verdict: 'revise', summary: 'Need changes' })),
+  )
+  assert.equal(reviewGen.ok, true)
+  if (!reviewGen.ok) throw new Error('review failed')
+
+  await saveCampaignContentReview(db, {
+    workspaceId: seed.workspaceId,
+    campaignId: campaign.id,
+    contentId: contentItem.id,
+    contentVariantId: variant.id,
+    candidateId: reviewGen.candidateId,
+  })
+
+  await assert.rejects(
+    () =>
+      approveCampaignContentVariant(db, {
+        workspaceId: seed.workspaceId,
+        campaignId: campaign.id,
+        contentId: contentItem.id,
+        contentVariantId: variant.id,
+        overrideCritic: false,
+      }),
+    /Explicit override \(overrideCritic: true\) is required to approve/,
+  )
+})
+
+test('36. revise + note only (without overrideCritic=true) => rejected', async () => {
+  const { db, raw } = freshDb()
+  const seed = seedBaseline(raw)
+  const { campaign, contentItem, variant } = await setupContentWithVariant(db, seed)
+
+  const reviewGen = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: seed.workspaceId,
+      campaignId: campaign.id,
+      contentId: contentItem.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(JSON.stringify({ verdict: 'revise', summary: 'Need changes' })),
+  )
+  assert.equal(reviewGen.ok, true)
+  if (!reviewGen.ok) throw new Error('review failed')
+
+  await saveCampaignContentReview(db, {
+    workspaceId: seed.workspaceId,
+    campaignId: campaign.id,
+    contentId: contentItem.id,
+    contentVariantId: variant.id,
+    candidateId: reviewGen.candidateId,
+  })
+
+  // Note provided without overrideCritic: true must be rejected
+  await assert.rejects(
+    () =>
+      approveCampaignContentVariant(db, {
+        workspaceId: seed.workspaceId,
+        campaignId: campaign.id,
+        contentId: contentItem.id,
+        contentVariantId: variant.id,
+        note: 'Documentation note explaining why, but without setting override flag',
+      }),
+    /Explicit override \(overrideCritic: true\) is required to approve/,
+  )
+
+  const content = await getCampaignContentDetail(db, seed.workspaceId, contentItem.id)
+  assert.equal(content?.status, 'draft')
+  assert.equal(content?.selectedVariantId, null)
+})
+
+test('37-38. revise + overrideCritic=true => accepted, critic_override=1 stored, and note preserved', async () => {
+  const { db, raw } = freshDb()
+  const seed = seedBaseline(raw)
+  const { campaign, contentItem, variant } = await setupContentWithVariant(db, seed)
+
+  const reviewGen = await generateCampaignContentReview(
+    db,
+    {
+      workspaceId: seed.workspaceId,
+      campaignId: campaign.id,
+      contentId: contentItem.id,
+      contentVariantId: variant.id,
+    },
+    mockAiDeps(JSON.stringify({ verdict: 'revise', summary: 'Need changes' })),
+  )
+  assert.equal(reviewGen.ok, true)
+  if (!reviewGen.ok) throw new Error('review failed')
+
+  await saveCampaignContentReview(db, {
+    workspaceId: seed.workspaceId,
+    campaignId: campaign.id,
+    contentId: contentItem.id,
+    contentVariantId: variant.id,
+    candidateId: reviewGen.candidateId,
+  })
+
+  const result = await approveCampaignContentVariant(db, {
+    workspaceId: seed.workspaceId,
+    campaignId: campaign.id,
+    contentId: contentItem.id,
+    contentVariantId: variant.id,
+    overrideCritic: true,
+    note: 'Intentional executive override for urgent launch',
+  })
+
+  assert.equal(result.approval.status, 'approved')
+  assert.equal(result.approval.criticOverride, true)
+  assert.equal(result.approval.criticVerdict, 'revise')
+  assert.equal(result.approval.note, 'Intentional executive override for urgent launch')
+  assert.equal(result.contentItem.status, 'ready')
+  assert.equal(result.contentItem.selectedVariantId, variant.id)
 })

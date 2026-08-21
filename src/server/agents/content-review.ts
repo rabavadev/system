@@ -4,6 +4,7 @@ import type {
   ReviewIssue,
   ReviewVerdict,
 } from '../../types/domain.ts'
+import { sha256Hex } from '../approval/snapshot.ts'
 import type { ContentVariantDetail } from '../db/content-variant.ts'
 
 export interface GeneratedContentReview {
@@ -12,6 +13,34 @@ export interface GeneratedContentReview {
   strengths: string[]
   issues: ReviewIssue[]
   recommendedChanges: string[]
+}
+
+/**
+ * Computes deterministic canonical SHA-256 hash of structured review content.
+ */
+export function computeReviewHash(review: {
+  verdict: ReviewVerdict
+  summary: string
+  strengths?: string[] | null | undefined
+  issues?: ReviewIssue[] | null | undefined
+  recommendedChanges?: string[] | null | undefined
+}): string {
+  const canonical = JSON.stringify({
+    verdict: review.verdict,
+    summary: review.summary.trim(),
+    strengths: Array.isArray(review.strengths) ? review.strengths.map((s) => s.trim()) : [],
+    issues: Array.isArray(review.issues)
+      ? review.issues.map((i) => ({
+          category: i.category.trim(),
+          severity: i.severity,
+          message: i.message.trim(),
+        }))
+      : [],
+    recommendedChanges: Array.isArray(review.recommendedChanges)
+      ? review.recommendedChanges.map((r) => r.trim())
+      : [],
+  })
+  return sha256Hex(canonical)
 }
 
 /**

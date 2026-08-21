@@ -99,6 +99,7 @@ export function CampaignDraftModal({
   // Critic Review states
   const [reviews, setReviews] = useState<ContentReviewDetail[]>([])
   const [_isLoadingReviews, setIsLoadingReviews] = useState(false)
+  const [candidateReviewId, setCandidateReviewId] = useState<string | null>(null)
   const [candidateReview, setCandidateReview] = useState<GeneratedContentReview | null>(null)
   const [reviewProvenance, setReviewProvenance] = useState<CriticReviewProvenance | null>(null)
   const [isReviewCandidate, setIsReviewCandidate] = useState(false)
@@ -177,6 +178,7 @@ export function CampaignDraftModal({
 
     setError(null)
     setSuccessMessage(null)
+    setCandidateReviewId(null)
     setCandidateReview(null)
     setIsReviewCandidate(false)
     startGenerating(async () => {
@@ -274,6 +276,7 @@ export function CampaignDraftModal({
           return
         }
 
+        setCandidateReviewId(result.candidateId)
         setCandidateReview(result.review)
         setReviewProvenance(result.provenance)
         setIsReviewCandidate(true)
@@ -284,7 +287,7 @@ export function CampaignDraftModal({
   }
 
   const handleSaveReview = () => {
-    if (!candidateReview || !savedVariantId) return
+    if (!candidateReviewId || !savedVariantId) return
 
     setError(null)
     startSavingReview(async () => {
@@ -294,15 +297,14 @@ export function CampaignDraftModal({
             campaignId: campaign.id,
             contentId: contentItem.id,
             contentVariantId: savedVariantId,
-            verdict: candidateReview.verdict,
-            review: candidateReview,
-            provenance: reviewProvenance ?? undefined,
+            candidateId: candidateReviewId,
           },
         })
 
         setReviews((prev) => [savedReview, ...prev.filter((r) => r.id !== savedReview.id)])
         setIsReviewCandidate(false)
         setCandidateReview(null)
+        setCandidateReviewId(null)
         setSuccessMessage(
           `Editorial review (${savedReview.verdict.toUpperCase()}) saved to history!`,
         )
@@ -378,13 +380,15 @@ export function CampaignDraftModal({
     setSuccessMessage(null)
     startApproving(async () => {
       try {
+        const isOverride =
+          latestSavedReview?.verdict === 'revise' && (override || showOverrideConfirm)
         const result = await approveCampaignContentVariantFn({
           data: {
             campaignId: campaign.id,
             contentId: activeItem.id,
             contentVariantId: savedVariantId,
             note: overrideNote.trim() || null,
-            overrideCritic: override || Boolean(overrideNote.trim()),
+            overrideCritic: isOverride ? true : undefined,
           },
         })
 

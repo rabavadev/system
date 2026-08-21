@@ -45,7 +45,7 @@ const id = () => crypto.randomUUID()
 test('clean database migrates from zero; all tables exist', () => {
   const db = freshDb()
   const files = migrate(db)
-  assert.equal(files.length, 20, `expected 20 migrations, got: ${files.join(', ')}`)
+  assert.equal(files.length, 21, `expected 21 migrations, got: ${files.join(', ')}`)
 
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -68,6 +68,7 @@ test('clean database migrates from zero; all tables exist', () => {
     'content_approval',
     'content_draft_candidate',
     'content_review',
+    'content_review_candidate',
     'content_variant',
     'content_variant_asset',
     'conversation',
@@ -962,6 +963,82 @@ test('migration 0020 creates content_approval table and adds selected_variant_id
   assert.ok(
     approvalIndexes.includes('idx_content_approval_variant'),
     `expected idx_content_approval_variant index, got: ${approvalIndexes.join(', ')}`,
+  )
+
+  db.close()
+})
+
+test('migration 0021 creates content_review_candidate table and indexes', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const candidateCols = db
+    .prepare(`PRAGMA table_info(content_review_candidate)`)
+    .all()
+    .map((c) => c.name)
+
+  assert.ok(candidateCols.includes('id'), 'content_review_candidate should have id')
+  assert.ok(
+    candidateCols.includes('workspace_id'),
+    'content_review_candidate should have workspace_id',
+  )
+  assert.ok(
+    candidateCols.includes('campaign_id'),
+    'content_review_candidate should have campaign_id',
+  )
+  assert.ok(candidateCols.includes('content_id'), 'content_review_candidate should have content_id')
+  assert.ok(
+    candidateCols.includes('content_variant_id'),
+    'content_review_candidate should have content_variant_id',
+  )
+  assert.ok(
+    candidateCols.includes('critic_agent_id'),
+    'content_review_candidate should have critic_agent_id',
+  )
+  assert.ok(
+    candidateCols.includes('critic_agent_version_id'),
+    'content_review_candidate should have critic_agent_version_id',
+  )
+  assert.ok(
+    candidateCols.includes('ai_execution_id'),
+    'content_review_candidate should have ai_execution_id',
+  )
+  assert.ok(candidateCols.includes('provider'), 'content_review_candidate should have provider')
+  assert.ok(candidateCols.includes('model'), 'content_review_candidate should have model')
+  assert.ok(candidateCols.includes('verdict'), 'content_review_candidate should have verdict')
+  assert.ok(
+    candidateCols.includes('review_json'),
+    'content_review_candidate should have review_json',
+  )
+  assert.ok(
+    candidateCols.includes('review_hash'),
+    'content_review_candidate should have review_hash',
+  )
+  assert.ok(candidateCols.includes('created_at'), 'content_review_candidate should have created_at')
+  assert.ok(candidateCols.includes('saved_at'), 'content_review_candidate should have saved_at')
+  assert.ok(
+    candidateCols.includes('saved_review_id'),
+    'content_review_candidate should have saved_review_id',
+  )
+
+  const candidateIndexes = db
+    .prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'content_review_candidate'`,
+    )
+    .all()
+    .map((r) => r.name)
+
+  assert.ok(
+    candidateIndexes.includes('idx_content_review_candidate_variant'),
+    `expected idx_content_review_candidate_variant index, got: ${candidateIndexes.join(', ')}`,
+  )
+  assert.ok(
+    candidateIndexes.includes('idx_content_review_candidate_content'),
+    `expected idx_content_review_candidate_content index, got: ${candidateIndexes.join(', ')}`,
+  )
+  assert.ok(
+    candidateIndexes.includes('idx_content_review_candidate_workspace'),
+    `expected idx_content_review_candidate_workspace index, got: ${candidateIndexes.join(', ')}`,
   )
 
   db.close()

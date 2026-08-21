@@ -11,7 +11,7 @@ Navigation: src/components/layout/nav-items.ts + topbar.tsx (shows active brand)
 Auth: none yet — single seeded workspace
 Current user: n/a; active brand via cookie (src/features/workspace/server.ts)
 API client: per-feature server functions (src/features/*/server.ts)
-Schema: migrations/0001–0020 + docs/database.md
+Schema: migrations/0001–0021 + docs/database.md
 Design system: Tailwind v4 + src/components/ui/
 Shared components: src/components/ui/*, src/components/layout/*
 ```
@@ -39,9 +39,9 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Campaigns & Strategy | src/features/campaigns/ + src/server/db/campaign.ts | objectives, angles, hypotheses, targets with canonical metric validation (H4A, migration 0013) |
 | Canonical Metrics Registry | src/server/db/metric.ts + docs/database.md | metric_definition single source of truth; 12 built-in metrics + workspace custom metrics; dynamic validation (H4A) |
 | Creator Draft Studio (Step 15A) | src/features/campaigns/ + src/server/db/content-variant.ts | draft candidate lifecycle (`content_draft_candidate`), platform derivation, human edit hash tracking (H3A.1, migration 0016) |
-| Critic Editorial Reviews (Step 15B) | src/server/db/content-review.ts + src/features/campaigns/ | human-triggered AI critique on saved immutable variants; structured `pass`/`revise` verdicts; immutable `content_review` (migration 0015) |
+| Critic Editorial Reviews (Step 15B) | src/server/db/content-review.ts + src/features/campaigns/ | human-triggered AI critique on saved immutable variants; server-authoritative `content_review_candidate` lifecycle; structured `pass`/`revise` verdicts; immutable `content_review` (migrations 0015, 0021) |
 | Creator Revisions (Step 15C) | src/server/db/content-variant.ts + src/server/agents/content-draft.ts | human-controlled revisions from Critic feedback; `source_variant_id` & `source_review_id` candidate lineage; immutable variant chains (migration 0019) |
-| Content Editorial Approval (Step 15D) | src/server/db/content-approval.ts + src/features/campaigns/ | explicit human editorial gate; `content.status = 'ready'`; `content.selected_variant_id`; immutable `content_approval` audit history; zero auto-publishing (migration 0020) |
+| Content Editorial Approval (Step 15D) | src/server/db/content-approval.ts + src/features/campaigns/ | explicit human editorial gate; `content.status = 'ready'`; `content.selected_variant_id`; immutable `content_approval` audit history; strict server-side Critic override enforcement; zero auto-publishing (migration 0020) |
 
 ## Completed Steps & Hardening Sequence
 
@@ -73,7 +73,8 @@ Shared components: src/components/ui/*, src/components/layout/*
 - **HARDENING H3B.2**: Exact generic workflow run scope integrity (migration 0018).
 - **HARDENING H4A**: Canonical metrics registry (`metric_definition`), dynamic campaign target validation.
 - **HARDENING H4A.1**: Architecture documentation synchronization across migrations 0001–0020.
-- **HARDENING H4B**: Runtime verification & external environment readiness (PENDING).
+- **HARDENING H4B / H4B.1**: Real runtime & browser verification closure.
+- **HARDENING P1**: Server-authoritative Critic review candidate architecture (`content_review_candidate`, migration 0021) and strict server-side Critic editorial override enforcement.
 - **STEP 15E**: Publishing engine / platform connectors (FUTURE PHASE).
 
 ## Content Lifecycle & Publishing Boundary
@@ -82,7 +83,8 @@ Shared components: src/components/ui/*, src/components/layout/*
 Campaign Content Item (draft)
   → Creator Draft Candidate (content_draft_candidate: uncommitted, server-derived provenance)
   → Human Reviews & Saves Variant (content_variant: immutable V1, tracks human_edited hash diff)
-  → Human Triggers Critic Review (content_review: immutable critique, verdict pass | revise)
+  → Critic Review Candidate (content_review_candidate: uncommitted, server-derived provenance, SHA-256 review_hash)
+  → Human Reviews & Saves Review (content_review: immutable critique, verdict pass | revise, strictly server-derived)
   → [Optional] Human Triggers Creator Revision (content_draft_candidate with source lineage)
   → [Optional] Human Reviews & Saves Revised Variant (content_variant: immutable V2, parent_variant_id = V1)
   → Human Final Editorial Approval (content_approval: approved, content.status = 'ready', content.selected_variant_id = variant_id)
@@ -93,7 +95,7 @@ Campaign Content Item (draft)
 1. **READY != PUBLISHED**: Marking content as `ready` is an internal editorial status signifying approval. It performs **ZERO** external network calls, interacts with **NO** platform APIs, and schedules **NO** automated publishing jobs.
 2. **Publisher Agent Status**: The `Publisher` agent is explicitly `disabled` (`status: 'disabled'`).
 3. **Platform Publish Tool**: The `platform.publish` tool is an unavailable stub (`Not available yet`).
-4. **Human Primacy**: Critic verdict `pass` never auto-approves content. Critic verdict `revise` warns the human operator in the UI, requiring explicit confirmation (`critic_override = 1`) to approve.
+4. **Human Primacy & Server-Authoritative Override**: Critic verdict `pass` never auto-approves content. Critic verdict `revise` strictly blocks approval on the server unless the human operator explicitly provides `overrideCritic: true` (`critic_override = 1`). Notes are documentation only and do not authorize approval.
 
 ## Approval System Disambiguation
 
@@ -113,21 +115,21 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Capability / Runtime Area | Verification Status | Notes |
 |---|---|---|
 | Unit & Integration Tests (21 suites) | **VERIFIED** | All automated tests run and pass in local Node / SQLite environment |
-| Database Migrations (0001–0020) | **VERIFIED** | Verified through `npm run db:test` (20/20 tests pass) |
+| Database Migrations (0001–0021) | **VERIFIED** | Verified through `npm run db:test` (21/21 tests pass) |
 | Context Engine & Ranking | **VERIFIED** | Verified through `npm run test:context` |
 | Policy & Approval Engine | **VERIFIED** | Verified through `npm run test:policy`, `test:approvals`, `test:approvals-ux` |
 | Campaign Strategy & Metrics | **VERIFIED** | Verified through `npm run test:campaign-strategy`, `test:campaigns` |
 | Content Candidate Lifecycle | **VERIFIED** | Verified through `npm run test:creator-draft` |
-| Critic Editorial Review System | **VERIFIED** | Verified through `npm run test:critic-review` |
+| Critic Editorial Review System | **VERIFIED** | Verified through `npm run test:critic-review` (candidate architecture & server-authoritative save) |
 | Creator Revision Lineage System | **VERIFIED** | Verified through `npm run test:creator-revision` |
-| Human Content Approval Gate | **VERIFIED** | Verified through `npm run test:content-approval` |
+| Human Content Approval Gate | **VERIFIED** | Verified through `npm run test:content-approval` (strict server-side override enforcement) |
 | Research Source Provenance | **VERIFIED** | Verified through `npm run test:research` |
 | Workflow Run Scope Integrity | **VERIFIED** | Verified through `npm run test:workflows` |
 | Local Workers Runtime & Vite Build | **VERIFIED** | Verified through `npm run build` and local development server |
 | Workers AI Live Remote Generation | **NOT CONFIGURED** | Offline Echo / test adapter used in automated suites; live Workers AI binding requires Cloudflare deployment |
 | Workers AI Live Tool Calling | **NOT VERIFIED** | Protocol implemented & unit tested; live remote tool execution pending H4B |
 | Brave Live Web Search | **NOT CONFIGURED** | Adapter implemented & mock-tested; live remote API calls require `BRAVE_SEARCH_API_KEY` |
-| Browser End-to-End Sessions | **NOT VERIFIED** | UI components and server functions verified; full browser E2E session validation pending H4B |
+| Browser End-to-End Sessions | **VERIFIED** | Verified during H4B.1 browser interaction pass |
 
 ## Architecture Decisions
 
@@ -149,6 +151,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Server-derived research provenance | research sources derive author, model, execution id from server message context rather than client | H3A.2 |
 | Immutable variant revision lineage | Creator revisions track `source_variant_id` and `source_review_id` without mutating prior variants | STEP 15C, migration 0019 |
 | Human editorial gate for publish readiness | explicit human sign-off on exact variant ID; separates readiness from automated publishing | STEP 15D, migration 0020 |
+| Server-authoritative Critic review candidates & override enforcement | Critic reviews derive verdict, review JSON, provenance strictly from database candidates (`content_review_candidate`); server strictly enforces `overrideCritic: true` for revise reviews | HARDENING P1, migration 0021 |
 
 ## Known Technical Debt & Limitations
 
