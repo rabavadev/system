@@ -441,11 +441,11 @@ export async function getApprovedPublicationVariant(
   const latestApproval = await queryFirst<ContentApprovalRow>(
     db,
     `SELECT * FROM content_approval 
-     WHERE workspace_id = ? AND content_id = ? AND content_variant_id = ? AND status = 'approved'
-     ORDER BY created_at DESC LIMIT 1`,
+     WHERE workspace_id = ? AND content_id = ? AND content_variant_id = ?
+     ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     [workspaceId, contentId, contentRow.selected_variant_id],
   )
-  if (!latestApproval) {
+  if (!latestApproval || latestApproval.status !== 'approved') {
     return null
   }
 

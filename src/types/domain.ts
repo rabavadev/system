@@ -556,16 +556,50 @@ export type PostStatus = 'draft' | 'scheduled' | 'publishing' | 'published' | 'f
 
 export interface Post {
   id: Id
+  workspaceId: Id | null
   contentVariantId: Id
   accountId: Id
+  contentApprovalId: Id | null
   status: PostStatus
   externalId: string | null
   url: string | null
   scheduledAt: IsoTimestamp | null
   publishedAt: IsoTimestamp | null
   error: string | null
+  idempotencyKey: string | null
   createdAt: IsoTimestamp
   updatedAt: IsoTimestamp
+}
+
+export interface PostDetail extends Post {
+  accountHandle?: string | null
+  accountDisplayName?: string | null
+  platformId?: string | null
+  platformName?: string | null
+  contentId?: string | null
+  contentTitle?: string | null
+  campaignId?: string | null
+  campaignName?: string | null
+  variantNumber?: number | null
+  variantBody?: string | null
+  variantHeadline?: string | null
+  approvalStatus?: ContentApprovalStatus | null
+  approvalCreatedAt?: IsoTimestamp | null
+  criticOverride?: boolean | null
+}
+
+export interface PublicationEligibilityResult {
+  eligible: boolean
+  reason?: string
+  contentId?: string
+  contentVariantId?: string
+  accountId?: string
+  platformId?: string
+  approvalId?: string
+  isReady?: boolean
+  hasApproval?: boolean
+  accountActive?: boolean
+  platformMatched?: boolean
 }
 
 /* ---- Analytics ---- */

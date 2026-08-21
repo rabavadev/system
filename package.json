@@ -39,7 +39,8 @@
     "test:creator-draft": "node --experimental-strip-types scripts/test-creator-draft.ts",
     "test:critic-review": "node --experimental-strip-types scripts/test-critic-review.ts",
     "test:creator-revision": "node --experimental-strip-types scripts/test-creator-revision.ts",
-    "test:content-approval": "node --experimental-strip-types scripts/test-content-approval.ts"
+    "test:content-approval": "node --experimental-strip-types scripts/test-content-approval.ts",
+    "test:publication": "node --experimental-strip-types scripts/test-publication.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",

@@ -143,6 +143,13 @@ The content pipeline uses a multi-table structure preserving strict immutability
 6. **`content.selected_variant_id`** (`0020`):
    - Foreign key referencing `content_variant(id) ON DELETE SET NULL`.
    - Designates the single active approved variant designated for publication readiness.
+7. **`post`** (`0004`, `0022`):
+   - Server-authoritative publication intent and dispatch record binding an exact immutable `content_variant_id` to an exact active `account_id`.
+   - Enhanced in `0022`: `workspace_id` (foreign key to `workspace`), `content_approval_id` (foreign key to `content_approval`), and `idempotency_key` (unique deduplication key).
+   - Validated server-side against full publication eligibility chain: `content.status === 'ready'`, `content.selected_variant_id === requested variant`, active human `content_approval` for that exact variant, account active in workspace, account connected to campaign (if campaign content), and account platform matching variant platform format.
+   - Initial status is strictly `draft` (or `scheduled` if internal schedule intent specified).
+   - `external_id = NULL`, `url = NULL`, `published_at = NULL` until external dispatch.
+   - Zero external network calls are made during preparation; `platform.publish` tool remains `unavailable` and `publisher` agent remains `disabled`.
 
 ## Approval System Disambiguation
 

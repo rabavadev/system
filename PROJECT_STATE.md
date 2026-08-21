@@ -11,7 +11,7 @@ Navigation: src/components/layout/nav-items.ts + topbar.tsx (shows active brand)
 Auth: none yet — single seeded workspace
 Current user: n/a; active brand via cookie (src/features/workspace/server.ts)
 API client: per-feature server functions (src/features/*/server.ts)
-Schema: migrations/0001–0021 + docs/database.md
+Schema: migrations/0001–0022 + docs/database.md
 Design system: Tailwind v4 + src/components/ui/
 Shared components: src/components/ui/*, src/components/layout/*
 ```
@@ -42,6 +42,7 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Critic Editorial Reviews (Step 15B) | src/server/db/content-review.ts + src/features/campaigns/ | human-triggered AI critique on saved immutable variants; server-authoritative `content_review_candidate` lifecycle; structured `pass`/`revise` verdicts; immutable `content_review` (migrations 0015, 0021) |
 | Creator Revisions (Step 15C) | src/server/db/content-variant.ts + src/server/agents/content-draft.ts | human-controlled revisions from Critic feedback; `source_variant_id` & `source_review_id` candidate lineage; immutable variant chains (migration 0019) |
 | Content Editorial Approval (Step 15D) | src/server/db/content-approval.ts + src/features/campaigns/ | explicit human editorial gate; `content.status = 'ready'`; `content.selected_variant_id`; immutable `content_approval` audit history; strict server-side Critic override enforcement; zero auto-publishing (migration 0020) |
+| Publication Foundation & Readiness (Step 15E.1) | src/server/db/post.ts + src/features/campaigns/ | server-authoritative publication intent (`post` table); binds exact approved `content_variant_id` to exact active `account_id` and `content_approval_id`; full pre-dispatch eligibility validation; zero external network calls; platform publish tool remains `unavailable` and Publisher agent remains `disabled` (migration 0022) |
 
 ## Completed Steps & Hardening Sequence
 
@@ -75,7 +76,8 @@ Shared components: src/components/ui/*, src/components/layout/*
 - **HARDENING H4A.1**: Architecture documentation synchronization across migrations 0001–0020.
 - **HARDENING H4B / H4B.1**: Real runtime verification and interactive UI flows checked; automated browser E2E session suite not configured.
 - **HARDENING P1 / P1.1**: Server-authoritative Critic review candidate architecture (`content_review_candidate`, migration 0021), strict Zod parsing with zero fallback fabrication, deterministic sorting on timestamp ties, and strict server-side Critic editorial override enforcement.
-- **STEP 15E**: Publishing engine / platform connectors (FUTURE PHASE).
+- **STEP 15E.1 — Publication Foundation & Server-Authoritative Dispatch Readiness**: Server-authoritative `post` record creation, eligibility verification, idempotency handling, safe event emission (`publication.prepared`), and audit logging (migration 0022).
+- **STEP 15E.2**: Platform connectors / external publishing execution (FUTURE PHASE).
 
 ## Content Lifecycle & Publishing Boundary
 
@@ -88,14 +90,16 @@ Campaign Content Item (draft)
   → [Optional] Human Triggers Creator Revision (content_draft_candidate with source lineage)
   → [Optional] Human Reviews & Saves Revised Variant (content_variant: immutable V2, parent_variant_id = V1)
   → Human Final Editorial Approval (content_approval: approved, content.status = 'ready', content.selected_variant_id = variant_id)
-  → [Optional] Human Revocation (content_approval: revoked, content.status = 'draft', content.selected_variant_id = null)
+  → Server-Authoritative Publication Preparation (post: status = 'draft' | 'scheduled', external_id = null, url = null, published_at = null, content_approval_id linked)
+  → [Optional] Human Revocation (content_approval: revoked, content.status = 'draft', content.selected_variant_id = null, subsequent publication validation fails)
 ```
 
 ### Critical Invariants:
 1. **READY != PUBLISHED**: Marking content as `ready` is an internal editorial status signifying approval. It performs **ZERO** external network calls, interacts with **NO** platform APIs, and schedules **NO** automated publishing jobs.
-2. **Publisher Agent Status**: The `Publisher` agent is explicitly `disabled` (`status: 'disabled'`).
-3. **Platform Publish Tool**: The `platform.publish` tool is an unavailable stub (`Not available yet`).
-4. **Human Primacy & Server-Authoritative Override**: Critic verdict `pass` never auto-approves content. Critic verdict `revise` strictly blocks approval on the server unless the human operator explicitly provides `overrideCritic: true` (`critic_override = 1`). Notes are documentation only and do not authorize approval.
+2. **PREPARED POST != EXTERNALLY SENT**: A `post` record in `draft` status is an internal publication intent linked to the exact approved variant, target account, and approval audit ID. All external fields (`external_id`, `url`, `published_at`) remain `NULL`.
+3. **Publisher Agent Status**: The `Publisher` agent is explicitly `disabled` (`status: 'disabled'`).
+4. **Platform Publish Tool**: The `platform.publish` tool is an unavailable stub (`Not available yet`, `status: 'unavailable'`).
+5. **Human Primacy & Server-Authoritative Override**: Critic verdict `pass` never auto-approves content. Critic verdict `revise` strictly blocks approval on the server unless the human operator explicitly provides `overrideCritic: true` (`critic_override = 1`). Notes are documentation only and do not authorize approval.
 
 ## Approval System Disambiguation
 
@@ -114,8 +118,8 @@ The architecture contains two distinct approval subsystems that serve separate p
 
 | Capability / Runtime Area | Verification Status | Notes |
 |---|---|---|
-| Unit & Integration Tests (21 suites) | **VERIFIED** | All automated tests run and pass in local Node / SQLite environment |
-| Database Migrations (0001–0021) | **VERIFIED** | Verified through `npm run db:test` (21/21 tests pass) |
+| Unit & Integration Tests (22 suites) | **VERIFIED** | All automated tests run and pass in local Node / SQLite environment |
+| Database Migrations (0001–0022) | **VERIFIED** | Verified through `npm run db:test` (22/22 tests pass) |
 | Context Engine & Ranking | **VERIFIED** | Verified through `npm run test:context` |
 | Policy & Approval Engine | **VERIFIED** | Verified through `npm run test:policy`, `test:approvals`, `test:approvals-ux` |
 | Campaign Strategy & Metrics | **VERIFIED** | Verified through `npm run test:campaign-strategy`, `test:campaigns` |
@@ -123,6 +127,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Critic Editorial Review System | **VERIFIED** | Verified through `npm run test:critic-review` (candidate architecture, strict Zod parsing, server-authoritative save) |
 | Creator Revision Lineage System | **VERIFIED** | Verified through `npm run test:creator-revision` |
 | Human Content Approval Gate | **VERIFIED** | Verified through `npm run test:content-approval` (strict server-side override enforcement) |
+| Publication Foundation & Readiness | **VERIFIED** | Verified through `npm run test:publication` (exact approved variant binding, account/platform match, idempotency, zero external calls) |
 | Research Source Provenance | **VERIFIED** | Verified through `npm run test:research` |
 | Workflow Run Scope Integrity | **VERIFIED** | Verified through `npm run test:workflows` |
 | Local Workers Runtime & Vite Build | **VERIFIED** | Verified through `npm run build` and local development server |
@@ -153,6 +158,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Immutable variant revision lineage | Creator revisions track `source_variant_id` and `source_review_id` without mutating prior variants | STEP 15C, migration 0019 |
 | Human editorial gate for publish readiness | explicit human sign-off on exact variant ID; separates readiness from automated publishing | STEP 15D, migration 0020 |
 | Server-authoritative Critic review candidates & override enforcement | Critic reviews derive verdict, review JSON, provenance strictly from database candidates (`content_review_candidate`); server strictly enforces `overrideCritic: true` for revise reviews | HARDENING P1, migration 0021 |
+| Server-authoritative publication intent with post table | binds exact immutable approved variant to account & approval; enforces ready eligibility pre-dispatch; prevents client forgery of status/urls/ids | STEP 15E.1, migration 0022 |
 
 ## Known Technical Debt & Limitations
 

@@ -10,6 +10,7 @@ import {
   History,
   Loader2,
   RefreshCw,
+  Send,
   ShieldAlert,
   Sparkles,
   Undo2,
@@ -29,16 +30,19 @@ import type {
   CampaignContentItem,
   ContentReviewDetail,
   IssueSeverity,
+  PostDetail,
   ReviewIssue,
   ReviewVerdict,
 } from '~/types/domain'
 import {
   approveCampaignContentVariantFn,
+  createPublicationIntentFn,
   generateCampaignContentDraftFn,
   generateCampaignContentReviewFn,
   generateCampaignContentRevisionFn,
   listContentReviewsFn,
   listContentVariantsFn,
+  listPostsForContentFn,
   revokeCampaignContentApprovalFn,
   saveCampaignContentDraftFn,
   saveCampaignContentReviewFn,
@@ -112,6 +116,10 @@ export function CampaignDraftModal({
   const [showOverrideConfirm, setShowOverrideConfirm] = useState(false)
   const [overrideNote, setOverrideNote] = useState('')
 
+  // STEP 15E.1: Publication Intent states
+  const [posts, setPosts] = useState<PostDetail[]>([])
+  const [isPreparingPublication, startPreparingPublication] = useTransition()
+
   const [isGenerating, startGenerating] = useTransition()
   const [isRevising, startRevising] = useTransition()
   const [isSaving, startSaving] = useTransition()
@@ -120,17 +128,23 @@ export function CampaignDraftModal({
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
 
-  // Load existing variants on mount
+  // Load existing variants & posts on mount
   useEffect(() => {
     let active = true
     async function load() {
       setIsLoadingVariants(true)
       try {
-        const variants = await listContentVariantsFn({
-          data: { contentId: contentItem.id },
-        })
+        const [variants, postList] = await Promise.all([
+          listContentVariantsFn({
+            data: { contentId: contentItem.id },
+          }),
+          listPostsForContentFn({
+            data: { contentId: contentItem.id },
+          }),
+        ])
         if (!active) return
         setExistingVariants(variants)
+        setPosts(postList)
         if (variants && variants.length > 0) {
           const latest = variants[0]
           if (latest) {
@@ -421,6 +435,39 @@ export function CampaignDraftModal({
         await onSuccess?.()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to revoke approval.')
+      }
+    })
+  }
+
+  const handlePreparePublication = () => {
+    if (!savedVariantId) {
+      setError('A saved variant is required to prepare publication.')
+      return
+    }
+    const targetAccountId = contentItem.targetAccountId
+    if (!targetAccountId) {
+      setError('A target account is required to prepare publication.')
+      return
+    }
+
+    setError(null)
+    setSuccessMessage(null)
+    startPreparingPublication(async () => {
+      try {
+        const newPost = await createPublicationIntentFn({
+          data: {
+            campaignId: campaign.id,
+            contentId: activeItem.id,
+            contentVariantId: savedVariantId,
+            accountId: targetAccountId,
+          },
+        })
+
+        setPosts((prev) => [newPost, ...prev.filter((p) => p.id !== newPost.id)])
+        setSuccessMessage('Publication intent prepared! Post record created for dispatch.')
+        await onSuccess?.()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to prepare publication.')
       }
     })
   }
@@ -1151,6 +1198,119 @@ export function CampaignDraftModal({
                       )
                     )}
                   </div>
+                </div>
+              </div>
+            )}
+
+            {/* STEP 15E.1: Publication Foundation & Dispatch Readiness */}
+            {isSaved && !isCandidate && savedVariantId && isApproved && (
+              <div className="rounded-xl border border-sky-200 bg-sky-50/30 p-4 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Send className="size-4 text-sky-600" />
+                    <span className="text-xs font-semibold text-zinc-900">
+                      Publication Dispatch Readiness
+                    </span>
+                    {posts.some(
+                      (p) =>
+                        p.contentVariantId === savedVariantId &&
+                        (p.status === 'draft' || p.status === 'scheduled'),
+                    ) ? (
+                      <Badge tone="success">Prepared for Dispatch</Badge>
+                    ) : (
+                      <Badge tone="neutral">Ready to Prepare</Badge>
+                    )}
+                  </div>
+                </div>
+
+                <p className="text-xs text-zinc-600">
+                  {posts.some(
+                    (p) =>
+                      p.contentVariantId === savedVariantId &&
+                      (p.status === 'draft' || p.status === 'scheduled'),
+                  )
+                    ? 'A server-authoritative publication intent record exists for this approved variant. Internal foundation active; zero external network calls are made until external dispatch is triggered.'
+                    : 'This approved variant is ready to be prepared for publication. Preparing creates an internal Post record linked to the target account.'}
+                </p>
+
+                {/* Display existing publication intents if any */}
+                {posts.filter((p) => p.contentVariantId === savedVariantId).length > 0 && (
+                  <div className="rounded-lg border border-sky-100 bg-white p-3 space-y-2 text-xs">
+                    <span className="font-medium text-zinc-800">Prepared Publication Intents:</span>
+                    <div className="space-y-1.5">
+                      {posts
+                        .filter((p) => p.contentVariantId === savedVariantId)
+                        .map((post) => (
+                          <div
+                            key={post.id}
+                            className="flex items-center justify-between rounded bg-zinc-50 px-2.5 py-1.5 text-xs text-zinc-700"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-zinc-800">
+                                {post.platformName ?? 'Platform'}
+                              </span>
+                              {post.accountHandle && (
+                                <span className="text-zinc-500">
+                                  @{post.accountHandle.replace(/^@/, '')}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Badge
+                                tone={
+                                  post.status === 'draft' || post.status === 'scheduled'
+                                    ? 'success'
+                                    : 'neutral'
+                                }
+                              >
+                                {post.status === 'draft' ? 'Prepared (Draft)' : post.status}
+                              </Badge>
+                              <span className="text-[11px] text-zinc-400">
+                                {new Date(post.createdAt).toLocaleTimeString([], {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                })}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Action button */}
+                <div className="flex items-center justify-between pt-1 border-t border-sky-100">
+                  <span className="text-[11px] text-zinc-400">
+                    Target: {contentItem.platformName ?? 'Platform'}{' '}
+                    {contentItem.accountHandle
+                      ? `(@${contentItem.accountHandle.replace(/^@/, '')})`
+                      : ''}
+                  </span>
+
+                  {!posts.some(
+                    (p) =>
+                      p.contentVariantId === savedVariantId &&
+                      (p.status === 'draft' || p.status === 'scheduled'),
+                  ) && (
+                    <Button
+                      variant="primary"
+                      onClick={handlePreparePublication}
+                      disabled={isPreparingPublication || isApproving || isRevoking}
+                      className="h-7 px-3 text-xs bg-sky-700 hover:bg-sky-800 text-white"
+                    >
+                      {isPreparingPublication ? (
+                        <>
+                          <Loader2 className="size-3 mr-1 animate-spin" />
+                          Preparing...
+                        </>
+                      ) : (
+                        <>
+                          <Send className="size-3 mr-1" />
+                          Prepare for Publication
+                        </>
+                      )}
+                    </Button>
+                  )}
                 </div>
               </div>
             )}

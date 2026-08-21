@@ -59,6 +59,11 @@ import {
 import { createConversation } from '~/server/db/conversation'
 import { emitEventSafe } from '~/server/db/event'
 import { listMetricDefinitions } from '~/server/db/metric'
+import {
+  createPublicationIntent,
+  listPostsForContent,
+  validatePublicationEligibility,
+} from '~/server/db/post'
 import { listProducts, type ProductSummary } from '~/server/db/product'
 import { getWorkflowById, getWorkflowVersion, listWorkflows } from '~/server/db/workflow'
 import { getDefaultWorkspace } from '~/server/db/workspace'
@@ -72,6 +77,8 @@ import type {
   ContentReviewDetail,
   ContentStatus,
   MetricDefinition,
+  PostDetail,
+  PublicationEligibilityResult,
 } from '~/types/domain'
 
 const idWire = z.object({ id: z.uuid() })
@@ -605,4 +612,61 @@ export const listContentApprovalsFn = createServerFn({ method: 'GET' })
     const workspace = await getDefaultWorkspace()
     if (!workspace) return []
     return listContentApprovals(db, workspace.id, data.contentId, data.variantId)
+  })
+
+export const createPublicationIntentFn = createServerFn({ method: 'POST' })
+  .validator(
+    z.object({
+      campaignId: z.uuid().optional(),
+      contentId: z.uuid(),
+      contentVariantId: z.uuid(),
+      accountId: z.uuid(),
+      scheduledAt: z.string().datetime().nullable().optional(),
+      idempotencyKey: z.string().max(120).nullable().optional(),
+    }),
+  )
+  .handler(async ({ data }): Promise<PostDetail> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) throw new Error('Workspace not found')
+    return createPublicationIntent(db, {
+      workspaceId: workspace.id,
+      campaignId: data.campaignId,
+      contentId: data.contentId,
+      contentVariantId: data.contentVariantId,
+      accountId: data.accountId,
+      scheduledAt: data.scheduledAt,
+      idempotencyKey: data.idempotencyKey,
+    })
+  })
+
+export const listPostsForContentFn = createServerFn({ method: 'GET' })
+  .validator(z.object({ contentId: z.uuid() }))
+  .handler(async ({ data }): Promise<PostDetail[]> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) return []
+    return listPostsForContent(db, workspace.id, data.contentId)
+  })
+
+export const validatePublicationEligibilityFn = createServerFn({ method: 'GET' })
+  .validator(
+    z.object({
+      contentId: z.uuid(),
+      contentVariantId: z.uuid(),
+      accountId: z.uuid(),
+    }),
+  )
+  .handler(async ({ data }): Promise<PublicationEligibilityResult> => {
+    const db = getDb()
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      return { eligible: false, reason: 'Workspace not found' }
+    }
+    return validatePublicationEligibility(db, {
+      workspaceId: workspace.id,
+      contentId: data.contentId,
+      contentVariantId: data.contentVariantId,
+      accountId: data.accountId,
+    })
   })

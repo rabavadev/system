@@ -45,7 +45,7 @@ const id = () => crypto.randomUUID()
 test('clean database migrates from zero; all tables exist', () => {
   const db = freshDb()
   const files = migrate(db)
-  assert.equal(files.length, 21, `expected 21 migrations, got: ${files.join(', ')}`)
+  assert.equal(files.length, 22, `expected 22 migrations, got: ${files.join(', ')}`)
 
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -1039,6 +1039,40 @@ test('migration 0021 creates content_review_candidate table and indexes', () => 
   assert.ok(
     candidateIndexes.includes('idx_content_review_candidate_workspace'),
     `expected idx_content_review_candidate_workspace index, got: ${candidateIndexes.join(', ')}`,
+  )
+
+  db.close()
+})
+
+test('migration 0022 adds workspace_id, content_approval_id, and idempotency_key to post table', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const postCols = db
+    .prepare(`PRAGMA table_info(post)`)
+    .all()
+    .map((r) => r.name)
+
+  assert.ok(postCols.includes('workspace_id'), 'post should have workspace_id')
+  assert.ok(postCols.includes('content_approval_id'), 'post should have content_approval_id')
+  assert.ok(postCols.includes('idempotency_key'), 'post should have idempotency_key')
+
+  const postIndexes = db
+    .prepare(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'post'`)
+    .all()
+    .map((r) => r.name)
+
+  assert.ok(
+    postIndexes.includes('idx_post_workspace'),
+    `expected idx_post_workspace index, got: ${postIndexes.join(', ')}`,
+  )
+  assert.ok(
+    postIndexes.includes('idx_post_approval'),
+    `expected idx_post_approval index, got: ${postIndexes.join(', ')}`,
+  )
+  assert.ok(
+    postIndexes.includes('idx_post_idempotency'),
+    `expected idx_post_idempotency index, got: ${postIndexes.join(', ')}`,
   )
 
   db.close()
