@@ -11,9 +11,18 @@ import type {
 import { createApprovalRequest, getApprovalRequest } from '../approval/service.ts'
 import { verifySnapshotIntegrity } from '../approval/snapshot.ts'
 import type { ApprovalRequestRecord } from '../approval/types.ts'
-import { prepareToolExecution } from '../tools/executor.ts'
+import {
+  type XHttpTransport,
+  type XPublishErrorCode,
+  XPublishingAdapter,
+} from '../platforms/adapters/x/index.ts'
+import { resolvePlatformCredential } from '../platforms/resolver.ts'
+import { createEnvSecretResolver } from '../platforms/runtime.ts'
+import type { PlatformCredentialErrorCode, PlatformSecretResolver } from '../platforms/types.ts'
+
 import { writeAuditLog } from './audit.ts'
 import { emitEventSafe } from './event.ts'
+import { getPlatformById } from './platform.ts'
 import { IntegrityError } from './relations.ts'
 import { execute, newId, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
 
@@ -672,11 +681,7 @@ export async function createPublicationIntent(
      ORDER BY created_at DESC, rowid DESC LIMIT 1`,
     [data.workspaceId, data.contentId, data.contentVariantId],
   )
-  if (
-    !latestApproval ||
-    latestApproval.status !== 'approved' ||
-    latestApproval.actor_type !== 'user'
-  ) {
+  if (latestApproval?.status !== 'approved' || latestApproval.actor_type !== 'user') {
     throw new IntegrityError(
       'Content variant does not have an active human editorial approval (it may be unapproved, revoked, or non-human).',
     )
@@ -1113,7 +1118,7 @@ export async function requestPublicationDispatch(
     subjectType: 'post',
     subjectId: post.id,
     risk: ['write', 'external'],
-    summary: `Publish approved draft to ${post.accountHandle ? '@' + post.accountHandle.replace(/^@/, '') : (post.accountDisplayName ?? 'account')}`,
+    summary: `Publish approved draft to ${post.accountHandle ? `@${post.accountHandle.replace(/^@/, '')}` : (post.accountDisplayName ?? 'account')}`,
     payload: {
       postId: post.id,
       workspaceId: post.workspaceId,
@@ -1213,21 +1218,36 @@ export async function requestPublicationDispatch(
   }
 }
 
+export interface DispatchApprovedPublicationOptions {
+  secretResolver?: PlatformSecretResolver
+  xTransport?: XHttpTransport
+  nowOverride?: string
+}
+
 export interface DispatchPublicationResult {
   ok: boolean
-  code: 'not_approved' | 'ineligible' | 'not_configured' | 'integrity_error'
+  code:
+    | 'not_approved'
+    | 'ineligible'
+    | 'integrity_error'
+    | 'already_dispatched'
+    | 'published'
+    | PlatformCredentialErrorCode
+    | XPublishErrorCode
   message: string
-  postId?: string
+  postId?: string | undefined
+  externalId?: string | undefined
 }
 
 /**
  * Handles the dispatch boundary for an approved publication request.
  * Re-validates live publication eligibility and snapshot integrity at approval time.
- * In STEP 15E.2, fails safely without external connectors or fake publication success.
+ * Dispatches to the real X text adapter if configured, or fails safely without external side-effects.
  */
 export async function dispatchApprovedPublication(
   db: SqlDatabase,
   input: { workspaceId: string; approvalRequestId: string },
+  options?: DispatchApprovedPublicationOptions,
 ): Promise<DispatchPublicationResult> {
   const req = await getApprovalRequest(db, {
     workspaceId: input.workspaceId,
@@ -1268,8 +1288,10 @@ export async function dispatchApprovedPublication(
     throw new IntegrityError('Malformed approval request snapshot.')
   }
 
-  const postId =
-    typeof parsedPayload['postId'] === 'string' ? parsedPayload['postId'] : req.subjectId
+  // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+  const payloadPostId = parsedPayload['postId']
+  const postId = typeof payloadPostId === 'string' ? payloadPostId : req.subjectId
+
   if (!postId) {
     throw new IntegrityError('Approval request snapshot missing postId.')
   }
@@ -1301,34 +1323,153 @@ export async function dispatchApprovedPublication(
     }
   }
 
-  // 2. Future tool execution boundary check
-  const prep = prepareToolExecution({
-    workspaceId: input.workspaceId,
-    toolKey: 'platform.publish',
-    args: {
-      accountId: elig.accountId,
-      contentVariantId: elig.contentVariantId,
-    },
-    caller: {
-      agentId: 'publisher',
-      agentName: 'Publisher',
-      agentStatus: 'disabled',
-      agentVersionId: 'publisher-v1',
-      capabilities: ['publish'],
-    },
-  })
+  // 2. Fetch authoritative post detail
+  const post = await getPostDetail(db, input.workspaceId, postId)
+  if (!post) {
+    throw new IntegrityError('Post record not found in this workspace.')
+  }
 
-  // Since platform.publish is unavailable in STEP 15E.2:
+  if (post.status === 'published') {
+    const pubRes: DispatchPublicationResult = {
+      ok: true,
+      code: 'published',
+      message: 'Post is already published.',
+      postId,
+    }
+    if (post.externalId) {
+      pubRes.externalId = post.externalId
+    }
+    return pubRes
+  }
+
+  if (post.status === 'publishing') {
+    return {
+      ok: false,
+      code: 'already_dispatched',
+      message: 'Post is currently being dispatched.',
+      postId,
+    }
+  }
+
+  // 3. Platform Verification
+  const platform = post.platformId ? await getPlatformById(db, post.platformId) : null
+  if (platform?.adapterKey !== 'x') {
+    await emitEventSafe(db, {
+      workspaceId: input.workspaceId,
+      eventType: 'publication.dispatch_unavailable',
+      actorType: 'system',
+      subjectType: 'post',
+      subjectId: postId,
+      payloadJson: JSON.stringify({
+        postId,
+        approvalRequestId: req.id,
+        reason: 'Platform publication adapter is not configured or available for this platform.',
+      }),
+    })
+
+    await writeAuditLog(db, {
+      workspaceId: input.workspaceId,
+      actorType: 'system',
+      action: 'update',
+      entityType: 'post',
+      entityId: postId,
+      newValueJson: JSON.stringify({
+        postId,
+        approvalRequestId: req.id,
+        success: false,
+        reason: 'Platform publication adapter is not configured or available for this platform.',
+      }),
+    })
+
+    return {
+      ok: false,
+      code: 'not_configured',
+      message:
+        'Platform publication adapter is not configured or available yet. Zero external network publishing performed.',
+      postId,
+    }
+  }
+
+  // 4. Pre-claim credential resolution check (if connection is unconfigured, fail before claiming)
+  const secretResolver = options?.secretResolver ?? createEnvSecretResolver()
+  const credRes = await resolvePlatformCredential(
+    db,
+    {
+      workspaceId: input.workspaceId,
+      accountId: post.accountId,
+      platformAdapterKey: 'x',
+    },
+    secretResolver,
+  )
+
+  if (!credRes.ok) {
+    await emitEventSafe(db, {
+      workspaceId: input.workspaceId,
+      eventType: 'publication.dispatch_unavailable',
+      actorType: 'system',
+      subjectType: 'post',
+      subjectId: postId,
+      payloadJson: JSON.stringify({
+        postId,
+        approvalRequestId: req.id,
+        reason: `Platform publication adapter is not configured: ${credRes.reason}`,
+      }),
+    })
+
+    await writeAuditLog(db, {
+      workspaceId: input.workspaceId,
+      actorType: 'system',
+      action: 'update',
+      entityType: 'post',
+      entityId: postId,
+      newValueJson: JSON.stringify({
+        postId,
+        approvalRequestId: req.id,
+        success: false,
+        reason: credRes.reason,
+      }),
+    })
+
+    return {
+      ok: false,
+      code: credRes.code,
+      message: `Platform publication adapter is not configured or available: ${credRes.reason}`,
+      postId,
+    }
+  }
+
+  // 5. Atomic Claim (draft/scheduled -> publishing)
+  const now = options?.nowOverride ?? nowIso()
+  const claimRes = (await execute(
+    db,
+    `UPDATE post
+     SET status = 'publishing', updated_at = ?
+     WHERE id = ? AND workspace_id = ? AND status IN ('draft', 'scheduled')`,
+    [now, postId, input.workspaceId],
+  )) as { changes?: number }
+
+  if (!claimRes || claimRes.changes === 0) {
+    return {
+      ok: false,
+      code: 'already_dispatched',
+      message:
+        'Post could not be claimed for dispatch (already publishing, published, or modified).',
+      postId,
+    }
+  }
+
+  // 6. Emit dispatch started event and audit log
   await emitEventSafe(db, {
     workspaceId: input.workspaceId,
-    eventType: 'publication.dispatch_unavailable',
+    eventType: 'publication.dispatch_started',
     actorType: 'system',
     subjectType: 'post',
     subjectId: postId,
     payloadJson: JSON.stringify({
       postId,
       approvalRequestId: req.id,
-      reason: prep.ok ? 'Platform publication adapter is not configured.' : prep.error.message,
+      accountId: post.accountId,
+      platformAdapterKey: 'x',
     }),
   })
 
@@ -1341,16 +1482,170 @@ export async function dispatchApprovedPublication(
     newValueJson: JSON.stringify({
       postId,
       approvalRequestId: req.id,
-      success: false,
-      reason: 'Platform publication adapter is not configured or available.',
+      status: 'publishing',
+      platformAdapterKey: 'x',
+    }),
+  })
+
+  // 7. Verify text content
+  if (
+    !post.variantBody ||
+    typeof post.variantBody !== 'string' ||
+    post.variantBody.trim().length === 0
+  ) {
+    const failNow = options?.nowOverride ?? nowIso()
+    await execute(
+      db,
+      `UPDATE post SET status = 'failed', error = ?, updated_at = ? WHERE id = ? AND workspace_id = ?`,
+      ['Published content text is empty or invalid.', failNow, postId, input.workspaceId],
+    )
+
+    await emitEventSafe(db, {
+      workspaceId: input.workspaceId,
+      eventType: 'publication.failed',
+      actorType: 'system',
+      subjectType: 'post',
+      subjectId: postId,
+      payloadJson: JSON.stringify({
+        postId,
+        approvalRequestId: req.id,
+        accountId: post.accountId,
+        platformAdapterKey: 'x',
+        errorCode: 'unsupported_content',
+        errorMessage: 'Published content text is empty or invalid.',
+      }),
+    })
+
+    await writeAuditLog(db, {
+      workspaceId: input.workspaceId,
+      actorType: 'system',
+      action: 'update',
+      entityType: 'post',
+      entityId: postId,
+      newValueJson: JSON.stringify({
+        postId,
+        approvalRequestId: req.id,
+        status: 'failed',
+        errorCode: 'unsupported_content',
+        errorMessage: 'Published content text is empty or invalid.',
+      }),
+    })
+
+    return {
+      ok: false,
+      code: 'unsupported_content',
+      message: 'Published content text is empty or invalid.',
+      postId,
+    }
+  }
+
+  // 8. Execute via XPublishingAdapter
+  const adapter = new XPublishingAdapter(
+    options?.xTransport !== undefined ? { transport: options.xTransport } : undefined,
+  )
+  const pubResult = await adapter.publishText({
+    text: post.variantBody,
+    expectedAccountHandle: post.accountHandle ?? '',
+    credential: credRes.credential,
+  })
+
+  if (pubResult.ok) {
+    const successNow = options?.nowOverride ?? nowIso()
+    await execute(
+      db,
+      `UPDATE post
+       SET status = 'published', external_id = ?, url = NULL, published_at = ?, error = NULL, updated_at = ?
+       WHERE id = ? AND workspace_id = ?`,
+      [pubResult.externalId, successNow, successNow, postId, input.workspaceId],
+    )
+
+    await emitEventSafe(db, {
+      workspaceId: input.workspaceId,
+      eventType: 'publication.published',
+      actorType: 'system',
+      subjectType: 'post',
+      subjectId: postId,
+      payloadJson: JSON.stringify({
+        postId,
+        approvalRequestId: req.id,
+        accountId: post.accountId,
+        platformAdapterKey: 'x',
+        externalId: pubResult.externalId,
+        publishedAt: successNow,
+      }),
+    })
+
+    await writeAuditLog(db, {
+      workspaceId: input.workspaceId,
+      actorType: 'system',
+      action: 'update',
+      entityType: 'post',
+      entityId: postId,
+      newValueJson: JSON.stringify({
+        postId,
+        approvalRequestId: req.id,
+        status: 'published',
+        externalId: pubResult.externalId,
+        publishedAt: successNow,
+      }),
+    })
+
+    return {
+      ok: true,
+      code: 'published',
+      message: 'Post published successfully to X.',
+      postId,
+      externalId: pubResult.externalId,
+    }
+  }
+
+  // Handle failure
+  const failureNow = options?.nowOverride ?? nowIso()
+  await execute(
+    db,
+    `UPDATE post
+     SET status = 'failed', error = ?, updated_at = ?
+     WHERE id = ? AND workspace_id = ?`,
+    [pubResult.message, failureNow, postId, input.workspaceId],
+  )
+
+  await emitEventSafe(db, {
+    workspaceId: input.workspaceId,
+    eventType: 'publication.failed',
+    actorType: 'system',
+    subjectType: 'post',
+    subjectId: postId,
+    payloadJson: JSON.stringify({
+      postId,
+      approvalRequestId: req.id,
+      accountId: post.accountId,
+      platformAdapterKey: 'x',
+      errorCode: pubResult.code,
+      errorMessage: pubResult.message,
+      ambiguous: pubResult.ambiguous ?? false,
+    }),
+  })
+
+  await writeAuditLog(db, {
+    workspaceId: input.workspaceId,
+    actorType: 'system',
+    action: 'update',
+    entityType: 'post',
+    entityId: postId,
+    newValueJson: JSON.stringify({
+      postId,
+      approvalRequestId: req.id,
+      status: 'failed',
+      errorCode: pubResult.code,
+      errorMessage: pubResult.message,
+      ambiguous: pubResult.ambiguous ?? false,
     }),
   })
 
   return {
     ok: false,
-    code: 'not_configured',
-    message:
-      'Platform publication adapter is not configured or available yet. Zero external network publishing performed.',
+    code: pubResult.code,
+    message: pubResult.message,
     postId,
   }
 }

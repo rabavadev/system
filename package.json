@@ -42,8 +42,10 @@
     "test:content-approval": "node --experimental-strip-types scripts/test-content-approval.ts",
     "test:publication": "node --experimental-strip-types scripts/test-publication.ts",
     "test:publication-dispatch": "node --experimental-strip-types scripts/test-publication-dispatch.ts",
-    "test:credentials": "node --experimental-strip-types scripts/test-platform-credentials.ts"
+    "test:credentials": "node --experimental-strip-types scripts/test-platform-credentials.ts",
+    "test:x-publish": "node --experimental-strip-types scripts/test-x-publish.ts"
   },
+
   "dependencies": {
     "@tanstack/react-query": "^5.101.4",
     "@tanstack/react-router": "^1.170.30",
