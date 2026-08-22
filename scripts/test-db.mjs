@@ -45,7 +45,7 @@ const id = () => crypto.randomUUID()
 test('clean database migrates from zero; all tables exist', () => {
   const db = freshDb()
   const files = migrate(db)
-  assert.equal(files.length, 23, `expected 23 migrations, got: ${files.join(', ')}`)
+  assert.equal(files.length, 24, `expected 24 migrations, got: ${files.join(', ')}`)
 
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -85,6 +85,7 @@ test('clean database migrates from zero; all tables exist', () => {
     'niche',
     'platform',
     'platform_connection',
+    'platform_credential',
     'platform_metric_raw',
     'post',
     'product',
@@ -1165,6 +1166,77 @@ test('migration 0023 enforces NOT NULL workspace_id, active intent unique index,
   // 4. Verify foreign key check passes
   const fkCheck = db.prepare(`PRAGMA foreign_key_check`).all()
   assert.equal(fkCheck.length, 0, `foreign key check failed: ${JSON.stringify(fkCheck)}`)
+
+  db.close()
+})
+
+test('migration 0024 creates platform_credential table and enforces active account uniqueness', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const ws = id()
+  const platform = id()
+  const account = id()
+
+  db.prepare(`INSERT INTO workspace (id, name, created_at, updated_at) VALUES (?, 'ws', ?, ?)`).run(
+    ws,
+    NOW,
+    NOW,
+  )
+  db.prepare(
+    `INSERT INTO platform (id, adapter_key, name, created_at) VALUES (?, 'x', 'X', ?)`,
+  ).run(platform, NOW)
+  db.prepare(
+    `INSERT INTO account (id, workspace_id, platform_id, handle, created_at, updated_at) VALUES (?, ?, ?, '@handle', ?, ?)`,
+  ).run(account, ws, platform, NOW, NOW)
+
+  const cred1 = id()
+  const cred2 = id()
+
+  // First active credential insert succeeds
+  db.prepare(`
+    INSERT INTO platform_credential (
+      id, workspace_id, account_id, platform_id, credential_type,
+      access_token_ciphertext, access_token_iv, key_version, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'oauth2', 'cipher1', 'iv1', 1, ?, ?)
+  `).run(cred1, ws, account, platform, NOW, NOW)
+
+  // Second active credential insert for same account fails due to unique active index
+  assert.throws(
+    () =>
+      db
+        .prepare(`
+        INSERT INTO platform_credential (
+          id, workspace_id, account_id, platform_id, credential_type,
+          access_token_ciphertext, access_token_iv, key_version, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'oauth2', 'cipher2', 'iv2', 1, ?, ?)
+      `)
+        .run(cred2, ws, account, platform, NOW, NOW),
+    /UNIQUE/i,
+    'Second active credential for same account must violate unique active index',
+  )
+
+  // Once first is revoked, second insert succeeds
+  db.prepare(`UPDATE platform_credential SET revoked_at = ? WHERE id = ?`).run(NOW, cred1)
+
+  db.prepare(`
+    INSERT INTO platform_credential (
+      id, workspace_id, account_id, platform_id, credential_type,
+      access_token_ciphertext, access_token_iv, key_version, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'oauth2', 'cipher2', 'iv2', 1, ?, ?)
+  `).run(cred2, ws, account, platform, NOW, NOW)
+
+  const count = db
+    .prepare(`SELECT COUNT(*) AS n FROM platform_credential WHERE account_id = ?`)
+    .get(account)
+  assert.equal(count.n, 2)
+
+  const activeCount = db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+    )
+    .get(account)
+  assert.equal(activeCount.n, 1)
 
   db.close()
 })

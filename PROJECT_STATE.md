@@ -11,7 +11,7 @@ Navigation: src/components/layout/nav-items.ts + topbar.tsx (shows active brand)
 Auth: none yet — single seeded workspace
 Current user: n/a; active brand via cookie (src/features/workspace/server.ts)
 API client: per-feature server functions (src/features/*/server.ts)
-Schema: migrations/0001–0023 + docs/database.md
+Schema: migrations/0001–0024 + docs/database.md
 Design system: Tailwind v4 + src/components/ui/
 Shared components: src/components/ui/*, src/components/layout/*
 ```
@@ -43,6 +43,7 @@ Shared components: src/components/ui/*, src/components/layout/*
 | Creator Revisions (Step 15C) | src/server/db/content-variant.ts + src/server/agents/content-draft.ts | human-controlled revisions from Critic feedback; `source_variant_id` & `source_review_id` candidate lineage; immutable variant chains (migration 0019) |
 | Content Editorial Approval (Step 15D) | src/server/db/content-approval.ts + src/features/campaigns/ | explicit human editorial gate; `content.status = 'ready'`; `content.selected_variant_id`; immutable `content_approval` audit history; strict server-side Critic override enforcement; zero auto-publishing (migration 0020) |
 | Publication Foundation & Readiness (Step 15E.1 / 15E.1.1) | src/server/db/post.ts + src/features/campaigns/ | server-authoritative publication intent (`post` table); binds exact approved `content_variant_id` to exact active `account_id` and `content_approval_id`; `workspace_id NOT NULL`; active intent unique index; request-bound idempotency; full pre-dispatch eligibility validation; zero external network calls; platform publish tool remains `unavailable` and Publisher agent remains `disabled` (migrations 0022, 0023) |
+| Encrypted OAuth Credential Vault (Step 15E.3C.1) | src/server/platforms/credentials/ + migrations/0024_platform_credential_vault.sql | AES-256-GCM symmetric encryption with Web Crypto (`crypto.subtle`), server-authoritative context-bound AAD (`workspaceId`, `accountId`, `platform`, `keyVersion`), partial unique index on active credentials per account, zero DB/log/event/audit plaintext token leaks, KEK resolution fallback to static secret_ref (migration 0024) |
 
 ## Completed Steps & Hardening Sequence
 
@@ -83,6 +84,7 @@ Shared components: src/components/ui/*, src/components/layout/*
 - **STEP 15E.2 — Approval-Gated Publication Dispatch Boundary**: Connected publication preparation (`post` in `draft`/`scheduled`) to the STEP 11 Approval Policy system via action `content.publish` (`inherentRisks: ['write', 'external']`). Enforces explicit user Publish initiation (no auto-publishing), server-authoritative Post reload, pre-approval eligibility re-validation, hard minimum REVIEW policy elevation (AUTO elevated to REVIEW with `source: 'tool_requirement'`), immutable snapshot with SHA-256 fingerprinting, deduplication/idempotency on repeated requests, `dispatchStatus: 'awaiting_approval'`, safe approval-time revalidation (revocations/account mutations/tampering block dispatch), and safe stubbed dispatch execution returning `not_configured` without fake success or external platform calls.
 - **STEP 15E.3A — Secure Platform Credential Resolution**: Implemented secure, server-authoritative platform credential resolution (`resolvePlatformCredential` in `src/server/platforms/resolver.ts`, `createEnvSecretResolver` in `src/server/platforms/runtime.ts`) adhering to 6 security guards: zero DB secret storage (`platform_connection.secret_ref` is string identifier only), server runtime binding resolution, platform adapter key validation, account & connection status verification, tenant isolation, and strict secret_ref syntax validation (`^[A-Za-z0-9_-]{1,128}$`).
 - **STEP 15E.3B — First Real X Text Publishing Adapter**: Implemented single external publishing adapter for X (`adapter_key = 'x'`) supporting text-only posts behind the STEP 15E.2 approval dispatch boundary. Enforces: X-bound secret validation (`X_` prefix), authenticated identity pre-flight verification (`GET /2/users/me` before `POST /2/tweets`), single-attempt `POST /2/tweets` with bounded timeout (15s), atomic status claim (`draft`/`scheduled` -> `publishing`), confirmed HTTP 201 response verification, truthful `post` persistence (`published`, `external_id`, `published_at`), zero token/credential leakage in database error fields/events/audit logs, and strict error normalization (`rate_limited`, `unauthorized`, `forbidden`, `invalid_request`, `timeout`, `provider_error`, `network_error`, `account_identity_mismatch`).
+- **STEP 15E.3C.1 — Secure OAuth Credential Vault Foundation**: Implemented provider-neutral encrypted OAuth credential storage with Web Crypto AES-256-GCM symmetric encryption (`crypto.subtle`), server-authoritative context-bound AAD binding (`workspaceId`, `accountId`, `platform`, `keyVersion`), DB schema migration `0024_platform_credential_vault.sql` with partial unique index `idx_platform_credential_active_account` (`WHERE revoked_at IS NULL`), zero plaintext token leaks across DB, logs, events, audit trails, and client DTOs (`SafePlatformConnection`), fail-closed cryptographic and integrity error mapping, and seamless resolution integration into `resolvePlatformCredential` with fallback to static worker secret refs.
 
 ## Content Lifecycle & Publishing Boundary
 
@@ -101,7 +103,7 @@ Campaign Content Item (draft)
   → Approval Request Created (approval: status = 'pending', snapshotJson, SHA-256 fingerprint, post dispatchStatus = 'awaiting_approval')
   → Human Decides in Approval Center (approved / rejected / expired)
   → Approval-Time Live Revalidation (rechecks current eligibility & snapshot integrity)
-  → Pre-Claim Credential Resolution (resolves X-bound runtime secret via secure server resolver)
+  → Pre-Claim Credential Resolution (resolves OAuth credential from encrypted vault or fallback to static secret_ref)
   → Atomic Post Claim (UPDATE post SET status = 'publishing' WHERE status IN ('draft', 'scheduled'))
   → Account Identity Verification (GET /2/users/me confirms provider ID or handle match)
   → Single-Attempt Dispatch (POST /2/tweets with exact approved variant text)
@@ -117,6 +119,7 @@ Campaign Content Item (draft)
 4. **Publisher Agent Status**: The `Publisher` agent is explicitly `disabled` (`status: 'disabled'`).
 5. **Platform Publish Tool**: The `platform.publish` tool is an unavailable stub (`Not available yet`, `status: 'unavailable'`).
 6. **Human Primacy & Server-Authoritative Override**: Critic verdict `pass` never auto-approves content. Critic verdict `revise` strictly blocks approval on the server unless the human operator explicitly provides `overrideCritic: true` (`critic_override = 1`). Notes are documentation only and do not authorize approval.
+7. **Encrypted OAuth Credential Invariant**: All dynamic OAuth tokens are encrypted with AES-256-GCM prior to database persistence using server-authoritative AAD. Zero plaintext tokens exist in database columns, logs, domain events, or audit records. At most one active credential per account is enforced at the database level (`WHERE revoked_at IS NULL`).
 
 ## Approval System Disambiguation
 
@@ -135,8 +138,8 @@ The architecture contains two distinct approval subsystems that serve separate p
 
 | Capability / Runtime Area | Verification Status | Notes |
 |---|---|---|
-| Unit & Integration Tests (23 suites) | **VERIFIED** | All automated tests run and pass in local Node / SQLite environment |
-| Database Migrations (0001–0023) | **VERIFIED** | Verified through `npm run db:test` (23/23 tests pass) |
+| Unit & Integration Tests (24 suites) | **VERIFIED** | All automated tests run and pass in local Node / SQLite environment |
+| Database Migrations (0001–0024) | **VERIFIED** | Verified through `npm run db:test` (24/24 tests pass) |
 | Context Engine & Ranking | **VERIFIED** | Verified through `npm run test:context` |
 | Policy & Approval Engine | **VERIFIED** | Verified through `npm run test:policy`, `test:approvals`, `test:approvals-ux` |
 | Campaign Strategy & Metrics | **VERIFIED** | Verified through `npm run test:campaign-strategy`, `test:campaigns` |
@@ -145,9 +148,10 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Creator Revision Lineage System | **VERIFIED** | Verified through `npm run test:creator-revision` |
 | Human Content Approval Gate | **VERIFIED** | Verified through `npm run test:content-approval` (strict server-side override enforcement) |
 | Publication Foundation & Integrity | **VERIFIED** | Verified through `npm run test:publication` (exact approved variant binding, account/platform match, request-bound idempotency, post status guard, reapproval lineage isolation, zero external calls) |
-| Publication Dispatch Boundary (15E.2) | **VERIFIED** | Verified through `npm run test:publication-dispatch` (28/28 pass — approval gate, snapshot integrity, eligibility revalidation, safe stub dispatch) |
-| Platform Credential Resolution (15E.3A) | **VERIFIED** | Verified through `npm run test:credentials` (24/24 pass — 6 security guards, tenant isolation, zero DB secret storage, prototype safety) |
+| Publication Dispatch Boundary (15E.2) | **VERIFIED** | Verified through `npm run test:publication-dispatch` (39/39 pass — approval gate, snapshot integrity, eligibility revalidation, safe stub dispatch) |
+| Platform Credential Resolution (15E.3A) | **VERIFIED** | Verified through `npm run test:credentials` (32/32 pass — 6 security guards, tenant isolation, zero DB secret storage, prototype safety, OAuth vault precedence) |
 | X Text Publishing Adapter (15E.3B) | **VERIFIED** | Verified through `npm run test:x-publish` (51/51 pass — identity preflight, single-attempt dispatch, atomic claim, zero credential leakage, truthful persistence, full error normalization) |
+| Encrypted OAuth Credential Vault (15E.3C.1) | **VERIFIED** | Verified through `npm run test:credential-vault` (37/37 pass — Web Crypto AES-GCM, AAD binding, zero plaintext database scans, rotation, revocation, tamper defense) |
 | Research Source Provenance | **VERIFIED** | Verified through `npm run test:research` |
 | Workflow Run Scope Integrity | **VERIFIED** | Verified through `npm run test:workflows` |
 | Local Workers Runtime & Vite Build | **VERIFIED** | Verified through `npm run build` and local development server |
@@ -180,6 +184,7 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Server-authoritative Critic review candidates & override enforcement | Critic reviews derive verdict, review JSON, provenance strictly from database candidates (`content_review_candidate`); server strictly enforces `overrideCritic: true` for revise reviews | HARDENING P1, migration 0021 |
 | Server-authoritative publication intent with post table | binds exact immutable approved variant to account & approval; enforces ready eligibility pre-dispatch; prevents client forgery of status/urls/ids | STEP 15E.1, migration 0022 |
 | Post table rebuild with NOT NULL workspace_id, active intent unique index, and lineage integrity | eliminates NULL-workspace security hazards, enforces active account state, server campaign derivation, post status guards, and approval lineage tracking | HARDENING 15E.1.1, migration 0023 |
+| Encrypted OAuth Credential Vault with Web Crypto AES-256-GCM | enables dynamically connected user OAuth accounts with secure envelope encryption, strict AAD context binding, and zero plaintext database or logging exposure | STEP 15E.3C.1, migration 0024 |
 
 ## Known Technical Debt & Limitations
 
@@ -188,3 +193,4 @@ The architecture contains two distinct approval subsystems that serve separate p
 | No auth/multi-user | medium | post-hardening phase |
 | Remote Cloudflare Workflows binding | low | currently uses inline runtime; binding can be attached in Cloudflare |
 | Live API keys (Brave, Workers AI remote) | low | configured via environment variables in `.dev.vars` / Cloudflare secrets |
+

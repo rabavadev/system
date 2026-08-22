@@ -110,6 +110,8 @@ export interface Account {
 
 export type ConnectionStatus = 'connected' | 'expired' | 'error' | 'disconnected'
 
+export type CredentialSource = 'oauth_vault' | 'worker_secret' | 'none'
+
 export interface PlatformConnection {
   id: Id
   accountId: Id
@@ -124,12 +126,13 @@ export interface PlatformConnection {
   updatedAt: IsoTimestamp
 }
 
-/** Client-safe platform connection DTO without internal secret locator bindings. */
+/** Client-safe platform connection DTO without internal secret locator bindings or sensitive tokens. */
 export interface SafePlatformConnection {
   id: Id
   accountId: Id
   status: ConnectionStatus
   hasCredential: boolean
+  credentialSource?: CredentialSource
   scopes: string | null
   metadataJson: string | null
   connectedAt: IsoTimestamp | null
@@ -138,12 +141,25 @@ export interface SafePlatformConnection {
   updatedAt: IsoTimestamp
 }
 
-export function toSafePlatformConnection(conn: PlatformConnection): SafePlatformConnection {
+export function toSafePlatformConnection(
+  conn: PlatformConnection,
+  options?: { hasOAuthCredential?: boolean },
+): SafePlatformConnection {
+  const hasOAuth = Boolean(options?.hasOAuthCredential)
+  const hasStatic = Boolean(conn.secretRef && conn.secretRef.trim().length > 0)
+  const hasCredential = hasOAuth || hasStatic
+  const credentialSource: CredentialSource = hasOAuth
+    ? 'oauth_vault'
+    : hasStatic
+      ? 'worker_secret'
+      : 'none'
+
   return {
     id: conn.id,
     accountId: conn.accountId,
     status: conn.status,
-    hasCredential: Boolean(conn.secretRef && conn.secretRef.trim().length > 0),
+    hasCredential,
+    credentialSource,
     scopes: conn.scopes,
     metadataJson: conn.metadataJson,
     connectedAt: conn.connectedAt,

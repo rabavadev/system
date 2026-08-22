@@ -101,7 +101,20 @@ export async function getSafePlatformConnectionForAccount(
   accountId: string,
 ): Promise<SafePlatformConnection | null> {
   const conn = await getPlatformConnectionForAccount(db, accountId)
-  return conn ? toSafePlatformConnection(conn) : null
+  if (!conn) {
+    return null
+  }
+  const oauthRow = await queryFirst<{ id: string; scopes: string | null }>(
+    db,
+    `SELECT id, scopes FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+    [accountId],
+  )
+  const hasOAuth = Boolean(oauthRow)
+  const safe = toSafePlatformConnection(conn, { hasOAuthCredential: hasOAuth })
+  if (hasOAuth && oauthRow?.scopes) {
+    safe.scopes = oauthRow.scopes
+  }
+  return safe
 }
 
 export interface UpsertPlatformConnectionInput {

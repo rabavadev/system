@@ -1,5 +1,7 @@
 import { getPlatformById, getPlatformConnectionForAccount } from '../db/platform.ts'
-import type { SqlDatabase } from '../db/sql.ts'
+import { queryFirst, type SqlDatabase } from '../db/sql.ts'
+import { decryptToken, importMasterKey } from './credentials/crypto.ts'
+import type { StoredPlatformCredentialRow } from './credentials/types.ts'
 import { isAdapterAuthorizedSecretRef, isValidSecretRef } from './runtime.ts'
 import type {
   PlatformCredential,
@@ -18,6 +20,13 @@ interface AccountLookupRow {
   deleted_at: string | null
 }
 
+export type ResolvePlatformCredentialOptions =
+  | PlatformSecretResolver
+  | {
+      secretResolver?: PlatformSecretResolver
+      kek?: string | CryptoKey
+    }
+
 /**
  * Server-authoritative platform credential resolver.
  *
@@ -26,17 +35,32 @@ interface AccountLookupRow {
  * 2. Active account lifecycle checks (not deleted, status active)
  * 3. Platform adapter key matching
  * 4. Active connected connection state
- * 5. Valid safe secret_ref syntax (no prototype keys, no traversal/special chars)
- * 6. Provider binding authority (no cross-provider secret referencing)
- * 7. Secure runtime secret resolution from secret_ref
+ * 5. Primary credential source resolution:
+ *    A. Active encrypted OAuth vault credential in D1 (decrypted with AES-GCM + server AAD)
+ *    B. Static runtime secret binding from secret_ref (validated against provider allowlist)
  *
- * Secrets are never stored in D1 and never returned through public domain DTOs.
+ * Secrets and master keys are never stored in D1 in plaintext and never returned through public domain DTOs.
  */
 export async function resolvePlatformCredential(
   db: SqlDatabase,
   input: ResolvePlatformCredentialInput,
-  secretResolver?: PlatformSecretResolver,
+  secretResolverOrOptions?: ResolvePlatformCredentialOptions,
+  explicitKek?: string | CryptoKey,
 ): Promise<ResolvePlatformCredentialResult> {
+  let secretResolver: PlatformSecretResolver | undefined
+  let kek: string | CryptoKey | undefined = explicitKek
+
+  if (secretResolverOrOptions) {
+    if ('resolveSecret' in secretResolverOrOptions) {
+      secretResolver = secretResolverOrOptions
+    } else {
+      secretResolver = secretResolverOrOptions.secretResolver
+      if (!kek) {
+        kek = secretResolverOrOptions.kek
+      }
+    }
+  }
+
   // 1. Load Account server-side
   const accountRows = (
     await db
@@ -111,17 +135,132 @@ export async function resolvePlatformCredential(
     }
   }
 
+  // Parse safe connection metadata JSON if present
+  let parsedMetadata: Record<string, unknown> = {}
+  if (connection.metadataJson && connection.metadataJson.trim().length > 0) {
+    try {
+      const parsed = JSON.parse(connection.metadataJson)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        parsedMetadata = parsed as Record<string, unknown>
+      }
+    } catch {
+      parsedMetadata = {}
+    }
+  }
+
+  // 4. Check for active encrypted OAuth credential in vault
+  const oauthRow = await queryFirst<StoredPlatformCredentialRow>(
+    db,
+    `SELECT * FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+    [account.id],
+  )
+
+  if (oauthRow) {
+    if (oauthRow.key_version !== 1) {
+      return {
+        ok: false,
+        code: 'not_configured',
+        reason: `Unknown encryption key version ${oauthRow.key_version} in credential vault.`,
+      }
+    }
+
+    // Resolve KEK
+    let cryptoKey: CryptoKey | null = null
+    if (kek) {
+      if (typeof kek === 'object' && 'algorithm' in kek) {
+        cryptoKey = kek as CryptoKey
+      } else if (typeof kek === 'string') {
+        try {
+          cryptoKey = await importMasterKey(kek)
+        } catch {
+          cryptoKey = null
+        }
+      }
+    }
+
+    if (!cryptoKey && secretResolver) {
+      const rawKek = await secretResolver.resolveSecret('PLATFORM_CREDENTIAL_KEK_V1')
+      if (rawKek && typeof rawKek === 'string' && rawKek.trim().length > 0) {
+        try {
+          cryptoKey = await importMasterKey(rawKek.trim())
+        } catch {
+          cryptoKey = null
+        }
+      }
+    }
+
+    if (!cryptoKey) {
+      return {
+        ok: false,
+        code: 'not_configured',
+        reason: 'Master encryption key is not configured in runtime environment.',
+      }
+    }
+
+    const aadContext = {
+      workspaceId: input.workspaceId,
+      accountId: input.accountId,
+      platformAdapterKey: input.platformAdapterKey,
+      keyVersion: oauthRow.key_version,
+    }
+
+    let accessToken: string
+    try {
+      accessToken = await decryptToken(
+        oauthRow.access_token_ciphertext,
+        oauthRow.access_token_iv,
+        cryptoKey,
+        aadContext,
+      )
+    } catch {
+      return {
+        ok: false,
+        code: 'not_configured',
+        reason: 'Failed to decrypt OAuth credential or credential integrity check failed.',
+      }
+    }
+
+    const mergedMetadata: Record<string, unknown> = {
+      ...parsedMetadata,
+      // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+      providerUserId: oauthRow.provider_user_id ?? parsedMetadata['providerUserId'] ?? null,
+      tokenType: oauthRow.token_type ?? 'bearer',
+
+      accessTokenExpiresAt: oauthRow.access_token_expires_at ?? null,
+      refreshTokenExpiresAt: oauthRow.refresh_token_expires_at ?? null,
+      credentialSource: 'oauth_vault',
+    }
+
+    const platformPrefix = platform.adapterKey.toUpperCase()
+    const vaultRef = `${platformPrefix}_OAUTH_VAULT`
+
+    const credential: PlatformCredential = {
+      secretRef: vaultRef,
+      secretValue: accessToken,
+      accountId: account.id,
+      platformAdapterKey: platform.adapterKey,
+      scopes: oauthRow.scopes ?? connection.scopes ?? null,
+      metadata: mergedMetadata,
+    }
+
+    return {
+      ok: true,
+      credential,
+    }
+  }
+
+  // 5. Fallback to static runtime secret binding if no OAuth credential exists
   if (!connection.secretRef || connection.secretRef.trim().length === 0) {
     return {
       ok: false,
       code: 'not_configured',
-      reason: 'Platform connection has no secret_ref configured.',
+      reason: 'Platform connection has no secret_ref or active OAuth credential configured.',
     }
   }
 
   const trimmedSecretRef = connection.secretRef.trim()
 
-  // 4. Validate secret_ref syntax and prototype safety
+  // Validate secret_ref syntax and prototype safety
   if (!isValidSecretRef(trimmedSecretRef)) {
     return {
       ok: false,
@@ -130,7 +269,7 @@ export async function resolvePlatformCredential(
     }
   }
 
-  // 5. Provider binding check
+  // Provider binding check
   if (!isAdapterAuthorizedSecretRef(platform.adapterKey, trimmedSecretRef)) {
     return {
       ok: false,
@@ -139,7 +278,7 @@ export async function resolvePlatformCredential(
     }
   }
 
-  // 6. Resolve external secret binding
+  // Resolve external secret binding
   if (!secretResolver) {
     return {
       ok: false,
@@ -157,26 +296,13 @@ export async function resolvePlatformCredential(
     }
   }
 
-  // 7. Parse safe metadata JSON if present
-  let parsedMetadata: Record<string, unknown> | null = null
-  if (connection.metadataJson && connection.metadataJson.trim().length > 0) {
-    try {
-      const parsed = JSON.parse(connection.metadataJson)
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        parsedMetadata = parsed as Record<string, unknown>
-      }
-    } catch {
-      parsedMetadata = null
-    }
-  }
-
   const credential: PlatformCredential = {
     secretRef: trimmedSecretRef,
     secretValue: secretValue.trim(),
     accountId: account.id,
     platformAdapterKey: platform.adapterKey,
     scopes: connection.scopes ?? null,
-    metadata: parsedMetadata,
+    metadata: Object.keys(parsedMetadata).length > 0 ? parsedMetadata : null,
   }
 
   return {
