@@ -2355,3 +2355,524 @@ test('75. disconnect with provider 429 rate limit or 5xx still completes local d
   assert.ok(!resolved.ok)
   assert.equal((resolved as { code: string }).code, 'connection_inactive')
 })
+
+test('76. fencing: simultaneous claim by two workers generates unique claim IDs and awards lease to exactly one', async () => {
+  const ctx = await seedLifecycleCtx()
+  await seedCredential(ctx, { accessTokenExpiresAt: isoFuture(10) })
+
+  const claim1Id = newId()
+  const claim2Id = newId()
+  assert.notEqual(claim1Id, claim2Id)
+
+  const now = nowIso()
+  const leaseExpiry = new Date(Date.now() + 30000).toISOString()
+
+  const res1 = await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL
+       AND (refresh_locked_until IS NULL OR refresh_locked_until < ?)`,
+    [leaseExpiry, claim1Id, ctx.accountId, now],
+  )
+  const changes1 =
+    (res1 as { meta?: { changes?: number }; changes?: number })?.meta?.changes ??
+    (res1 as { changes?: number })?.changes ??
+    0
+
+  const res2 = await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL
+       AND (refresh_locked_until IS NULL OR refresh_locked_until < ?)`,
+    [leaseExpiry, claim2Id, ctx.accountId, now],
+  )
+  const changes2 =
+    (res2 as { meta?: { changes?: number }; changes?: number })?.meta?.changes ??
+    (res2 as { changes?: number })?.changes ??
+    0
+
+  assert.equal(changes1, 1, 'First worker claims lease')
+  assert.equal(changes2, 0, 'Second worker rejected')
+
+  const row = await queryFirst<{ refresh_claim_id: string }>(
+    ctx.db,
+    `SELECT refresh_claim_id FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+    [ctx.accountId],
+  )
+  assert.equal(row?.refresh_claim_id, claim1Id)
+})
+
+test('77. fencing: stale takeover updates claim_id to new claimant', async () => {
+  const ctx = await seedLifecycleCtx()
+  await seedCredential(ctx, { accessTokenExpiresAt: isoFuture(10) })
+
+  const claimA = newId()
+  const pastLease = new Date(Date.now() - 5000).toISOString()
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL`,
+    [pastLease, claimA, ctx.accountId],
+  )
+
+  const claimB = newId()
+  const futureLease = new Date(Date.now() + 30000).toISOString()
+  const now = nowIso()
+
+  const resB = await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL
+       AND (refresh_locked_until IS NULL OR refresh_locked_until < ?)`,
+    [futureLease, claimB, ctx.accountId, now],
+  )
+  const changesB =
+    (resB as { meta?: { changes?: number }; changes?: number })?.meta?.changes ??
+    (resB as { changes?: number })?.changes ??
+    0
+
+  assert.equal(changesB, 1, 'Worker B reclaims stale lease')
+  const row = await queryFirst<{ refresh_claim_id: string }>(
+    ctx.db,
+    `SELECT refresh_claim_id FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+    [ctx.accountId],
+  )
+  assert.equal(row?.refresh_claim_id, claimB, 'Database now contains claimB')
+})
+
+test('78. fencing: delayed A response rejected when lease reclaimed by B (critical race test)', async () => {
+  const ctx = await seedLifecycleCtx()
+  await seedCredential(ctx, {
+    accessToken: 'original_token_c1',
+    accessTokenExpiresAt: isoFuture(10),
+  })
+
+  // 1. Worker A claims lease with claimA
+  const claimA = newId()
+  const leaseA = new Date(Date.now() + 30000).toISOString()
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL`,
+    [leaseA, claimA, ctx.accountId],
+  )
+
+  // 2. Advance time past A's lease expiration; Worker B claims with claimB
+  const claimB = newId()
+  const pastTime = new Date(Date.now() + 35000).toISOString()
+  const leaseB = new Date(Date.now() + 65000).toISOString()
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL
+       AND (refresh_locked_until IS NULL OR refresh_locked_until < ?)`,
+    [leaseB, claimB, ctx.accountId, pastTime],
+  )
+
+  // 3. Worker A's delayed refresh response arrives and attempts persistence with claimA
+  const storeResA = await storeOAuthCredential(
+    ctx.db,
+    {
+      workspaceId: ctx.workspaceId,
+      accountId: ctx.accountId,
+      platformAdapterKey: 'x',
+      expectedRefreshClaimId: claimA,
+      credential: {
+        accessToken: 'stale_token_from_A',
+        refreshToken: 'stale_refresh_from_A',
+        accessTokenExpiresAt: isoFuture(7200),
+      },
+    },
+    TEST_KEK,
+  )
+
+  // 4. Required: A persistence rejected; C1 / current authoritative state not overwritten by A
+  assert.ok(!storeResA.ok, 'Worker A persistence must be rejected')
+  assert.equal((storeResA as { code: string }).code, 'stale_refresh_claim')
+
+  const activeRow = await queryFirst<{ refresh_claim_id: string }>(
+    ctx.db,
+    `SELECT refresh_claim_id FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+    [ctx.accountId],
+  )
+  assert.equal(activeRow?.refresh_claim_id, claimB, 'claimB remains the active owner')
+
+  const resolved = await resolveOAuthCredential(
+    ctx.db,
+    { workspaceId: ctx.workspaceId, accountId: ctx.accountId, platformAdapterKey: 'x' },
+    TEST_KEK,
+  )
+  assert.ok(resolved.ok)
+  assert.equal(
+    resolved.credential.accessToken,
+    'original_token_c1',
+    'C1 was not overwritten by stale Worker A',
+  )
+})
+
+test('79. fencing: B success then delayed A response cannot overwrite B or insert C3', async () => {
+  const ctx = await seedLifecycleCtx()
+  await seedCredential(ctx, {
+    accessToken: 'original_token_c1',
+    accessTokenExpiresAt: isoFuture(10),
+  })
+
+  // 1. Worker A claims lease
+  const claimA = newId()
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL`,
+    [new Date(Date.now() - 1000).toISOString(), claimA, ctx.accountId],
+  )
+
+  // 2. Worker B reclaims and successfully rotates to C2
+  const claimB = newId()
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL`,
+    [new Date(Date.now() + 30000).toISOString(), claimB, ctx.accountId],
+  )
+
+  const storeResB = await storeOAuthCredential(
+    ctx.db,
+    {
+      workspaceId: ctx.workspaceId,
+      accountId: ctx.accountId,
+      platformAdapterKey: 'x',
+      expectedRefreshClaimId: claimB,
+      credential: {
+        accessToken: 'winner_token_c2',
+        refreshToken: 'winner_refresh_c2',
+        accessTokenExpiresAt: isoFuture(7200),
+      },
+    },
+    TEST_KEK,
+  )
+  assert.ok(storeResB.ok, 'Worker B successfully stored C2')
+
+  // 3. Stale Worker A returns and tries to persist with claimA
+  const storeResA = await storeOAuthCredential(
+    ctx.db,
+    {
+      workspaceId: ctx.workspaceId,
+      accountId: ctx.accountId,
+      platformAdapterKey: 'x',
+      expectedRefreshClaimId: claimA,
+      credential: {
+        accessToken: 'stale_token_c3',
+        refreshToken: 'stale_refresh_c3',
+        accessTokenExpiresAt: isoFuture(7200),
+      },
+    },
+    TEST_KEK,
+  )
+  assert.ok(!storeResA.ok, 'Worker A rejected with stale claim')
+  assert.equal((storeResA as { code: string }).code, 'stale_refresh_claim')
+
+  // 4. Assert: Exactly one active credential exists (C2)
+  const activeCount = await queryFirst<{ cnt: number }>(
+    ctx.db,
+    `SELECT COUNT(*) as cnt FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+    [ctx.accountId],
+  )
+  assert.equal(activeCount?.cnt, 1)
+
+  const resolved = await resolveOAuthCredential(
+    ctx.db,
+    { workspaceId: ctx.workspaceId, accountId: ctx.accountId, platformAdapterKey: 'x' },
+    TEST_KEK,
+  )
+  assert.ok(resolved.ok)
+  assert.equal(
+    resolved.credential.accessToken,
+    'winner_token_c2',
+    'C2 remains active; C3 was not inserted',
+  )
+})
+
+test('80. fencing: non-owner release affects zero rows and preserves active lease', async () => {
+  const ctx = await seedLifecycleCtx()
+  await seedCredential(ctx, { accessTokenExpiresAt: isoFuture(10) })
+
+  const claimA = newId()
+  const claimB = newId()
+  const futureLease = new Date(Date.now() + 30000).toISOString()
+
+  // B currently owns the lease
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL`,
+    [futureLease, claimB, ctx.accountId],
+  )
+
+  // Stale Worker A tries to release its old claimA
+  const releaseRes = await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = NULL, refresh_claim_id = NULL
+     WHERE account_id = ? AND revoked_at IS NULL AND refresh_claim_id = ?`,
+    [ctx.accountId, claimA],
+  )
+  const changes =
+    (releaseRes as { meta?: { changes?: number }; changes?: number })?.meta?.changes ??
+    (releaseRes as { changes?: number })?.changes ??
+    0
+
+  assert.equal(changes, 0, 'Zero rows updated on non-owner release')
+
+  // B's lease remains intact
+  const row = await queryFirst<{ refresh_claim_id: string; refresh_locked_until: string }>(
+    ctx.db,
+    `SELECT refresh_claim_id, refresh_locked_until FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+    [ctx.accountId],
+  )
+  assert.equal(row?.refresh_claim_id, claimB)
+  assert.equal(row?.refresh_locked_until, futureLease)
+})
+
+test('81. fencing: current owner release clears claim fields without altering credential', async () => {
+  const ctx = await seedLifecycleCtx()
+  await seedCredential(ctx, { accessToken: 'token_val_1', accessTokenExpiresAt: isoFuture(10) })
+
+  const claimA = newId()
+  const futureLease = new Date(Date.now() + 30000).toISOString()
+
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL`,
+    [futureLease, claimA, ctx.accountId],
+  )
+
+  // Worker A encounters failure and releases its own claimA
+  const releaseRes = await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = NULL, refresh_claim_id = NULL
+     WHERE account_id = ? AND revoked_at IS NULL AND refresh_claim_id = ?`,
+    [ctx.accountId, claimA],
+  )
+  const changes =
+    (releaseRes as { meta?: { changes?: number }; changes?: number })?.meta?.changes ??
+    (releaseRes as { changes?: number })?.changes ??
+    0
+
+  assert.equal(changes, 1, 'Current owner successfully releases lease')
+
+  const row = await queryFirst<{
+    refresh_claim_id: string | null
+    refresh_locked_until: string | null
+  }>(
+    ctx.db,
+    `SELECT refresh_claim_id, refresh_locked_until FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+    [ctx.accountId],
+  )
+  assert.equal(row?.refresh_claim_id, null)
+  assert.equal(row?.refresh_locked_until, null)
+
+  // Credential remains active and usable
+  const resolved = await resolveOAuthCredential(
+    ctx.db,
+    { workspaceId: ctx.workspaceId, accountId: ctx.accountId, platformAdapterKey: 'x' },
+    TEST_KEK,
+  )
+  assert.ok(resolved.ok)
+  assert.equal(resolved.credential.accessToken, 'token_val_1')
+})
+
+test('82. fencing: disconnect during in-flight refresh invalidates stale persistence', async () => {
+  const ctx = await seedLifecycleCtx()
+  await seedCredential(ctx, { accessTokenExpiresAt: isoFuture(10) })
+
+  const claimA = newId()
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL`,
+    [new Date(Date.now() + 30000).toISOString(), claimA, ctx.accountId],
+  )
+
+  // User disconnects while Worker A is in-flight
+  const disconnRes = await disconnectXOAuth(
+    ctx.db,
+    { accountId: ctx.accountId, workspaceId: ctx.workspaceId },
+    BASE_CONFIG,
+    TEST_KEK,
+  )
+  assert.ok(disconnRes.ok)
+
+  // Worker A returns and tries to persist rotated credential
+  const storeRes = await storeOAuthCredential(
+    ctx.db,
+    {
+      workspaceId: ctx.workspaceId,
+      accountId: ctx.accountId,
+      platformAdapterKey: 'x',
+      expectedRefreshClaimId: claimA,
+      credential: {
+        accessToken: 'stale_token_after_disconnect',
+        refreshToken: 'stale_refresh',
+      },
+    },
+    TEST_KEK,
+  )
+
+  assert.ok(!storeRes.ok, 'Persistence rejected because credential was revoked by disconnect')
+  assert.equal((storeRes as { code: string }).code, 'stale_refresh_claim')
+
+  // Connection remains disconnected
+  const conn = await getPlatformConnectionForAccount(ctx.db, ctx.accountId)
+  assert.equal(conn?.status, 'disconnected')
+})
+
+test('83. fencing: reconnect creates fresh credential and rejects delayed old refresh response', async () => {
+  const ctx = await seedLifecycleCtx()
+  await seedCredential(ctx, { accessTokenExpiresAt: isoFuture(10) })
+
+  // 1. Worker A claims lease for C1
+  const claimA = newId()
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL`,
+    [new Date(Date.now() + 30000).toISOString(), claimA, ctx.accountId],
+  )
+
+  // 2. Disconnect C1
+  await disconnectXOAuth(
+    ctx.db,
+    { accountId: ctx.accountId, workspaceId: ctx.workspaceId },
+    BASE_CONFIG,
+    TEST_KEK,
+  )
+
+  // 3. User reconnects (new OAuth flow creates C2 with refresh_claim_id = NULL)
+  const reconnectRes = await storeOAuthCredential(
+    ctx.db,
+    {
+      workspaceId: ctx.workspaceId,
+      accountId: ctx.accountId,
+      platformAdapterKey: 'x',
+      credential: {
+        accessToken: 'reconnected_token_c2',
+        refreshToken: 'reconnected_refresh_c2',
+        accessTokenExpiresAt: isoFuture(7200),
+      },
+    },
+    TEST_KEK,
+  )
+  assert.ok(reconnectRes.ok)
+
+  // 4. Delayed response for old C1 arrives with claimA
+  const storeResA = await storeOAuthCredential(
+    ctx.db,
+    {
+      workspaceId: ctx.workspaceId,
+      accountId: ctx.accountId,
+      platformAdapterKey: 'x',
+      expectedRefreshClaimId: claimA,
+      credential: {
+        accessToken: 'stale_token_from_old_c1',
+        refreshToken: 'stale_refresh_from_old_c1',
+      },
+    },
+    TEST_KEK,
+  )
+  assert.ok(!storeResA.ok, 'Old claim cannot modify or revoke C2')
+  assert.equal((storeResA as { code: string }).code, 'stale_refresh_claim')
+
+  // 5. C2 remains active
+  const resolved = await resolveOAuthCredential(
+    ctx.db,
+    { workspaceId: ctx.workspaceId, accountId: ctx.accountId, platformAdapterKey: 'x' },
+    TEST_KEK,
+  )
+  assert.ok(resolved.ok)
+  assert.equal(resolved.credential.accessToken, 'reconnected_token_c2')
+})
+
+test('84. fencing: publication halts safely when stale-owner persistence fails', async () => {
+  const ctx = await seedLifecycleCtx()
+  await seedCredential(ctx, {
+    accessToken: 'expiring_token_valid',
+    accessTokenExpiresAt: isoFuture(10),
+    providerUserId: '999888777',
+  })
+
+  // Stale claim setup: lease is already claimed by someone else
+  const claimOther = newId()
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL`,
+    [new Date(Date.now() + 30000).toISOString(), claimOther, ctx.accountId],
+  )
+
+  const pubCtx = await seedApprovedPublicationContext(ctx)
+
+  // When publication runs, refresh will observe refresh_lease_held and proceed with existing token
+  const { transport } = makeCaptureTransport([
+    { status: 200, body: { data: { id: '999888777', username: 'growth_bot' } } },
+    { status: 201, body: { data: { id: 'tweet_9999', text: 'Test Post Body' } } },
+  ])
+
+  const dispatchRes = await dispatchApprovedPublication(
+    ctx.db,
+    {
+      workspaceId: ctx.workspaceId,
+      approvalRequestId: pubCtx.approvalRequestId,
+    },
+    {
+      credentialKek: TEST_KEK,
+      xOAuthConfig: BASE_CONFIG,
+      xTransport: transport,
+    },
+  )
+
+  // Should successfully proceed with existing token
+  assert.ok(dispatchRes.ok, `Expected dispatch to succeed, got: ${JSON.stringify(dispatchRes)}`)
+})
+
+test('85. fencing: refresh_claim_id is absent from browser DTO, safe connection metadata, and error strings', async () => {
+  const ctx = await seedLifecycleCtx()
+  await seedCredential(ctx)
+
+  const claimId = newId()
+  await execute(
+    ctx.db,
+    `UPDATE platform_credential
+     SET refresh_locked_until = ?, refresh_claim_id = ?
+     WHERE account_id = ? AND revoked_at IS NULL`,
+    [new Date(Date.now() + 30000).toISOString(), claimId, ctx.accountId],
+  )
+
+  const conn = await getPlatformConnectionForAccount(ctx.db, ctx.accountId)
+  assert.ok(conn)
+  const connStr = JSON.stringify(conn)
+  assert.ok(!connStr.includes(claimId), 'claim ID absent from connection metadata')
+
+  const refreshResult = await refreshXOAuthCredentialIfNeeded(
+    ctx.db,
+    { accountId: ctx.accountId, workspaceId: ctx.workspaceId },
+    BASE_CONFIG,
+    TEST_KEK,
+  )
+  const resStr = JSON.stringify(refreshResult)
+  assert.ok(!resStr.includes(claimId), 'claim ID absent from refresh result DTO')
+})

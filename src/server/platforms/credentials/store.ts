@@ -229,60 +229,107 @@ export async function storeOAuthCredential(
   const safeMetadataJson =
     Object.keys(safeMetadata).length > 0 ? JSON.stringify(safeMetadata) : null
 
+  // 5.5 If fenced rotation requested via expectedRefreshClaimId, check that active row matches claim
+  if (input.expectedRefreshClaimId) {
+    interface ActiveClaimRow {
+      id: string
+      refresh_claim_id: string | null
+      refresh_locked_until: string | null
+    }
+    const activeClaim = await queryFirst<ActiveClaimRow>(
+      db,
+      `SELECT id, refresh_claim_id, refresh_locked_until
+       FROM platform_credential
+       WHERE account_id = ? AND revoked_at IS NULL`,
+      [input.accountId],
+    )
+
+    if (!activeClaim || activeClaim.refresh_claim_id !== input.expectedRefreshClaimId) {
+      return {
+        ok: false,
+        code: 'stale_refresh_claim',
+        reason:
+          'Active refresh claim has expired, was superseded, or was reclaimed by another worker.',
+      }
+    }
+  }
+
+  const revokeSql = input.expectedRefreshClaimId
+    ? `UPDATE platform_credential
+       SET revoked_at = ?, updated_at = ?
+       WHERE account_id = ? AND revoked_at IS NULL AND refresh_claim_id = ?`
+    : `UPDATE platform_credential
+       SET revoked_at = ?, updated_at = ?
+       WHERE account_id = ? AND revoked_at IS NULL`
+
+  const revokeParams = input.expectedRefreshClaimId
+    ? [now, now, input.accountId, input.expectedRefreshClaimId]
+    : [now, now, input.accountId]
+
   // 6, 7, 8: Execute revocation of prior active credential, insertion of new credential,
   // and connection status update atomically via batch execution.
-  await executeBatch(db, [
-    // 6. Revoke any prior active credential for this account
-    {
-      sql: `UPDATE platform_credential
-            SET revoked_at = ?, updated_at = ?
-            WHERE account_id = ? AND revoked_at IS NULL`,
-      params: [now, now, input.accountId],
-    },
-    // 7. Insert new encrypted credential record
-    {
-      sql: `INSERT INTO platform_credential (
-             id, workspace_id, account_id, platform_id, credential_type,
-             access_token_ciphertext, access_token_iv,
-             refresh_token_ciphertext, refresh_token_iv,
-             token_type, scopes,
-             access_token_expires_at, refresh_token_expires_at,
-             provider_user_id, key_version,
-             created_at, updated_at, revoked_at
-           ) VALUES (?, ?, ?, ?, 'oauth2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-      params: [
-        credentialId,
-        input.workspaceId,
-        input.accountId,
-        account.platform_id,
-        accessEncrypted.ciphertext,
-        accessEncrypted.iv,
-        refreshEncrypted?.ciphertext ?? null,
-        refreshEncrypted?.iv ?? null,
-        input.credential.tokenType?.trim() ?? 'bearer',
-        normalizedScopes,
-        input.credential.accessTokenExpiresAt ?? null,
-        input.credential.refreshTokenExpiresAt ?? null,
-        input.credential.providerUserId ?? null,
-        keyVersion,
-        now,
-        now,
-      ],
-    },
-    // 8. Ensure connection is active and safe metadata updated (deterministic UPSERT)
-    {
-      sql: `INSERT INTO platform_connection (
-             id, account_id, status, secret_ref, scopes, metadata, connected_at, created_at, updated_at
-           ) VALUES (?, ?, 'connected', NULL, ?, ?, ?, ?, ?)
-           ON CONFLICT(account_id) DO UPDATE SET
-             status = 'connected',
-             scopes = COALESCE(excluded.scopes, platform_connection.scopes),
-             metadata = COALESCE(excluded.metadata, platform_connection.metadata),
-             connected_at = COALESCE(platform_connection.connected_at, excluded.connected_at),
-             updated_at = excluded.updated_at`,
-      params: [newId(), input.accountId, normalizedScopes, safeMetadataJson, now, now, now],
-    },
-  ])
+  try {
+    await executeBatch(db, [
+      // 6. Revoke prior active credential for this account (fenced by refresh_claim_id if specified)
+      {
+        sql: revokeSql,
+        params: revokeParams,
+      },
+      // 7. Insert new encrypted credential record (with clean NULL lease/claim fields)
+      {
+        sql: `INSERT INTO platform_credential (
+               id, workspace_id, account_id, platform_id, credential_type,
+               access_token_ciphertext, access_token_iv,
+               refresh_token_ciphertext, refresh_token_iv,
+               token_type, scopes,
+               access_token_expires_at, refresh_token_expires_at,
+               provider_user_id, key_version,
+               refresh_locked_until, refresh_claim_id,
+               created_at, updated_at, revoked_at
+             ) VALUES (?, ?, ?, ?, 'oauth2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL)`,
+        params: [
+          credentialId,
+          input.workspaceId,
+          input.accountId,
+          account.platform_id,
+          accessEncrypted.ciphertext,
+          accessEncrypted.iv,
+          refreshEncrypted?.ciphertext ?? null,
+          refreshEncrypted?.iv ?? null,
+          input.credential.tokenType?.trim() ?? 'bearer',
+          normalizedScopes,
+          input.credential.accessTokenExpiresAt ?? null,
+          input.credential.refreshTokenExpiresAt ?? null,
+          input.credential.providerUserId ?? null,
+          keyVersion,
+          now,
+          now,
+        ],
+      },
+      // 8. Ensure connection is active and safe metadata updated (deterministic UPSERT)
+      {
+        sql: `INSERT INTO platform_connection (
+               id, account_id, status, secret_ref, scopes, metadata, connected_at, created_at, updated_at
+             ) VALUES (?, ?, 'connected', NULL, ?, ?, ?, ?, ?)
+             ON CONFLICT(account_id) DO UPDATE SET
+               status = 'connected',
+               scopes = COALESCE(excluded.scopes, platform_connection.scopes),
+               metadata = COALESCE(excluded.metadata, platform_connection.metadata),
+               connected_at = COALESCE(platform_connection.connected_at, excluded.connected_at),
+               updated_at = excluded.updated_at`,
+        params: [newId(), input.accountId, normalizedScopes, safeMetadataJson, now, now, now],
+      },
+    ])
+  } catch (err) {
+    if (input.expectedRefreshClaimId) {
+      return {
+        ok: false,
+        code: 'stale_refresh_claim',
+        reason: 'Failed to persist rotated credential due to stale claim or concurrency conflict.',
+      }
+    }
+    throw err
+  }
 
   return {
     ok: true,

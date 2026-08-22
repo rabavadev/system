@@ -11,7 +11,7 @@
  *   isolates detect a near-expiry credential concurrently.
  */
 
-import { execute, nowIso, queryFirst, type SqlDatabase } from '../../../../db/sql.ts'
+import { execute, newId, nowIso, queryFirst, type SqlDatabase } from '../../../../db/sql.ts'
 import {
   resolveOAuthCredential,
   revokeOAuthCredential,
@@ -55,11 +55,15 @@ function isoInFuture(seconds: number): string {
 
 /**
  * Attempts to claim the refresh lease for `accountId` via an optimistic UPDATE.
- * Returns true if the lease was claimed by this caller, false if another isolate holds it.
+ * Returns { claimed: true, claimId } if claimed, or { claimed: false } if another isolate holds it.
  */
-async function claimRefreshLease(db: SqlDatabase, accountId: string): Promise<boolean> {
+async function claimRefreshLease(
+  db: SqlDatabase,
+  accountId: string,
+): Promise<{ claimed: true; claimId: string } | { claimed: false }> {
   const now = nowIso()
   const leaseExpiry = isoInFuture(REFRESH_LEASE_SECONDS)
+  const claimId = newId()
 
   // Claim only if: no active row has a non-expired lease.
   // "refresh_locked_until IS NULL" → never locked
@@ -67,10 +71,10 @@ async function claimRefreshLease(db: SqlDatabase, accountId: string): Promise<bo
   const result = (await execute(
     db,
     `UPDATE platform_credential
-     SET refresh_locked_until = ?
+     SET refresh_locked_until = ?, refresh_claim_id = ?
      WHERE account_id = ? AND revoked_at IS NULL
        AND (refresh_locked_until IS NULL OR refresh_locked_until < ?)`,
-    [leaseExpiry, accountId, now],
+    [leaseExpiry, claimId, accountId, now],
   )) as { meta?: { changes?: number }; changes?: number } | undefined
 
   // D1 returns { meta: { changes } }; better-sqlite3 returns { changes } directly
@@ -79,21 +83,28 @@ async function claimRefreshLease(db: SqlDatabase, accountId: string): Promise<bo
     (result as { changes?: number })?.changes ??
     0
 
-  return rowsChanged > 0
+  if (rowsChanged > 0) {
+    return { claimed: true, claimId }
+  }
+  return { claimed: false }
 }
 
 /**
- * Releases the refresh lease for `accountId` (called on refresh failure).
- * On success the credential row is replaced by storeOAuthCredential, so no
- * explicit release is needed for the success path.
+ * Releases the refresh lease for `accountId` conditionally on the matching `claimId`.
+ * If ownership changed or expired meanwhile, this UPDATE affects 0 rows and leaves
+ * the new owner's claim untouched.
  */
-async function releaseRefreshLease(db: SqlDatabase, accountId: string): Promise<void> {
+async function releaseRefreshLease(
+  db: SqlDatabase,
+  accountId: string,
+  claimId: string,
+): Promise<void> {
   await execute(
     db,
     `UPDATE platform_credential
-     SET refresh_locked_until = NULL
-     WHERE account_id = ? AND revoked_at IS NULL`,
-    [accountId],
+     SET refresh_locked_until = NULL, refresh_claim_id = NULL
+     WHERE account_id = ? AND revoked_at IS NULL AND refresh_claim_id = ?`,
+    [accountId, claimId],
   )
 }
 
@@ -111,11 +122,12 @@ async function releaseRefreshLease(db: SqlDatabase, accountId: string): Promise<
  * 3. If > REFRESH_THRESHOLD_SECONDS remaining: skip (not near expiry).
  * 4. If no refresh_token in vault: return reconnect_required.
  * 5. If config missing: return oauth_not_configured.
- * 6. Claim distributed lease (optimistic UPDATE). If lease held by another isolate:
+ * 6. Claim distributed lease with unique claim ID. If lease held by another isolate:
  *    return refresh_lease_held (ok:true — caller can proceed with existing token).
  * 7. Decrypt refresh token. Call XOAuthClient.refreshToken().
- * 8. On provider failure: release lease, return reconnect_required.
- * 9. On success: storeOAuthCredential (atomic rotation). Return { ok:true, refreshed:true }.
+ * 8. On provider failure: conditionally release lease with claim ID, return reconnect_required.
+ * 9. On success: storeOAuthCredential with expectedRefreshClaimId (fenced atomic rotation).
+ *    Return { ok:true, refreshed:true }.
  */
 export async function refreshXOAuthCredentialIfNeeded(
   db: SqlDatabase,
@@ -168,18 +180,18 @@ export async function refreshXOAuthCredentialIfNeeded(
     return {
       ok: false,
       code: 'oauth_not_configured',
-      reason:
-        'X OAuth configuration (clientId) is not available for token refresh.',
+      reason: 'X OAuth configuration (clientId) is not available for token refresh.',
     }
   }
 
-  // Step 6: claim distributed lease
-  const claimed = await claimRefreshLease(db, input.accountId)
-  if (!claimed) {
+  // Step 6: claim distributed lease with unique claim ID
+  const claim = await claimRefreshLease(db, input.accountId)
+  if (!claim.claimed) {
     // Another CF Worker isolate is refreshing. The existing token is still valid
     // for at least the lease window duration — caller can proceed with it.
     return { ok: true, refreshed: false, code: 'refresh_lease_held' }
   }
+  const claimId = claim.claimId
 
   // Step 7: decrypt the current credential to get plaintext refresh token
   const resolveRes = await resolveOAuthCredential(
@@ -193,7 +205,7 @@ export async function refreshXOAuthCredentialIfNeeded(
   )
 
   if (!resolveRes.ok) {
-    await releaseRefreshLease(db, input.accountId)
+    await releaseRefreshLease(db, input.accountId, claimId)
     return {
       ok: false,
       code: 'reconnect_required',
@@ -203,7 +215,7 @@ export async function refreshXOAuthCredentialIfNeeded(
 
   const plaintextRefreshToken = resolveRes.credential.refreshToken
   if (!plaintextRefreshToken) {
-    await releaseRefreshLease(db, input.accountId)
+    await releaseRefreshLease(db, input.accountId, claimId)
     return {
       ok: false,
       code: 'reconnect_required',
@@ -221,7 +233,7 @@ export async function refreshXOAuthCredentialIfNeeded(
   })
 
   if (!refreshRes.ok) {
-    await releaseRefreshLease(db, input.accountId)
+    await releaseRefreshLease(db, input.accountId, claimId)
     return {
       ok: false,
       code: 'reconnect_required',
@@ -237,13 +249,14 @@ export async function refreshXOAuthCredentialIfNeeded(
     accessTokenExpiresAt = isoInFuture(tokenData.expires_in)
   }
 
-  // Step 9: store rotated credential (storeOAuthCredential atomically revokes old row)
+  // Step 9: store rotated credential with fencing claim ID check
   const storeRes = await storeOAuthCredential(
     db,
     {
       workspaceId: input.workspaceId,
       accountId: input.accountId,
       platformAdapterKey: X_ADAPTER_KEY,
+      expectedRefreshClaimId: claimId,
       credential: {
         accessToken: tokenData.access_token,
         refreshToken: tokenData.refresh_token ?? plaintextRefreshToken,
@@ -258,8 +271,8 @@ export async function refreshXOAuthCredentialIfNeeded(
   )
 
   if (!storeRes.ok) {
-    // Rotation failed — release the lease so the next request can retry
-    await releaseRefreshLease(db, input.accountId)
+    // Rotation failed (e.g. stale claim superseded by another worker) — release only if we still hold it
+    await releaseRefreshLease(db, input.accountId, claimId)
     return {
       ok: false,
       code: 'reconnect_required',

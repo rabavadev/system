@@ -32,6 +32,7 @@ export interface StoredPlatformCredentialRow {
   updated_at: string
   revoked_at: string | null
   refresh_locked_until: string | null
+  refresh_claim_id: string | null
 }
 
 export interface DecryptedOAuthCredential extends NormalizedOAuthCredential {
@@ -51,6 +52,7 @@ export interface StoreOAuthCredentialInput {
   platformAdapterKey: string
   credential: NormalizedOAuthCredential
   keyVersion?: number
+  expectedRefreshClaimId?: string
 }
 
 export interface ResolveOAuthCredentialInput {
@@ -65,6 +67,7 @@ export interface RotateOAuthCredentialInput {
   platformAdapterKey: string
   credential: NormalizedOAuthCredential
   keyVersion?: number
+  expectedRefreshClaimId?: string
 }
 
 export interface RevokeOAuthCredentialInput {
@@ -85,6 +88,7 @@ export type CredentialVaultErrorCode =
   | 'credential_decrypt_failed'
   | 'credential_unknown_key_version'
   | 'invalid_credential'
+  | 'stale_refresh_claim'
 
 export type ResolveOAuthCredentialResult =
   | {
