@@ -145,6 +145,9 @@ The architecture contains two distinct approval subsystems that serve separate p
 | Creator Revision Lineage System | **VERIFIED** | Verified through `npm run test:creator-revision` |
 | Human Content Approval Gate | **VERIFIED** | Verified through `npm run test:content-approval` (strict server-side override enforcement) |
 | Publication Foundation & Integrity | **VERIFIED** | Verified through `npm run test:publication` (exact approved variant binding, account/platform match, request-bound idempotency, post status guard, reapproval lineage isolation, zero external calls) |
+| Publication Dispatch Boundary (15E.2) | **VERIFIED** | Verified through `npm run test:publication-dispatch` (28/28 pass — approval gate, snapshot integrity, eligibility revalidation, safe stub dispatch) |
+| Platform Credential Resolution (15E.3A) | **VERIFIED** | Verified through `npm run test:credentials` (24/24 pass — 6 security guards, tenant isolation, zero DB secret storage, prototype safety) |
+| X Text Publishing Adapter (15E.3B) | **VERIFIED** | Verified through `npm run test:x-publish` (51/51 pass — identity preflight, single-attempt dispatch, atomic claim, zero credential leakage, truthful persistence, full error normalization) |
 | Research Source Provenance | **VERIFIED** | Verified through `npm run test:research` |
 | Workflow Run Scope Integrity | **VERIFIED** | Verified through `npm run test:workflows` |
 | Local Workers Runtime & Vite Build | **VERIFIED** | Verified through `npm run build` and local development server |
