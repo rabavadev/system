@@ -22,6 +22,7 @@ import {
   type XOAuthCallbackOptions,
   type XOAuthCallbackResult,
   type XOAuthConfiguration,
+  type XOAuthErrorCode,
   type XOAuthStartOptions,
   type XOAuthStartResult,
 } from './types.ts'
@@ -474,9 +475,23 @@ export async function completeXOAuthCallback(
   )
 
   if (!vaultResult.ok) {
+    const errorCode: XOAuthErrorCode =
+      vaultResult.code === 'account_not_found'
+        ? 'account_not_found'
+        : vaultResult.code === 'account_ineligible'
+          ? 'account_ineligible'
+          : vaultResult.code === 'platform_mismatch'
+            ? 'platform_mismatch'
+            : vaultResult.code === 'connection_inactive'
+              ? 'connection_inactive'
+              : vaultResult.code === 'credential_vault_not_configured' ||
+                  vaultResult.code === 'credential_unknown_key_version'
+                ? 'invalid_kek'
+                : 'vault_storage_failed'
+
     return {
       ok: false,
-      code: vaultResult.code,
+      code: errorCode,
       reason: vaultResult.reason,
       clearCookie: true,
     }

@@ -52,7 +52,6 @@ export interface StoreOAuthCredentialInput {
   platformAdapterKey: string
   credential: NormalizedOAuthCredential
   keyVersion?: number
-  expectedRefreshClaimId?: string
 }
 
 export interface ResolveOAuthCredentialInput {
@@ -67,8 +66,29 @@ export interface RotateOAuthCredentialInput {
   platformAdapterKey: string
   credential: NormalizedOAuthCredential
   keyVersion?: number
-  expectedRefreshClaimId?: string
 }
+
+export interface RotateOAuthCredentialFencedInput {
+  workspaceId: string
+  accountId: string
+  platformAdapterKey: string
+  credentialId: string
+  claimId: string
+  credential: NormalizedOAuthCredential
+  keyVersion?: number
+  nowOverride?: string
+}
+
+export type RotateOAuthCredentialFencedResult =
+  | {
+      ok: true
+      id: string
+    }
+  | {
+      ok: false
+      code: CredentialVaultErrorCode
+      reason: string
+    }
 
 export interface RevokeOAuthCredentialInput {
   workspaceId: string

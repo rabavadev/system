@@ -1,4 +1,4 @@
-import { executeBatch, newId, nowIso, queryFirst, type SqlDatabase } from '../../db/sql.ts'
+import { execute, executeBatch, newId, nowIso, queryFirst, type SqlDatabase } from '../../db/sql.ts'
 
 import { createEnvSecretResolver } from '../runtime.ts'
 import type { PlatformSecretResolver } from '../types.ts'
@@ -9,6 +9,8 @@ import type {
   ResolveOAuthCredentialResult,
   RevokeOAuthCredentialInput,
   RevokeOAuthCredentialResult,
+  RotateOAuthCredentialFencedInput,
+  RotateOAuthCredentialFencedResult,
   StoredPlatformCredentialRow,
   StoreOAuthCredentialInput,
   StoreOAuthCredentialResult,
@@ -229,107 +231,65 @@ export async function storeOAuthCredential(
   const safeMetadataJson =
     Object.keys(safeMetadata).length > 0 ? JSON.stringify(safeMetadata) : null
 
-  // 5.5 If fenced rotation requested via expectedRefreshClaimId, check that active row matches claim
-  if (input.expectedRefreshClaimId) {
-    interface ActiveClaimRow {
-      id: string
-      refresh_claim_id: string | null
-      refresh_locked_until: string | null
-    }
-    const activeClaim = await queryFirst<ActiveClaimRow>(
-      db,
-      `SELECT id, refresh_claim_id, refresh_locked_until
-       FROM platform_credential
-       WHERE account_id = ? AND revoked_at IS NULL`,
-      [input.accountId],
-    )
-
-    if (!activeClaim || activeClaim.refresh_claim_id !== input.expectedRefreshClaimId) {
-      return {
-        ok: false,
-        code: 'stale_refresh_claim',
-        reason:
-          'Active refresh claim has expired, was superseded, or was reclaimed by another worker.',
-      }
-    }
-  }
-
-  const revokeSql = input.expectedRefreshClaimId
-    ? `UPDATE platform_credential
-       SET revoked_at = ?, updated_at = ?
-       WHERE account_id = ? AND revoked_at IS NULL AND refresh_claim_id = ?`
-    : `UPDATE platform_credential
+  const revokeSql = `UPDATE platform_credential
        SET revoked_at = ?, updated_at = ?
        WHERE account_id = ? AND revoked_at IS NULL`
 
-  const revokeParams = input.expectedRefreshClaimId
-    ? [now, now, input.accountId, input.expectedRefreshClaimId]
-    : [now, now, input.accountId]
+  const revokeParams = [now, now, input.accountId]
 
   // 6, 7, 8: Execute revocation of prior active credential, insertion of new credential,
   // and connection status update atomically via batch execution.
-  try {
-    await executeBatch(db, [
-      // 6. Revoke prior active credential for this account (fenced by refresh_claim_id if specified)
-      {
-        sql: revokeSql,
-        params: revokeParams,
-      },
-      // 7. Insert new encrypted credential record (with clean NULL lease/claim fields)
-      {
-        sql: `INSERT INTO platform_credential (
-               id, workspace_id, account_id, platform_id, credential_type,
-               access_token_ciphertext, access_token_iv,
-               refresh_token_ciphertext, refresh_token_iv,
-               token_type, scopes,
-               access_token_expires_at, refresh_token_expires_at,
-               provider_user_id, key_version,
-               refresh_locked_until, refresh_claim_id,
-               created_at, updated_at, revoked_at
-             ) VALUES (?, ?, ?, ?, 'oauth2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL)`,
-        params: [
-          credentialId,
-          input.workspaceId,
-          input.accountId,
-          account.platform_id,
-          accessEncrypted.ciphertext,
-          accessEncrypted.iv,
-          refreshEncrypted?.ciphertext ?? null,
-          refreshEncrypted?.iv ?? null,
-          input.credential.tokenType?.trim() ?? 'bearer',
-          normalizedScopes,
-          input.credential.accessTokenExpiresAt ?? null,
-          input.credential.refreshTokenExpiresAt ?? null,
-          input.credential.providerUserId ?? null,
-          keyVersion,
-          now,
-          now,
-        ],
-      },
-      // 8. Ensure connection is active and safe metadata updated (deterministic UPSERT)
-      {
-        sql: `INSERT INTO platform_connection (
-               id, account_id, status, secret_ref, scopes, metadata, connected_at, created_at, updated_at
-             ) VALUES (?, ?, 'connected', NULL, ?, ?, ?, ?, ?)
-             ON CONFLICT(account_id) DO UPDATE SET
-               status = 'connected',
-               scopes = COALESCE(excluded.scopes, platform_connection.scopes),
-               metadata = COALESCE(excluded.metadata, platform_connection.metadata),
-               connected_at = COALESCE(platform_connection.connected_at, excluded.connected_at),
-               updated_at = excluded.updated_at`,
-        params: [newId(), input.accountId, normalizedScopes, safeMetadataJson, now, now, now],
-      },
-    ])
-  } catch (err) {
-    if (input.expectedRefreshClaimId) {
-      return {
-        ok: false,
-        code: 'stale_refresh_claim',
-        reason: 'Failed to persist rotated credential due to stale claim or concurrency conflict.',
-      }
-    }
-    throw err
-  }
+  await executeBatch(db, [
+    // 6. Revoke prior active credential for this account
+    {
+      sql: revokeSql,
+      params: revokeParams,
+    },
+    // 7. Insert new encrypted credential record (with clean NULL lease/claim fields)
+    {
+      sql: `INSERT INTO platform_credential (
+             id, workspace_id, account_id, platform_id, credential_type,
+             access_token_ciphertext, access_token_iv,
+             refresh_token_ciphertext, refresh_token_iv,
+             token_type, scopes,
+             access_token_expires_at, refresh_token_expires_at,
+             provider_user_id, key_version,
+             refresh_locked_until, refresh_claim_id,
+             created_at, updated_at, revoked_at
+           ) VALUES (?, ?, ?, ?, 'oauth2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL)`,
+      params: [
+        credentialId,
+        input.workspaceId,
+        input.accountId,
+        account.platform_id,
+        accessEncrypted.ciphertext,
+        accessEncrypted.iv,
+        refreshEncrypted?.ciphertext ?? null,
+        refreshEncrypted?.iv ?? null,
+        input.credential.tokenType?.trim() ?? 'bearer',
+        normalizedScopes,
+        input.credential.accessTokenExpiresAt ?? null,
+        input.credential.refreshTokenExpiresAt ?? null,
+        input.credential.providerUserId ?? null,
+        keyVersion,
+        now,
+        now,
+      ],
+    },
+    // 8. Ensure connection is active and safe metadata updated (deterministic UPSERT)
+    {
+      sql: `INSERT INTO platform_connection (
+             id, account_id, status, secret_ref, scopes, metadata, connected_at, created_at, updated_at
+           ) VALUES (?, ?, 'connected', NULL, ?, ?, ?, ?, ?)
+           ON CONFLICT(account_id) DO UPDATE SET
+             status = 'connected',
+             scopes = COALESCE(excluded.scopes, platform_connection.scopes),
+             metadata = COALESCE(excluded.metadata, platform_connection.metadata),
+             connected_at = COALESCE(platform_connection.connected_at, excluded.connected_at),
+             updated_at = excluded.updated_at`,
+      params: [newId(), input.accountId, normalizedScopes, safeMetadataJson, now, now, now],
+    },
+  ])
 
   return {
     ok: true,
@@ -525,6 +485,193 @@ export async function rotateOAuthCredential(
   keySource?: string | CryptoKey | PlatformSecretResolver,
 ): Promise<StoreOAuthCredentialResult> {
   return storeOAuthCredential(db, input, keySource)
+}
+
+/**
+ * Rotates an existing active OAuth credential set in-place with database-authoritative fencing.
+ *
+ * Security and Concurrency Invariants:
+ * - Mutates the existing active row in-place (preserves credentialId).
+ * - Requires exact matching on id, workspace_id, account_id, revoked_at IS NULL,
+ *   refresh_claim_id = claimId, and refresh_locked_until >= now.
+ * - If the credential was revoked (e.g. user disconnected), or the claim expired, or another
+ *   worker claimed/rotated it, the conditional UPDATE affects 0 rows and returns stale_refresh_claim.
+ * - Atomically clears refresh_claim_id and refresh_locked_until on success in the same statement.
+ * - Does NOT mutate platform_connection (cannot resurrect disconnected accounts).
+ * - Provider-omitted refresh tokens are preserved in-place rather than overwritten with NULL.
+ */
+export async function rotateOAuthCredentialFenced(
+  db: SqlDatabase,
+  input: RotateOAuthCredentialFencedInput,
+  keySource?: string | CryptoKey | PlatformSecretResolver,
+): Promise<RotateOAuthCredentialFencedResult> {
+  // 1. Validate Account existence and tenant ownership
+  const account = await queryFirst<AccountCheckRow>(
+    db,
+    `SELECT id, workspace_id, platform_id, status
+     FROM account
+     WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+    [input.accountId, input.workspaceId],
+  )
+
+  if (!account) {
+    return {
+      ok: false,
+      code: 'account_not_found',
+      reason: 'Account not found in this workspace.',
+    }
+  }
+
+  if (account.status !== 'active') {
+    return {
+      ok: false,
+      code: 'account_ineligible',
+      reason: `Account status is "${account.status}"; active credentials cannot be rotated for inactive accounts.`,
+    }
+  }
+
+  // 2. Validate Platform adapter key matches account's platform
+  const platform = await queryFirst<PlatformCheckRow>(
+    db,
+    `SELECT id, adapter_key FROM platform WHERE id = ?`,
+    [account.platform_id],
+  )
+
+  if (!platform || platform.adapter_key !== input.platformAdapterKey) {
+    return {
+      ok: false,
+      code: 'platform_mismatch',
+      reason: `Platform adapter key "${input.platformAdapterKey}" does not match account platform "${platform?.adapter_key ?? 'unknown'}".`,
+    }
+  }
+
+  // 3. Resolve cryptographic key
+  const cryptoKey = await resolveCryptoKey(keySource)
+  if (!cryptoKey) {
+    return {
+      ok: false,
+      code: 'credential_vault_not_configured',
+      reason: 'Credential vault master encryption key is not configured or is invalid.',
+    }
+  }
+
+  const keyVersion = input.keyVersion ?? DEFAULT_KEY_VERSION
+  if (keyVersion !== DEFAULT_KEY_VERSION) {
+    return {
+      ok: false,
+      code: 'credential_unknown_key_version',
+      reason: `Unsupported encryption key version: ${keyVersion}.`,
+    }
+  }
+
+  // 4. Encrypt access_token and refresh_token
+  const aadContext = {
+    workspaceId: input.workspaceId,
+    accountId: input.accountId,
+    platformAdapterKey: input.platformAdapterKey,
+    keyVersion,
+  }
+
+  const accessEncrypted = await encryptToken(
+    input.credential.accessToken.trim(),
+    cryptoKey,
+    aadContext,
+  )
+
+  let refreshEncrypted: { ciphertext: string; iv: string } | null = null
+  if (
+    input.credential.refreshToken &&
+    typeof input.credential.refreshToken === 'string' &&
+    input.credential.refreshToken.trim().length > 0
+  ) {
+    refreshEncrypted = await encryptToken(
+      input.credential.refreshToken.trim(),
+      cryptoKey,
+      aadContext,
+    )
+  }
+
+  // Normalize scopes
+  let normalizedScopes: string | null = null
+  if (Array.isArray(input.credential.scopes)) {
+    normalizedScopes = input.credential.scopes.join(' ').trim()
+  } else if (typeof input.credential.scopes === 'string') {
+    normalizedScopes = input.credential.scopes.trim()
+  }
+
+  const now = input.nowOverride ?? nowIso()
+
+  // 5. Execute single conditional in-place UPDATE
+  try {
+    const result = (await execute(
+      db,
+      `UPDATE platform_credential
+       SET
+         access_token_ciphertext = ?,
+         access_token_iv = ?,
+         refresh_token_ciphertext = COALESCE(?, refresh_token_ciphertext),
+         refresh_token_iv = COALESCE(?, refresh_token_iv),
+         token_type = COALESCE(?, token_type),
+         scopes = COALESCE(?, scopes),
+         access_token_expires_at = ?,
+         refresh_token_expires_at = COALESCE(?, refresh_token_expires_at),
+         provider_user_id = COALESCE(?, provider_user_id),
+         key_version = ?,
+         refresh_claim_id = NULL,
+         refresh_locked_until = NULL,
+         updated_at = ?
+       WHERE
+         id = ?
+         AND workspace_id = ?
+         AND account_id = ?
+         AND revoked_at IS NULL
+         AND refresh_claim_id = ?
+         AND refresh_locked_until >= ?`,
+      [
+        accessEncrypted.ciphertext,
+        accessEncrypted.iv,
+        refreshEncrypted?.ciphertext ?? null,
+        refreshEncrypted?.iv ?? null,
+        input.credential.tokenType?.trim() ?? null,
+        normalizedScopes,
+        input.credential.accessTokenExpiresAt ?? null,
+        input.credential.refreshTokenExpiresAt ?? null,
+        input.credential.providerUserId ?? null,
+        keyVersion,
+        now,
+        input.credentialId,
+        input.workspaceId,
+        input.accountId,
+        input.claimId,
+        now,
+      ],
+    )) as { meta?: { changes?: number }; changes?: number } | undefined
+
+    const rowsChanged =
+      (result as { meta?: { changes?: number } })?.meta?.changes ??
+      (result as { changes?: number })?.changes ??
+      0
+
+    if (rowsChanged !== 1) {
+      return {
+        ok: false,
+        code: 'stale_refresh_claim',
+        reason:
+          'Refresh rotation failed: credential is no longer active, lease expired, or claim was superseded.',
+      }
+    }
+
+    return {
+      ok: true,
+      id: input.credentialId,
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      code: 'stale_refresh_claim',
+      reason: `Failed to execute fenced credential rotation: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
 }
 
 /**
