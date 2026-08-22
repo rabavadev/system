@@ -1263,16 +1263,40 @@ export async function dispatchApprovedPublication(
     )
   }
 
+  if (req.subjectType !== 'post') {
+    throw new IntegrityError(
+      `Approval request subjectType must be 'post', received '${req.subjectType}'.`,
+    )
+  }
+
+  if (!req.subjectId) {
+    throw new IntegrityError('Approval request subjectId is required for publication dispatch.')
+  }
+
   if (req.status !== 'approved') {
     const failResult: DispatchPublicationResult = {
       ok: false,
       code: 'not_approved',
       message: `Approval request is ${req.status}, but must be approved to attempt dispatch.`,
     }
-    if (req.subjectId) {
-      failResult.postId = req.subjectId
-    }
+    failResult.postId = req.subjectId
     return failResult
+  }
+
+  if (req.decision && req.decision !== 'approved') {
+    const failResult: DispatchPublicationResult = {
+      ok: false,
+      code: 'not_approved',
+      message: `Approval request decision is ${req.decision}, but must be approved.`,
+    }
+    failResult.postId = req.subjectId
+    return failResult
+  }
+
+  if (req.decidedByType && req.decidedByType !== 'user') {
+    throw new IntegrityError(
+      `Approval request was decided by '${req.decidedByType}', but publication dispatch requires human user approval.`,
+    )
   }
 
   // Verify Snapshot Integrity
@@ -1288,15 +1312,65 @@ export async function dispatchApprovedPublication(
     throw new IntegrityError('Malformed approval request snapshot.')
   }
 
+  // Verify snapshot workspace and post binding parity
   // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
-  const payloadPostId = parsedPayload['postId']
-  const postId = typeof payloadPostId === 'string' ? payloadPostId : req.subjectId
-
-  if (!postId) {
-    throw new IntegrityError('Approval request snapshot missing postId.')
+  const snapshotWorkspaceId = parsedPayload['workspaceId']
+  if (typeof snapshotWorkspaceId === 'string' && snapshotWorkspaceId !== input.workspaceId) {
+    throw new IntegrityError(
+      `Approval request snapshot workspaceId '${snapshotWorkspaceId}' does not match context workspace '${input.workspaceId}'.`,
+    )
   }
 
-  // 1. Approval-Time Revalidation: Recheck current live publication eligibility
+  // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+  const payloadPostId = parsedPayload['postId']
+  if (typeof payloadPostId === 'string' && payloadPostId !== req.subjectId) {
+    throw new IntegrityError(
+      `Approval request snapshot postId '${payloadPostId}' does not match subjectId '${req.subjectId}'.`,
+    )
+  }
+
+  const postId = req.subjectId
+
+  // 1. Fetch authoritative post detail
+  const post = await getPostDetail(db, input.workspaceId, postId)
+  if (!post) {
+    throw new IntegrityError('Post record not found in this workspace.')
+  }
+
+  // Verify snapshot identity parity with authoritative post record
+  // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+  const snapshotVariantId = parsedPayload['contentVariantId']
+  if (typeof snapshotVariantId === 'string' && snapshotVariantId !== post.contentVariantId) {
+    throw new IntegrityError(
+      `Approval request snapshot variantId '${snapshotVariantId}' does not match post variantId '${post.contentVariantId}'.`,
+    )
+  }
+
+  // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+  const snapshotApprovalId = parsedPayload['contentApprovalId']
+  if (typeof snapshotApprovalId === 'string' && snapshotApprovalId !== post.contentApprovalId) {
+    throw new IntegrityError(
+      `Approval request snapshot contentApprovalId '${snapshotApprovalId}' does not match post contentApprovalId '${post.contentApprovalId}'.`,
+    )
+  }
+
+  // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+  const snapshotAccountId = parsedPayload['accountId']
+  if (typeof snapshotAccountId === 'string' && snapshotAccountId !== post.accountId) {
+    throw new IntegrityError(
+      `Approval request snapshot accountId '${snapshotAccountId}' does not match post accountId '${post.accountId}'.`,
+    )
+  }
+
+  // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+  const snapshotPlatformId = parsedPayload['platformId']
+  if (typeof snapshotPlatformId === 'string' && snapshotPlatformId !== post.platformId) {
+    throw new IntegrityError(
+      `Approval request snapshot platformId '${snapshotPlatformId}' does not match post platformId '${post.platformId}'.`,
+    )
+  }
+
+  // 2. Approval-Time Revalidation: Recheck current live publication eligibility
   const elig = await validatePublicationEligibility(db, {
     workspaceId: input.workspaceId,
     postId,
@@ -1321,12 +1395,6 @@ export async function dispatchApprovedPublication(
       message: `Post is no longer eligible for publication: ${elig.reason}`,
       postId,
     }
-  }
-
-  // 2. Fetch authoritative post detail
-  const post = await getPostDetail(db, input.workspaceId, postId)
-  if (!post) {
-    throw new IntegrityError('Post record not found in this workspace.')
   }
 
   if (post.status === 'published') {

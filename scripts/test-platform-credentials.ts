@@ -342,7 +342,7 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       await upsertPlatformConnection(db, {
         accountId: xAccountId,
         status: 'connected',
-        secretRef: 'NON_EXISTENT_ENV_BINDING',
+        secretRef: 'X_NON_EXISTENT_ENV_BINDING',
       })
 
       const emptyResolver = createEnvSecretResolver({})
@@ -939,6 +939,256 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
         assert.equal(res.reason.includes('bearer'), false)
         assert.equal(res.reason.includes('password'), false)
       }
+    },
+  )
+
+  await t.test(
+    '24. Runtime Resolver: empty runtime secret string returns not_configured',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'X_EMPTY_TOKEN',
+      })
+
+      const resolver = createEnvSecretResolver({ X_EMPTY_TOKEN: '' })
+      const res = await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+        resolver,
+      )
+
+      assert.equal(res.ok, false)
+      if (!res.ok) {
+        assert.equal(res.code, 'not_configured')
+      }
+    },
+  )
+
+  await t.test(
+    '25. Runtime Resolver: whitespace-only runtime secret returns not_configured',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'X_WS_TOKEN',
+      })
+
+      const resolver = createEnvSecretResolver({ X_WS_TOKEN: '   \t\n  ' })
+      const res = await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+        resolver,
+      )
+
+      assert.equal(res.ok, false)
+      if (!res.ok) {
+        assert.equal(res.code, 'not_configured')
+      }
+    },
+  )
+
+  await t.test('26. Runtime Resolver: non-string binding returns not_configured', async () => {
+    const db = createTestDb()
+    const { workspaceId, xAccountId } = await setupBaseline(db)
+
+    await upsertPlatformConnection(db, {
+      accountId: xAccountId,
+      status: 'connected',
+      secretRef: 'X_OBJECT_TOKEN',
+    })
+
+    const resolver = createEnvSecretResolver({
+      X_OBJECT_TOKEN: { evil: true } as unknown as string,
+    })
+    const res = await resolvePlatformCredential(
+      db,
+      { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+      resolver,
+    )
+
+    assert.equal(res.ok, false)
+    if (!res.ok) {
+      assert.equal(res.code, 'not_configured')
+    }
+  })
+
+  await t.test(
+    '27. Security: Reserved runtime bindings (DB, AI, BRAVE_SEARCH_API_KEY, SESSION_SECRET) are unreachable',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      const connId = newId()
+      const now = nowIso()
+      await execute(
+        db,
+        "INSERT INTO platform_connection (id, account_id, status, secret_ref, created_at, updated_at) VALUES (?, ?, 'connected', 'X_TOKEN', ?, ?)",
+        [connId, xAccountId, now, now],
+      )
+
+      const reservedKeys = [
+        'DB',
+        'AI',
+        'ASSETS',
+        'BRAVE_SEARCH_API_KEY',
+        'CLOUDFLARE_API_TOKEN',
+        'DATABASE_URL',
+        'SESSION_SECRET',
+        'NODE_ENV',
+      ]
+
+      for (const reservedKey of reservedKeys) {
+        const recording = createRecordingResolver({ [reservedKey]: 'top-secret-db-or-key' })
+
+        // Attempt resolving reserved binding directly
+        await execute(db, 'UPDATE platform_connection SET secret_ref = ? WHERE account_id = ?', [
+          reservedKey,
+          xAccountId,
+        ])
+
+        const res = await resolvePlatformCredential(
+          db,
+          { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+          recording.resolver,
+        )
+
+        assert.equal(res.ok, false, `Reserved binding ${reservedKey} must not resolve`)
+        assert.equal(
+          recording.calls.length,
+          0,
+          `Resolver must not be invoked for reserved binding ${reservedKey}`,
+        )
+      }
+    },
+  )
+
+  await t.test('28. Security: Arbitrary non-prefixed secret_ref rejected', async () => {
+    const db = createTestDb()
+    const { workspaceId, xAccountId } = await setupBaseline(db)
+
+    const connId = newId()
+    const now = nowIso()
+    await execute(
+      db,
+      "INSERT INTO platform_connection (id, account_id, status, secret_ref, created_at, updated_at) VALUES (?, ?, 'connected', 'X_TOKEN', ?, ?)",
+      [connId, xAccountId, now, now],
+    )
+
+    const arbitraryKeys = ['MY_CUSTOM_SECRET', 'SECRET_KEY', 'GENERAL_API_KEY']
+    for (const key of arbitraryKeys) {
+      await execute(db, 'UPDATE platform_connection SET secret_ref = ? WHERE account_id = ?', [
+        key,
+        xAccountId,
+      ])
+
+      const recording = createRecordingResolver({ [key]: 'val' })
+      const res = await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+        recording.resolver,
+      )
+
+      assert.equal(res.ok, false)
+      if (!res.ok) {
+        assert.equal(res.code, 'platform_mismatch')
+      }
+      assert.equal(recording.calls.length, 0)
+    }
+  })
+
+  await t.test('29. Security: X account cannot resolve Threads credential', async () => {
+    const db = createTestDb()
+    const { workspaceId, xAccountId } = await setupBaseline(db)
+
+    const connId = newId()
+    const now = nowIso()
+    await execute(
+      db,
+      "INSERT INTO platform_connection (id, account_id, status, secret_ref, created_at, updated_at) VALUES (?, ?, 'connected', 'X_TOKEN', ?, ?)",
+      [connId, xAccountId, now, now],
+    )
+
+    await execute(db, 'UPDATE platform_connection SET secret_ref = ? WHERE account_id = ?', [
+      'THREADS_ACCESS_TOKEN',
+      xAccountId,
+    ])
+
+    const recording = createRecordingResolver({ THREADS_ACCESS_TOKEN: 'threads-tok' })
+    const res = await resolvePlatformCredential(
+      db,
+      { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+      recording.resolver,
+    )
+
+    assert.equal(res.ok, false)
+    if (!res.ok) {
+      assert.equal(res.code, 'platform_mismatch')
+    }
+    assert.equal(recording.calls.length, 0)
+  })
+
+  await t.test(
+    '30. Security: Storing metadata containing raw secrets/tokens is rejected by upsertPlatformConnection',
+    async () => {
+      const db = createTestDb()
+      const { xAccountId } = await setupBaseline(db)
+
+      await assert.rejects(
+        () =>
+          upsertPlatformConnection(db, {
+            accountId: xAccountId,
+            status: 'connected',
+            secretRef: 'X_TOKEN_1',
+            metadata: JSON.stringify({ accessToken: 'secret_token_val_123' }),
+          }),
+        /Platform connection metadata must not contain secret tokens/,
+      )
+
+      await assert.rejects(
+        () =>
+          upsertPlatformConnection(db, {
+            accountId: xAccountId,
+            status: 'connected',
+            secretRef: 'X_TOKEN_1',
+            metadata: JSON.stringify({ headers: { Authorization: 'Bearer secret123' } }),
+          }),
+        /Platform connection metadata must not contain secret tokens/,
+      )
+    },
+  )
+
+  await t.test(
+    '31. Client Safety: SafePlatformConnection DTO contains hasCredential and does not contain raw secrets or secretRef',
+    async () => {
+      const db = createTestDb()
+      const { xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'X_SECRET_BINDING_123',
+        scopes: 'tweet.read tweet.write',
+        metadata: JSON.stringify({ userId: 'u1' }),
+      })
+
+      const conn = await getPlatformConnectionForAccount(db, xAccountId)
+      assert.ok(conn)
+      assert.equal(conn.secretRef, 'X_SECRET_BINDING_123')
+
+      const { getSafePlatformConnectionForAccount } = await import('../src/server/db/platform.ts')
+      const safeConn = await getSafePlatformConnectionForAccount(db, xAccountId)
+      assert.ok(safeConn)
+      assert.equal(safeConn.hasCredential, true)
+      assert.equal('secretRef' in safeConn, false)
+      assert.equal('secretValue' in safeConn, false)
+      assert.equal(safeConn.status, 'connected')
     },
   )
 })

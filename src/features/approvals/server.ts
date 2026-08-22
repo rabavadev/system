@@ -1,23 +1,23 @@
 import { createServerFn } from '@tanstack/react-start'
 import { z } from 'zod'
-import { resolveAiRuntime } from '~/server/ai/runtime'
+import { resolveAiRuntime } from '../../server/ai/runtime.ts'
 import {
   type ApprovalRequestRecord,
   createApprovalRequest,
   decideApprovalRequest,
   getApprovalWithExpiryCheck,
-} from '~/server/approval'
-import { getAgentById } from '~/server/db/agent'
-import { countPendingApprovals, listApprovalRequests } from '~/server/db/approval'
-import { listBrands } from '~/server/db/brand'
-import { getDb } from '~/server/db/client'
-import { emitEventSafe } from '~/server/db/event'
-import { dispatchApprovedPublication } from '~/server/db/post'
-import type { SqlDatabase } from '~/server/db/sql'
-import { getWorkflowById, getWorkflowRunById } from '~/server/db/workflow'
-import { getDefaultWorkspace } from '~/server/db/workspace'
-import { ACTION_DEFINITIONS, ACTION_KEYS, type ActionKey } from '~/server/policy'
-import { resumeWorkflowAfterApproval } from '~/server/workflows'
+} from '../../server/approval/index.ts'
+import { getAgentById } from '../../server/db/agent.ts'
+import { countPendingApprovals, listApprovalRequests } from '../../server/db/approval.ts'
+import { listBrands } from '../../server/db/brand.ts'
+import { getDb } from '../../server/db/client.ts'
+import { emitEventSafe } from '../../server/db/event.ts'
+import { dispatchApprovedPublication } from '../../server/db/post.ts'
+import type { SqlDatabase } from '../../server/db/sql.ts'
+import { getWorkflowById, getWorkflowRunById } from '../../server/db/workflow.ts'
+import { getDefaultWorkspace } from '../../server/db/workspace.ts'
+import { ACTION_DEFINITIONS, ACTION_KEYS, type ActionKey } from '../../server/policy/index.ts'
+import { resumeWorkflowAfterApproval } from '../../server/workflows/index.ts'
 
 export interface ApprovalRequestItem {
   id: string
@@ -342,6 +342,12 @@ const createDevApprovalWire = z.object({
 export const createDevApprovalRequestFn = createServerFn({ method: 'POST' })
   .validator((d: z.infer<typeof createDevApprovalWire>) => createDevApprovalWire.parse(d))
   .handler(async ({ data }) => {
+    if (data.actionKey === 'content.publish') {
+      throw new Error(
+        'content.publish approval requests cannot be created via createDevApprovalRequestFn. Use requestPublicationDispatch instead.',
+      )
+    }
+
     const workspace = await getDefaultWorkspace()
     if (!workspace) throw new Error('No workspace found')
     const db = getDb()

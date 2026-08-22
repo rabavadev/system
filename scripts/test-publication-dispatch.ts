@@ -874,4 +874,335 @@ test('STEP 15E.2 Dispatch Boundary Test Suite', async (t) => {
       assert.equal(post?.dispatchStatus, 'awaiting_approval')
     },
   )
+
+  // ==========================================
+  // Category 11: Canonical Dispatch Authorization & Parity
+  // ==========================================
+  await t.test('28. Authorization: Wrong actionKey rejected by dispatch', async () => {
+    const env = await setupTestEnvironment()
+    const reqRes = await requestPublicationDispatch(env.db, {
+      workspaceId: env.workspaceId,
+      postId: env.postId,
+    })
+    assert.ok(reqRes.approvalRequest)
+
+    await execute(env.db, "UPDATE approval SET action_key = 'web.search' WHERE id = ?", [
+      reqRes.approvalRequest.id,
+    ])
+
+    await assert.rejects(
+      () =>
+        dispatchApprovedPublication(env.db, {
+          workspaceId: env.workspaceId,
+          approvalRequestId: reqRes.approvalRequest.id,
+        }),
+      /not 'content.publish'/,
+    )
+  })
+
+  await t.test('29. Authorization: Non-post subjectType rejected by dispatch', async () => {
+    const env = await setupTestEnvironment()
+    const reqRes = await requestPublicationDispatch(env.db, {
+      workspaceId: env.workspaceId,
+      postId: env.postId,
+    })
+    assert.ok(reqRes.approvalRequest)
+
+    await execute(env.db, "UPDATE approval SET subject_type = 'workflow_run' WHERE id = ?", [
+      reqRes.approvalRequest.id,
+    ])
+
+    await assert.rejects(
+      () =>
+        dispatchApprovedPublication(env.db, {
+          workspaceId: env.workspaceId,
+          approvalRequestId: reqRes.approvalRequest.id,
+        }),
+      /subjectType must be 'post'/,
+    )
+  })
+
+  await t.test('30. Authorization: Missing subjectId rejected by dispatch', async () => {
+    const env = await setupTestEnvironment()
+    const reqRes = await requestPublicationDispatch(env.db, {
+      workspaceId: env.workspaceId,
+      postId: env.postId,
+    })
+    assert.ok(reqRes.approvalRequest)
+
+    await execute(env.db, 'UPDATE approval SET subject_id = NULL WHERE id = ?', [
+      reqRes.approvalRequest.id,
+    ])
+
+    await assert.rejects(
+      () =>
+        dispatchApprovedPublication(env.db, {
+          workspaceId: env.workspaceId,
+          approvalRequestId: reqRes.approvalRequest.id,
+        }),
+      /subjectId is required/,
+    )
+  })
+
+  await t.test('31. Authorization: Snapshot postId != subjectId rejected', async () => {
+    const env = await setupTestEnvironment()
+    const reqRes = await requestPublicationDispatch(env.db, {
+      workspaceId: env.workspaceId,
+      postId: env.postId,
+    })
+    assert.ok(reqRes.approvalRequest)
+
+    await decideApprovalRequest(env.db, {
+      workspaceId: env.workspaceId,
+      requestId: reqRes.approvalRequest.id,
+      decision: 'approved',
+      actor: { actorType: 'user', actorId: null },
+    })
+
+    const forgedPayload = JSON.stringify({
+      ...JSON.parse(reqRes.approvalRequest.snapshotJson),
+      postId: newId(),
+    })
+    const forgedFingerprint = computeSnapshotFingerprint('content.publish', forgedPayload)
+
+    await execute(env.db, 'UPDATE approval SET snapshot_json = ?, fingerprint = ? WHERE id = ?', [
+      forgedPayload,
+      forgedFingerprint,
+      reqRes.approvalRequest.id,
+    ])
+
+    await assert.rejects(
+      () =>
+        dispatchApprovedPublication(env.db, {
+          workspaceId: env.workspaceId,
+          approvalRequestId: reqRes.approvalRequest.id,
+        }),
+      /does not match subjectId/,
+    )
+  })
+
+  await t.test('32. Authorization: Snapshot workspaceId mismatch rejected', async () => {
+    const env = await setupTestEnvironment()
+    const reqRes = await requestPublicationDispatch(env.db, {
+      workspaceId: env.workspaceId,
+      postId: env.postId,
+    })
+    assert.ok(reqRes.approvalRequest)
+
+    await decideApprovalRequest(env.db, {
+      workspaceId: env.workspaceId,
+      requestId: reqRes.approvalRequest.id,
+      decision: 'approved',
+      actor: { actorType: 'user', actorId: null },
+    })
+
+    const forgedPayload = JSON.stringify({
+      ...JSON.parse(reqRes.approvalRequest.snapshotJson),
+      workspaceId: env.workspaceBId,
+    })
+    const forgedFingerprint = computeSnapshotFingerprint('content.publish', forgedPayload)
+
+    await execute(env.db, 'UPDATE approval SET snapshot_json = ?, fingerprint = ? WHERE id = ?', [
+      forgedPayload,
+      forgedFingerprint,
+      reqRes.approvalRequest.id,
+    ])
+
+    await assert.rejects(
+      () =>
+        dispatchApprovedPublication(env.db, {
+          workspaceId: env.workspaceId,
+          approvalRequestId: reqRes.approvalRequest.id,
+        }),
+      /workspaceId '.*' does not match context workspace/,
+    )
+  })
+
+  await t.test('33. Authorization: Snapshot Variant mismatch rejected', async () => {
+    const env = await setupTestEnvironment()
+    const reqRes = await requestPublicationDispatch(env.db, {
+      workspaceId: env.workspaceId,
+      postId: env.postId,
+    })
+    assert.ok(reqRes.approvalRequest)
+
+    await decideApprovalRequest(env.db, {
+      workspaceId: env.workspaceId,
+      requestId: reqRes.approvalRequest.id,
+      decision: 'approved',
+      actor: { actorType: 'user', actorId: null },
+    })
+
+    const forgedPayload = JSON.stringify({
+      ...JSON.parse(reqRes.approvalRequest.snapshotJson),
+      contentVariantId: newId(),
+    })
+    const forgedFingerprint = computeSnapshotFingerprint('content.publish', forgedPayload)
+
+    await execute(env.db, 'UPDATE approval SET snapshot_json = ?, fingerprint = ? WHERE id = ?', [
+      forgedPayload,
+      forgedFingerprint,
+      reqRes.approvalRequest.id,
+    ])
+
+    await assert.rejects(
+      () =>
+        dispatchApprovedPublication(env.db, {
+          workspaceId: env.workspaceId,
+          approvalRequestId: reqRes.approvalRequest.id,
+        }),
+      /variantId '.*' does not match post variantId/,
+    )
+  })
+
+  await t.test('34. Authorization: Snapshot Account mismatch rejected', async () => {
+    const env = await setupTestEnvironment()
+    const reqRes = await requestPublicationDispatch(env.db, {
+      workspaceId: env.workspaceId,
+      postId: env.postId,
+    })
+    assert.ok(reqRes.approvalRequest)
+
+    await decideApprovalRequest(env.db, {
+      workspaceId: env.workspaceId,
+      requestId: reqRes.approvalRequest.id,
+      decision: 'approved',
+      actor: { actorType: 'user', actorId: null },
+    })
+
+    const forgedPayload = JSON.stringify({
+      ...JSON.parse(reqRes.approvalRequest.snapshotJson),
+      accountId: newId(),
+    })
+    const forgedFingerprint = computeSnapshotFingerprint('content.publish', forgedPayload)
+
+    await execute(env.db, 'UPDATE approval SET snapshot_json = ?, fingerprint = ? WHERE id = ?', [
+      forgedPayload,
+      forgedFingerprint,
+      reqRes.approvalRequest.id,
+    ])
+
+    await assert.rejects(
+      () =>
+        dispatchApprovedPublication(env.db, {
+          workspaceId: env.workspaceId,
+          approvalRequestId: reqRes.approvalRequest.id,
+        }),
+      /accountId '.*' does not match post accountId/,
+    )
+  })
+
+  await t.test('35. Authorization: Snapshot contentApprovalId mismatch rejected', async () => {
+    const env = await setupTestEnvironment()
+    const reqRes = await requestPublicationDispatch(env.db, {
+      workspaceId: env.workspaceId,
+      postId: env.postId,
+    })
+    assert.ok(reqRes.approvalRequest)
+
+    await decideApprovalRequest(env.db, {
+      workspaceId: env.workspaceId,
+      requestId: reqRes.approvalRequest.id,
+      decision: 'approved',
+      actor: { actorType: 'user', actorId: null },
+    })
+
+    const forgedPayload = JSON.stringify({
+      ...JSON.parse(reqRes.approvalRequest.snapshotJson),
+      contentApprovalId: newId(),
+    })
+    const forgedFingerprint = computeSnapshotFingerprint('content.publish', forgedPayload)
+
+    await execute(env.db, 'UPDATE approval SET snapshot_json = ?, fingerprint = ? WHERE id = ?', [
+      forgedPayload,
+      forgedFingerprint,
+      reqRes.approvalRequest.id,
+    ])
+
+    await assert.rejects(
+      () =>
+        dispatchApprovedPublication(env.db, {
+          workspaceId: env.workspaceId,
+          approvalRequestId: reqRes.approvalRequest.id,
+        }),
+      /contentApprovalId '.*' does not match post contentApprovalId/,
+    )
+  })
+
+  await t.test('36. Authorization: Snapshot Platform mismatch rejected', async () => {
+    const env = await setupTestEnvironment()
+    const reqRes = await requestPublicationDispatch(env.db, {
+      workspaceId: env.workspaceId,
+      postId: env.postId,
+    })
+    assert.ok(reqRes.approvalRequest)
+
+    await decideApprovalRequest(env.db, {
+      workspaceId: env.workspaceId,
+      requestId: reqRes.approvalRequest.id,
+      decision: 'approved',
+      actor: { actorType: 'user', actorId: null },
+    })
+
+    const forgedPayload = JSON.stringify({
+      ...JSON.parse(reqRes.approvalRequest.snapshotJson),
+      platformId: newId(),
+    })
+    const forgedFingerprint = computeSnapshotFingerprint('content.publish', forgedPayload)
+
+    await execute(env.db, 'UPDATE approval SET snapshot_json = ?, fingerprint = ? WHERE id = ?', [
+      forgedPayload,
+      forgedFingerprint,
+      reqRes.approvalRequest.id,
+    ])
+
+    await assert.rejects(
+      () =>
+        dispatchApprovedPublication(env.db, {
+          workspaceId: env.workspaceId,
+          approvalRequestId: reqRes.approvalRequest.id,
+        }),
+      /platformId '.*' does not match post platformId/,
+    )
+  })
+
+  await t.test('37. Authorization: Non-user decision cannot authorize publication', async () => {
+    const env = await setupTestEnvironment()
+    const reqRes = await requestPublicationDispatch(env.db, {
+      workspaceId: env.workspaceId,
+      postId: env.postId,
+    })
+    assert.ok(reqRes.approvalRequest)
+
+    // Mark approved by system/agent
+    await execute(
+      env.db,
+      "UPDATE approval SET status = 'approved', decision = 'approved', decided_by_type = 'system', decided_at = ? WHERE id = ?",
+      [nowIso(), reqRes.approvalRequest.id],
+    )
+
+    await assert.rejects(
+      () =>
+        dispatchApprovedPublication(env.db, {
+          workspaceId: env.workspaceId,
+          approvalRequestId: reqRes.approvalRequest.id,
+        }),
+      /requires human user approval/,
+    )
+  })
+
+  await t.test(
+    '38. Authorization: Generic createDevApprovalRequestFn cannot create content.publish authorization',
+    async () => {
+      const { validateDevApprovalAction } = await import('../src/server/approval/service.ts')
+      assert.throws(
+        () => validateDevApprovalAction('content.publish'),
+        /content.publish approval requests cannot be created via createDevApprovalRequestFn/,
+      )
+
+      // Other dev actions remain permitted
+      assert.doesNotThrow(() => validateDevApprovalAction('web.search'))
+      assert.doesNotThrow(() => validateDevApprovalAction('workflow.run'))
+    },
+  )
 })

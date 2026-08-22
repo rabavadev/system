@@ -47,6 +47,17 @@ export class ApprovalServiceError extends Error {
   }
 }
 
+/**
+ * Validates that dev approval requests cannot manufacture canonical content.publish approvals.
+ */
+export function validateDevApprovalAction(actionKey: string): void {
+  if (actionKey === 'content.publish') {
+    throw new ApprovalServiceError(
+      'content.publish approval requests cannot be created via createDevApprovalRequestFn. Use requestPublicationDispatch instead.',
+    )
+  }
+}
+
 function toSafeUuid(val: string | null | undefined): string | null {
   if (!val) return null
   return z.string().uuid().safeParse(val).success ? val : null

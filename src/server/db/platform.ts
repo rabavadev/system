@@ -1,4 +1,11 @@
-import type { ConnectionStatus, Platform, PlatformConnection } from '../../types/domain.ts'
+import {
+  type ConnectionStatus,
+  type Platform,
+  type PlatformConnection,
+  type SafePlatformConnection,
+  toSafePlatformConnection,
+} from '../../types/domain.ts'
+import { isValidSecretRef } from '../platforms/runtime.ts'
 import { execute, newId, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
 
 export interface PlatformRow {
@@ -89,6 +96,14 @@ export async function getPlatformConnectionForAccount(
   return row ? toPlatformConnection(row) : null
 }
 
+export async function getSafePlatformConnectionForAccount(
+  db: SqlDatabase,
+  accountId: string,
+): Promise<SafePlatformConnection | null> {
+  const conn = await getPlatformConnectionForAccount(db, accountId)
+  return conn ? toSafePlatformConnection(conn) : null
+}
+
 export interface UpsertPlatformConnectionInput {
   accountId: string
   status?: ConnectionStatus
@@ -101,6 +116,28 @@ export async function upsertPlatformConnection(
   db: SqlDatabase,
   input: UpsertPlatformConnectionInput,
 ): Promise<PlatformConnection> {
+  // Validate secret_ref format if supplied
+  if (input.secretRef !== undefined && input.secretRef !== null) {
+    const trimmedRef = input.secretRef.trim()
+    if (!isValidSecretRef(trimmedRef)) {
+      throw new Error(`Invalid secret_ref identifier: '${input.secretRef}'`)
+    }
+  }
+
+  // Validate metadata does not contain raw secret tokens / authorization headers
+  if (input.metadata !== undefined && input.metadata !== null) {
+    const lower = input.metadata.toLowerCase()
+    if (
+      lower.includes('"authorization"') ||
+      lower.includes('bearer ') ||
+      lower.includes('"accesstoken"') ||
+      lower.includes('"refreshtoken"') ||
+      lower.includes('"clientsecret"')
+    ) {
+      throw new Error('Platform connection metadata must not contain secret tokens or credentials.')
+    }
+  }
+
   const existing = await queryFirst<PlatformConnectionRow>(
     db,
     `SELECT * FROM platform_connection WHERE account_id = ?`,

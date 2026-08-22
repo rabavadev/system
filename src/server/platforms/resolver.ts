@@ -1,6 +1,6 @@
 import { getPlatformById, getPlatformConnectionForAccount } from '../db/platform.ts'
 import type { SqlDatabase } from '../db/sql.ts'
-import { isValidSecretRef } from './runtime.ts'
+import { isAdapterAuthorizedSecretRef, isValidSecretRef } from './runtime.ts'
 import type {
   PlatformCredential,
   PlatformSecretResolver,
@@ -16,30 +16,6 @@ interface AccountLookupRow {
   display_name: string | null
   status: string
   deleted_at: string | null
-}
-
-/**
- * Checks if a secret_ref conforms to platform provider binding convention.
- * Prevents an account from resolving a secret intended for another provider
- * (e.g. an X account using a PINTEREST_ prefixed secret).
- */
-function isProviderBoundSecretRef(platformAdapterKey: string, secretRef: string): boolean {
-  const upperRef = secretRef.toUpperCase()
-  const knownProviders = [
-    'X',
-    'PINTEREST',
-    'INSTAGRAM',
-    'TIKTOK',
-    'YOUTUBE',
-    'LINKEDIN',
-    'FACEBOOK',
-  ]
-  for (const provider of knownProviders) {
-    if (upperRef.startsWith(`${provider}_`)) {
-      return provider.toLowerCase() === platformAdapterKey.toLowerCase()
-    }
-  }
-  return true
 }
 
 /**
@@ -155,7 +131,7 @@ export async function resolvePlatformCredential(
   }
 
   // 5. Provider binding check
-  if (!isProviderBoundSecretRef(platform.adapterKey, trimmedSecretRef)) {
+  if (!isAdapterAuthorizedSecretRef(platform.adapterKey, trimmedSecretRef)) {
     return {
       ok: false,
       code: 'platform_mismatch',

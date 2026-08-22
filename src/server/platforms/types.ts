@@ -25,6 +25,8 @@ export type PlatformCredentialErrorCode =
   | 'platform_mismatch'
   | 'connection_not_found'
   | 'connection_inactive'
+  | 'secret_ref_invalid'
+  | 'secret_not_configured'
   | 'not_configured'
 
 export type ResolvePlatformCredentialResult =

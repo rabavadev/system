@@ -124,6 +124,35 @@ export interface PlatformConnection {
   updatedAt: IsoTimestamp
 }
 
+/** Client-safe platform connection DTO without internal secret locator bindings. */
+export interface SafePlatformConnection {
+  id: Id
+  accountId: Id
+  status: ConnectionStatus
+  hasCredential: boolean
+  scopes: string | null
+  metadataJson: string | null
+  connectedAt: IsoTimestamp | null
+  lastSyncedAt: IsoTimestamp | null
+  createdAt: IsoTimestamp
+  updatedAt: IsoTimestamp
+}
+
+export function toSafePlatformConnection(conn: PlatformConnection): SafePlatformConnection {
+  return {
+    id: conn.id,
+    accountId: conn.accountId,
+    status: conn.status,
+    hasCredential: Boolean(conn.secretRef && conn.secretRef.trim().length > 0),
+    scopes: conn.scopes,
+    metadataJson: conn.metadataJson,
+    connectedAt: conn.connectedAt,
+    lastSyncedAt: conn.lastSyncedAt,
+    createdAt: conn.createdAt,
+    updatedAt: conn.updatedAt,
+  }
+}
+
 export type GoalStatus = 'active' | 'achieved' | 'abandoned'
 
 export interface Goal {
