@@ -1,5 +1,6 @@
-import type { SqlDatabase } from '../db/sql.ts'
 import { getPlatformById, getPlatformConnectionForAccount } from '../db/platform.ts'
+import type { SqlDatabase } from '../db/sql.ts'
+import { isValidSecretRef } from './runtime.ts'
 import type {
   PlatformCredential,
   PlatformSecretResolver,
@@ -18,14 +19,40 @@ interface AccountLookupRow {
 }
 
 /**
+ * Checks if a secret_ref conforms to platform provider binding convention.
+ * Prevents an account from resolving a secret intended for another provider
+ * (e.g. an X account using a PINTEREST_ prefixed secret).
+ */
+function isProviderBoundSecretRef(platformAdapterKey: string, secretRef: string): boolean {
+  const upperRef = secretRef.toUpperCase()
+  const knownProviders = [
+    'X',
+    'PINTEREST',
+    'INSTAGRAM',
+    'TIKTOK',
+    'YOUTUBE',
+    'LINKEDIN',
+    'FACEBOOK',
+  ]
+  for (const provider of knownProviders) {
+    if (upperRef.startsWith(`${provider}_`)) {
+      return provider.toLowerCase() === platformAdapterKey.toLowerCase()
+    }
+  }
+  return true
+}
+
+/**
  * Server-authoritative platform credential resolver.
  *
- * Enforces:
+ * Enforces in order:
  * 1. Workspace tenant isolation
- * 2. Active account lifecycle checks
+ * 2. Active account lifecycle checks (not deleted, status active)
  * 3. Platform adapter key matching
  * 4. Active connected connection state
- * 5. Secure runtime secret resolution from secret_ref
+ * 5. Valid safe secret_ref syntax (no prototype keys, no traversal/special chars)
+ * 6. Provider binding authority (no cross-provider secret referencing)
+ * 7. Secure runtime secret resolution from secret_ref
  *
  * Secrets are never stored in D1 and never returned through public domain DTOs.
  */
@@ -35,14 +62,16 @@ export async function resolvePlatformCredential(
   secretResolver?: PlatformSecretResolver,
 ): Promise<ResolvePlatformCredentialResult> {
   // 1. Load Account server-side
-  const accountRows = (await db
-    .prepare(
-      `SELECT id, workspace_id, platform_id, handle, display_name, status, deleted_at
+  const accountRows = (
+    await db
+      .prepare(
+        `SELECT id, workspace_id, platform_id, handle, display_name, status, deleted_at
        FROM account
        WHERE id = ?`,
-    )
-    .bind(input.accountId)
-    .all<AccountLookupRow>())?.results
+      )
+      .bind(input.accountId)
+      .all<AccountLookupRow>()
+  )?.results
 
   const account = accountRows && accountRows.length > 0 ? accountRows[0] : null
 
@@ -114,25 +143,45 @@ export async function resolvePlatformCredential(
     }
   }
 
-  // 4. Resolve external secret binding
+  const trimmedSecretRef = connection.secretRef.trim()
+
+  // 4. Validate secret_ref syntax and prototype safety
+  if (!isValidSecretRef(trimmedSecretRef)) {
+    return {
+      ok: false,
+      code: 'not_configured',
+      reason: 'Invalid secret_ref identifier format.',
+    }
+  }
+
+  // 5. Provider binding check
+  if (!isProviderBoundSecretRef(platform.adapterKey, trimmedSecretRef)) {
+    return {
+      ok: false,
+      code: 'platform_mismatch',
+      reason: `Secret reference '${trimmedSecretRef}' is not authorized for platform '${platform.adapterKey}'.`,
+    }
+  }
+
+  // 6. Resolve external secret binding
   if (!secretResolver) {
     return {
       ok: false,
       code: 'not_configured',
-      reason: `No secret resolver provided and runtime secret binding '${connection.secretRef}' cannot be resolved.`,
+      reason: `No secret resolver provided and runtime secret binding '${trimmedSecretRef}' cannot be resolved.`,
     }
   }
 
-  const secretValue = await secretResolver.resolveSecret(connection.secretRef.trim())
+  const secretValue = await secretResolver.resolveSecret(trimmedSecretRef)
   if (!secretValue || typeof secretValue !== 'string' || secretValue.trim().length === 0) {
     return {
       ok: false,
       code: 'not_configured',
-      reason: `Secret binding '${connection.secretRef}' is not configured in runtime environment.`,
+      reason: `Secret binding '${trimmedSecretRef}' is not configured in runtime environment.`,
     }
   }
 
-  // 5. Parse safe metadata JSON if present
+  // 7. Parse safe metadata JSON if present
   let parsedMetadata: Record<string, unknown> | null = null
   if (connection.metadataJson && connection.metadataJson.trim().length > 0) {
     try {
@@ -146,7 +195,7 @@ export async function resolvePlatformCredential(
   }
 
   const credential: PlatformCredential = {
-    secretRef: connection.secretRef.trim(),
+    secretRef: trimmedSecretRef,
     secretValue: secretValue.trim(),
     accountId: account.id,
     platformAdapterKey: platform.adapterKey,

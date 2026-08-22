@@ -1,5 +1,3 @@
-import type { ConnectionStatus } from '../../types/domain.ts'
-
 /**
  * Server-only interface for resolving secret bindings from Cloudflare runtime
  * environment or injected secret stores.

@@ -707,4 +707,3 @@ export const dispatchApprovedPublicationFn = createServerFn({ method: 'POST' })
       approvalRequestId: data.approvalRequestId,
     })
   })
-

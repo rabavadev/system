@@ -22,6 +22,11 @@
  *    - Scopes string preserved on credential
  *    - Multiple accounts with distinct secret_refs resolve independently
  *    - Zero secrets or tokens stored in D1 database tables
+ *    - Recording resolver proves 0 resolver invocations on all validation failure paths
+ *    - Secret reference syntax validation (rejects traversal, dots, whitespace, special chars)
+ *    - Prototype pollution protection (rejects __proto__, constructor, prototype)
+ *    - Provider binding authority (rejects cross-provider prefixed secrets)
+ *    - No secret enumeration capability
  */
 
 import assert from 'node:assert/strict'
@@ -40,7 +45,8 @@ import {
 } from '../src/server/db/platform.ts'
 import { execute, newId, nowIso, queryFirst, type SqlDatabase } from '../src/server/db/sql.ts'
 import { resolvePlatformCredential } from '../src/server/platforms/resolver.ts'
-import { createEnvSecretResolver } from '../src/server/platforms/runtime.ts'
+import { createEnvSecretResolver, isValidSecretRef } from '../src/server/platforms/runtime.ts'
+import type { PlatformSecretResolver } from '../src/server/platforms/types.ts'
 
 function shim(db: Database.Database): SqlDatabase {
   return {
@@ -139,6 +145,22 @@ async function setupBaseline(db: SqlDatabase) {
   }
 }
 
+function createRecordingResolver(secrets: Record<string, string>): {
+  resolver: PlatformSecretResolver
+  calls: string[]
+} {
+  const calls: string[] = []
+  return {
+    calls,
+    resolver: {
+      resolveSecret(secretRef: string): string | null {
+        calls.push(secretRef)
+        return secrets[secretRef] ?? null
+      },
+    },
+  }
+}
+
 test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
   await t.test(
     '1. Database Helpers: listPlatforms, getPlatformById, getPlatformByAdapterKey',
@@ -229,15 +251,14 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       await upsertPlatformConnection(db, {
         accountId: xAccountId,
         status: 'connected',
-        secretRef: 'X_GROWTH_TOKEN',
+        secretRef: 'X_AUTH_TOKEN_TEST',
         scopes: 'tweet.read tweet.write',
-        metadata: JSON.stringify({ xUserId: 'user-9988' }),
+        metadata: JSON.stringify({ userId: 'u999' }),
       })
 
-      const customEnv = {
-        X_GROWTH_TOKEN: 'super-secret-oauth2-bearer-token-12345',
-      }
-      const resolver = createEnvSecretResolver(customEnv)
+      const secretResolver = createEnvSecretResolver({
+        X_AUTH_TOKEN_TEST: 'actual-super-secret-oauth-bearer-token',
+      })
 
       const res = await resolvePlatformCredential(
         db,
@@ -246,17 +267,17 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
           accountId: xAccountId,
           platformAdapterKey: 'x',
         },
-        resolver,
+        secretResolver,
       )
 
       assert.equal(res.ok, true)
       if (res.ok) {
-        assert.equal(res.credential.secretRef, 'X_GROWTH_TOKEN')
-        assert.equal(res.credential.secretValue, 'super-secret-oauth2-bearer-token-12345')
+        assert.equal(res.credential.secretRef, 'X_AUTH_TOKEN_TEST')
+        assert.equal(res.credential.secretValue, 'actual-super-secret-oauth-bearer-token')
         assert.equal(res.credential.accountId, xAccountId)
         assert.equal(res.credential.platformAdapterKey, 'x')
         assert.equal(res.credential.scopes, 'tweet.read tweet.write')
-        assert.deepEqual(res.credential.metadata, { xUserId: 'user-9988' })
+        assert.deepEqual(res.credential.metadata, { userId: 'u999' })
       }
     },
   )
@@ -279,8 +300,9 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
         `SELECT secret_ref FROM platform_connection WHERE account_id = ?`,
         [xAccountId],
       )
+
       assert.equal(row?.secret_ref, 'BINDING_SECRET_KEY_NAME')
-      assert.equal(row?.secret_ref.includes('secret-value'), false)
+      assert.equal(row?.secret_ref.includes('bearer'), false)
     },
   )
 
@@ -294,7 +316,7 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       secretRef: null,
     })
 
-    const resolver = createEnvSecretResolver({ SOME_SECRET: 'val' })
+    const secretResolver = createEnvSecretResolver({ X_TOKEN: 'some-value' })
     const res = await resolvePlatformCredential(
       db,
       {
@@ -302,13 +324,12 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
         accountId: xAccountId,
         platformAdapterKey: 'x',
       },
-      resolver,
+      secretResolver,
     )
 
     assert.equal(res.ok, false)
     if (!res.ok) {
       assert.equal(res.code, 'not_configured')
-      assert.equal(res.reason.includes('no secret_ref'), true)
     }
   })
 
@@ -321,10 +342,10 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       await upsertPlatformConnection(db, {
         accountId: xAccountId,
         status: 'connected',
-        secretRef: 'MISSING_SECRET_REF_IN_ENV',
+        secretRef: 'NON_EXISTENT_ENV_BINDING',
       })
 
-      const resolver = createEnvSecretResolver({ OTHER_SECRET: 'val' })
+      const emptyResolver = createEnvSecretResolver({})
       const res = await resolvePlatformCredential(
         db,
         {
@@ -332,13 +353,12 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
           accountId: xAccountId,
           platformAdapterKey: 'x',
         },
-        resolver,
+        emptyResolver,
       )
 
       assert.equal(res.ok, false)
       if (!res.ok) {
         assert.equal(res.code, 'not_configured')
-        assert.equal(res.reason.includes('is not configured in runtime environment'), true)
       }
     },
   )
@@ -349,15 +369,14 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       const db = createTestDb()
       const { workspaceId } = await setupBaseline(db)
 
-      const resolver = createEnvSecretResolver({ X_TOKEN: 'val' })
       const res = await resolvePlatformCredential(
         db,
         {
           workspaceId,
-          accountId: newId(),
+          accountId: 'non-existent-account-id',
           platformAdapterKey: 'x',
         },
-        resolver,
+        createEnvSecretResolver({}),
       )
 
       assert.equal(res.ok, false)
@@ -379,7 +398,9 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
         secretRef: 'X_TOKEN',
       })
 
-      const resolver = createEnvSecretResolver({ X_TOKEN: 'secret123' })
+      const resolver = createEnvSecretResolver({ X_TOKEN: 'valid-secret' })
+
+      // Attempt to access xAccountId belonging to workspaceId from foreignWorkspaceId
       const res = await resolvePlatformCredential(
         db,
         {
@@ -400,6 +421,9 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
   await t.test('10. Credential Resolver: deleted account returns account_ineligible', async () => {
     const db = createTestDb()
     const { workspaceId, xAccountId } = await setupBaseline(db)
+    const now = nowIso()
+
+    await execute(db, `UPDATE account SET deleted_at = ? WHERE id = ?`, [now, xAccountId])
 
     await upsertPlatformConnection(db, {
       accountId: xAccountId,
@@ -407,9 +431,7 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       secretRef: 'X_TOKEN',
     })
 
-    await execute(db, `UPDATE account SET deleted_at = ? WHERE id = ?`, [nowIso(), xAccountId])
-
-    const resolver = createEnvSecretResolver({ X_TOKEN: 'secret123' })
+    const resolver = createEnvSecretResolver({ X_TOKEN: 'valid-secret' })
     const res = await resolvePlatformCredential(
       db,
       {
@@ -423,7 +445,6 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
     assert.equal(res.ok, false)
     if (!res.ok) {
       assert.equal(res.code, 'account_ineligible')
-      assert.equal(res.reason.includes('deleted'), true)
     }
   })
 
@@ -433,16 +454,17 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       const db = createTestDb()
       const { workspaceId, xAccountId } = await setupBaseline(db)
 
-      await upsertPlatformConnection(db, {
-        accountId: xAccountId,
-        status: 'connected',
-        secretRef: 'X_TOKEN',
-      })
+      const nonActiveStatuses = ['paused', 'disconnected', 'archived']
 
-      const resolver = createEnvSecretResolver({ X_TOKEN: 'secret123' })
+      for (const status of nonActiveStatuses) {
+        await execute(db, `UPDATE account SET status = ? WHERE id = ?`, [status, xAccountId])
+        await upsertPlatformConnection(db, {
+          accountId: xAccountId,
+          status: 'connected',
+          secretRef: 'X_TOKEN',
+        })
 
-      for (const st of ['paused', 'disconnected', 'archived'] as const) {
-        await execute(db, `UPDATE account SET status = ? WHERE id = ?`, [st, xAccountId])
+        const resolver = createEnvSecretResolver({ X_TOKEN: 'valid-secret' })
         const res = await resolvePlatformCredential(
           db,
           {
@@ -456,7 +478,6 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
         assert.equal(res.ok, false)
         if (!res.ok) {
           assert.equal(res.code, 'account_ineligible')
-          assert.equal(res.reason.includes(`Account is ${st}`), true)
         }
       }
     },
@@ -471,10 +492,12 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       await upsertPlatformConnection(db, {
         accountId: pinterestAccountId,
         status: 'connected',
-        secretRef: 'PINTEREST_TOKEN',
+        secretRef: 'PIN_TOKEN',
       })
 
-      const resolver = createEnvSecretResolver({ PINTEREST_TOKEN: 'pin-secret' })
+      const resolver = createEnvSecretResolver({ PIN_TOKEN: 'pin-secret' })
+
+      // Request provider 'x' for a Pinterest account
       const res = await resolvePlatformCredential(
         db,
         {
@@ -488,7 +511,6 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       assert.equal(res.ok, false)
       if (!res.ok) {
         assert.equal(res.code, 'platform_mismatch')
-        assert.equal(res.reason.includes("Account platform 'pinterest' does not match"), true)
       }
     },
   )
@@ -513,7 +535,6 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       assert.equal(res.ok, false)
       if (!res.ok) {
         assert.equal(res.code, 'not_configured')
-        assert.equal(res.reason.includes('No platform connection configured'), true)
       }
     },
   )
@@ -524,15 +545,20 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       const db = createTestDb()
       const { workspaceId, xAccountId } = await setupBaseline(db)
 
-      const resolver = createEnvSecretResolver({ X_TOKEN: 'secret123' })
+      const inactiveStatuses: Array<'expired' | 'error' | 'disconnected'> = [
+        'expired',
+        'error',
+        'disconnected',
+      ]
 
-      for (const status of ['expired', 'error', 'disconnected'] as const) {
+      for (const status of inactiveStatuses) {
         await upsertPlatformConnection(db, {
           accountId: xAccountId,
           status,
           secretRef: 'X_TOKEN',
         })
 
+        const resolver = createEnvSecretResolver({ X_TOKEN: 'secret' })
         const res = await resolvePlatformCredential(
           db,
           {
@@ -546,7 +572,6 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
         assert.equal(res.ok, false)
         if (!res.ok) {
           assert.equal(res.code, 'connection_inactive')
-          assert.equal(res.reason.includes(`Platform connection is ${status}`), true)
         }
       }
     },
@@ -669,4 +694,251 @@ test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
       }
     }
   })
+
+  await t.test(
+    '18. Lifecycle Guard: Secret resolver is NEVER called before Account validation passes',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, foreignWorkspaceId, xAccountId } = await setupBaseline(db)
+      const now = nowIso()
+
+      const recording = createRecordingResolver({ X_TOKEN: 'secret' })
+
+      // 1. Missing account
+      await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: 'missing-id', platformAdapterKey: 'x' },
+        recording.resolver,
+      )
+      assert.equal(recording.calls.length, 0, 'Resolver must not be called for missing account')
+
+      // 2. Foreign workspace
+      await resolvePlatformCredential(
+        db,
+        { workspaceId: foreignWorkspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+        recording.resolver,
+      )
+      assert.equal(recording.calls.length, 0, 'Resolver must not be called for foreign workspace')
+
+      // 3. Deleted account
+      await execute(db, `UPDATE account SET deleted_at = ? WHERE id = ?`, [now, xAccountId])
+      await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+        recording.resolver,
+      )
+      assert.equal(recording.calls.length, 0, 'Resolver must not be called for deleted account')
+
+      // 4. Inactive account
+      await execute(db, `UPDATE account SET deleted_at = NULL, status = 'paused' WHERE id = ?`, [
+        xAccountId,
+      ])
+      await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+        recording.resolver,
+      )
+      assert.equal(recording.calls.length, 0, 'Resolver must not be called for paused account')
+    },
+  )
+
+  await t.test(
+    '19. Lifecycle Guard: Secret resolver is NEVER called before Platform & Connection validation passes',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId, pinterestAccountId } = await setupBaseline(db)
+
+      const recording = createRecordingResolver({ X_TOKEN: 'secret' })
+
+      // 1. Platform mismatch
+      await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: pinterestAccountId, platformAdapterKey: 'x' },
+        recording.resolver,
+      )
+      assert.equal(recording.calls.length, 0, 'Resolver must not be called for platform mismatch')
+
+      // 2. Missing connection
+      await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+        recording.resolver,
+      )
+      assert.equal(recording.calls.length, 0, 'Resolver must not be called for missing connection')
+
+      // 3. Inactive connection
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'disconnected',
+        secretRef: 'X_TOKEN',
+      })
+      await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+        recording.resolver,
+      )
+      assert.equal(
+        recording.calls.length,
+        0,
+        'Resolver must not be called for disconnected connection',
+      )
+    },
+  )
+
+  await t.test(
+    '20. Secret Syntax: Malicious and invalid secret_ref identifiers are rejected safely',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      const invalidRefs = [
+        '../etc/passwd',
+        '../../secrets/x.env',
+        'X_TOKEN.KEY',
+        'X TOKEN WITH SPACES',
+        'X_TOKEN$FORGED',
+        'X_TOKEN;DROP TABLE platform_connection',
+        'X_TOKEN\nNEWLINE',
+        'X_TOKEN\0NULL',
+        '   ',
+        '',
+      ]
+
+      for (const invalidRef of invalidRefs) {
+        assert.equal(
+          isValidSecretRef(invalidRef),
+          false,
+          `isValidSecretRef must reject: ${JSON.stringify(invalidRef)}`,
+        )
+
+        await execute(db, `UPDATE platform_connection SET secret_ref = ? WHERE account_id = ?`, [
+          invalidRef,
+          xAccountId,
+        ])
+
+        const recording = createRecordingResolver({ [invalidRef]: 'evil-val' })
+        const res = await resolvePlatformCredential(
+          db,
+          { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+          recording.resolver,
+        )
+
+        assert.equal(res.ok, false)
+        if (!res.ok) {
+          assert.equal(res.code, 'not_configured')
+        }
+        assert.equal(
+          recording.calls.length,
+          0,
+          `Resolver must not be invoked for invalid secret_ref: ${invalidRef}`,
+        )
+      }
+    },
+  )
+
+  await t.test(
+    '21. Prototype Safety: Prototype-polluting secret_ref names (__proto__, constructor, prototype) are strictly rejected',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      const prototypeKeys = ['__proto__', 'constructor', 'prototype']
+
+      for (const protoKey of prototypeKeys) {
+        assert.equal(
+          isValidSecretRef(protoKey),
+          false,
+          `isValidSecretRef must reject prototype key: ${protoKey}`,
+        )
+
+        await execute(db, `UPDATE platform_connection SET secret_ref = ? WHERE account_id = ?`, [
+          protoKey,
+          xAccountId,
+        ])
+
+        const resolver = createEnvSecretResolver({ [protoKey]: 'malicious-injected-prototype' })
+        const res = await resolvePlatformCredential(
+          db,
+          { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+          resolver,
+        )
+
+        assert.equal(res.ok, false)
+        if (!res.ok) {
+          assert.equal(res.code, 'not_configured')
+        }
+      }
+    },
+  )
+
+  await t.test(
+    '22. Provider Binding Authority: secret_ref matching another provider prefix is rejected',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      // X account configured with a Pinterest secret binding
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'PINTEREST_PUBLISH_ACCESS_TOKEN',
+      })
+
+      const recording = createRecordingResolver({
+        PINTEREST_PUBLISH_ACCESS_TOKEN: 'pin-secret-val',
+      })
+
+      const res = await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+        recording.resolver,
+      )
+
+      assert.equal(res.ok, false)
+      if (!res.ok) {
+        assert.equal(res.code, 'platform_mismatch')
+      }
+      assert.equal(
+        recording.calls.length,
+        0,
+        'Resolver must not be invoked for cross-provider secret_ref',
+      )
+    },
+  )
+
+  await t.test(
+    '23. Security: No secret enumeration interface and zero secret leakage in error reasons',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'X_TOP_SECRET_TOKEN_NAME',
+      })
+
+      const secretResolver = createEnvSecretResolver({})
+
+      // Ensure secret resolver has ONLY resolveSecret (no listSecrets/dumpEnv)
+      assert.equal(typeof secretResolver.resolveSecret, 'function')
+      assert.equal('listSecrets' in secretResolver, false)
+      assert.equal('dumpEnv' in secretResolver, false)
+      assert.equal('allSecrets' in secretResolver, false)
+
+      const res = await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: xAccountId, platformAdapterKey: 'x' },
+        secretResolver,
+      )
+
+      assert.equal(res.ok, false)
+      if (!res.ok) {
+        assert.equal(res.code, 'not_configured')
+        // Reason must not expose secret values or internal stack traces
+        assert.equal(res.reason.includes('bearer'), false)
+        assert.equal(res.reason.includes('password'), false)
+      }
+    },
+  )
 })

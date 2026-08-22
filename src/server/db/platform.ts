@@ -1,5 +1,5 @@
-import { execute, newId, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
 import type { ConnectionStatus, Platform, PlatformConnection } from '../../types/domain.ts'
+import { execute, newId, nowIso, queryAll, queryFirst, type SqlDatabase } from './sql.ts'
 
 export interface PlatformRow {
   id: string

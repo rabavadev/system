@@ -621,9 +621,7 @@ export async function createPublicationIntent(
   // Server-Authoritative Campaign Lineage Derivation (Requirement 11)
   const serverCampaignId = contentRow.campaign_id ?? null
   if (data.campaignId && serverCampaignId && data.campaignId !== serverCampaignId) {
-    throw new IntegrityError(
-      'Campaign ID does not match persisted content campaign lineage.',
-    )
+    throw new IntegrityError('Campaign ID does not match persisted content campaign lineage.')
   }
   if (data.campaignId && !serverCampaignId) {
     throw new IntegrityError(
@@ -717,9 +715,7 @@ export async function createPublicationIntent(
       [serverCampaignId, data.accountId],
     )
     if (!campaignAccountRow) {
-      throw new IntegrityError(
-        'Account is not connected to this campaign.',
-      )
+      throw new IntegrityError('Account is not connected to this campaign.')
     }
   }
 
@@ -1272,7 +1268,8 @@ export async function dispatchApprovedPublication(
     throw new IntegrityError('Malformed approval request snapshot.')
   }
 
-  const postId = typeof parsedPayload['postId'] === 'string' ? parsedPayload['postId'] : req.subjectId
+  const postId =
+    typeof parsedPayload['postId'] === 'string' ? parsedPayload['postId'] : req.subjectId
   if (!postId) {
     throw new IntegrityError('Approval request snapshot missing postId.')
   }
