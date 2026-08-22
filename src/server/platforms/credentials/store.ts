@@ -1,11 +1,4 @@
-import {
-  execute,
-  newId,
-  nowIso,
-  queryFirst,
-  type SqlDatabase,
-  withTransaction,
-} from '../../db/sql.ts'
+import { executeBatch, newId, nowIso, queryFirst, type SqlDatabase } from '../../db/sql.ts'
 
 import { createEnvSecretResolver } from '../runtime.ts'
 import type { PlatformSecretResolver } from '../types.ts'
@@ -227,31 +220,37 @@ export async function storeOAuthCredential(
   const now = nowIso()
   const credentialId = newId()
 
-  // 6, 7, 8: Execute revocation of prior active credential, insertion of new credential,
-  // and connection status update atomically within a transaction boundary.
-  await withTransaction(db, async () => {
-    // 6. Enforce single active credential: revoke any prior active credential for this account
-    await execute(
-      db,
-      `UPDATE platform_credential
-       SET revoked_at = ?, updated_at = ?
-       WHERE account_id = ? AND revoked_at IS NULL`,
-      [now, now, input.accountId],
-    )
+  const safeMetadata: Record<string, unknown> = {}
+  if (input.credential.providerUserId) {
+    // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+    safeMetadata['providerUserId'] = input.credential.providerUserId
+  }
 
+  const safeMetadataJson =
+    Object.keys(safeMetadata).length > 0 ? JSON.stringify(safeMetadata) : null
+
+  // 6, 7, 8: Execute revocation of prior active credential, insertion of new credential,
+  // and connection status update atomically via batch execution.
+  await executeBatch(db, [
+    // 6. Revoke any prior active credential for this account
+    {
+      sql: `UPDATE platform_credential
+            SET revoked_at = ?, updated_at = ?
+            WHERE account_id = ? AND revoked_at IS NULL`,
+      params: [now, now, input.accountId],
+    },
     // 7. Insert new encrypted credential record
-    await execute(
-      db,
-      `INSERT INTO platform_credential (
-         id, workspace_id, account_id, platform_id, credential_type,
-         access_token_ciphertext, access_token_iv,
-         refresh_token_ciphertext, refresh_token_iv,
-         token_type, scopes,
-         access_token_expires_at, refresh_token_expires_at,
-         provider_user_id, key_version,
-         created_at, updated_at, revoked_at
-       ) VALUES (?, ?, ?, ?, 'oauth2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-      [
+    {
+      sql: `INSERT INTO platform_credential (
+             id, workspace_id, account_id, platform_id, credential_type,
+             access_token_ciphertext, access_token_iv,
+             refresh_token_ciphertext, refresh_token_iv,
+             token_type, scopes,
+             access_token_expires_at, refresh_token_expires_at,
+             provider_user_id, key_version,
+             created_at, updated_at, revoked_at
+           ) VALUES (?, ?, ?, ?, 'oauth2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      params: [
         credentialId,
         input.workspaceId,
         input.accountId,
@@ -269,46 +268,21 @@ export async function storeOAuthCredential(
         now,
         now,
       ],
-    )
-
-    // 8. Ensure connection is active and safe metadata updated
-    const existingConn = await queryFirst<ConnectionCheckRow>(
-      db,
-      `SELECT id, status FROM platform_connection WHERE account_id = ?`,
-      [input.accountId],
-    )
-
-    const safeMetadata: Record<string, unknown> = {}
-    if (input.credential.providerUserId) {
-      // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
-      safeMetadata['providerUserId'] = input.credential.providerUserId
-    }
-
-    const safeMetadataJson =
-      Object.keys(safeMetadata).length > 0 ? JSON.stringify(safeMetadata) : null
-
-    if (existingConn) {
-      await execute(
-        db,
-        `UPDATE platform_connection
-         SET status = 'connected',
-             scopes = COALESCE(?, scopes),
-             metadata = COALESCE(?, metadata),
-             connected_at = COALESCE(connected_at, ?),
-             updated_at = ?
-         WHERE account_id = ?`,
-        [normalizedScopes, safeMetadataJson, now, now, input.accountId],
-      )
-    } else {
-      await execute(
-        db,
-        `INSERT INTO platform_connection (
-           id, account_id, status, secret_ref, scopes, metadata, connected_at, created_at, updated_at
-         ) VALUES (?, ?, 'connected', NULL, ?, ?, ?, ?, ?)`,
-        [newId(), input.accountId, normalizedScopes, safeMetadataJson, now, now, now],
-      )
-    }
-  })
+    },
+    // 8. Ensure connection is active and safe metadata updated (deterministic UPSERT)
+    {
+      sql: `INSERT INTO platform_connection (
+             id, account_id, status, secret_ref, scopes, metadata, connected_at, created_at, updated_at
+           ) VALUES (?, ?, 'connected', NULL, ?, ?, ?, ?, ?)
+           ON CONFLICT(account_id) DO UPDATE SET
+             status = 'connected',
+             scopes = COALESCE(excluded.scopes, platform_connection.scopes),
+             metadata = COALESCE(excluded.metadata, platform_connection.metadata),
+             connected_at = COALESCE(platform_connection.connected_at, excluded.connected_at),
+             updated_at = excluded.updated_at`,
+      params: [newId(), input.accountId, normalizedScopes, safeMetadataJson, now, now, now],
+    },
+  ])
 
   return {
     ok: true,
@@ -529,13 +503,20 @@ export async function revokeOAuthCredential(
   }
 
   const now = nowIso()
-  await execute(
-    db,
-    `UPDATE platform_credential
-     SET revoked_at = ?, updated_at = ?
-     WHERE account_id = ? AND revoked_at IS NULL`,
-    [now, now, input.accountId],
-  )
+  await executeBatch(db, [
+    {
+      sql: `UPDATE platform_credential
+            SET revoked_at = ?, updated_at = ?
+            WHERE account_id = ? AND revoked_at IS NULL`,
+      params: [now, now, input.accountId],
+    },
+    {
+      sql: `UPDATE platform_connection
+            SET status = 'disconnected', updated_at = ?
+            WHERE account_id = ?`,
+      params: [now, input.accountId],
+    },
+  ])
 
   return {
     ok: true,

@@ -19,6 +19,12 @@ export interface SqlStatement {
 
 export interface SqlDatabase {
   prepare(sql: string): SqlStatement
+  batch?(statements: SqlBoundStatement[]): Promise<unknown[]>
+}
+
+export interface BatchStatementSpec {
+  sql: string
+  params?: unknown[]
 }
 
 /** Generate a primary key. One ID strategy everywhere: UUID text. */
@@ -55,6 +61,37 @@ export async function execute(db: SqlDatabase, sql: string, params: unknown[] = 
     .prepare(sql)
     .bind(...params)
     .run()
+}
+
+/**
+ * Executes an array of parameterized statements atomically in a single transaction.
+ *
+ * In production Cloudflare D1: delegates to `db.batch(...)` which executes statements in a single atomic transaction.
+ * In local SQLite tests / fallbacks: executes statements inside an immediate transaction (`BEGIN IMMEDIATE ... COMMIT / ROLLBACK`).
+ */
+export async function executeBatch(db: SqlDatabase, specs: BatchStatementSpec[]): Promise<void> {
+  if (specs.length === 0) return
+
+  if (typeof db.batch === 'function') {
+    const boundStatements = specs.map((s) => db.prepare(s.sql).bind(...(s.params ?? [])))
+    await db.batch(boundStatements)
+    return
+  }
+
+  await execute(db, 'BEGIN IMMEDIATE')
+  try {
+    for (const spec of specs) {
+      await execute(db, spec.sql, spec.params ?? [])
+    }
+    await execute(db, 'COMMIT')
+  } catch (error) {
+    try {
+      await execute(db, 'ROLLBACK')
+    } catch {
+      // ignore rollback failure if transaction was already aborted
+    }
+    throw error
+  }
 }
 
 /**

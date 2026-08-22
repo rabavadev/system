@@ -23,12 +23,15 @@ import {
 } from '../src/server/db/platform.ts'
 import {
   execute,
+  executeBatch,
   newId,
   nowIso,
   queryAll,
   queryFirst,
+  type SqlBoundStatement,
   type SqlDatabase,
 } from '../src/server/db/sql.ts'
+
 import {
   decryptToken,
   encryptToken,
@@ -47,6 +50,10 @@ import { resolvePlatformCredential } from '../src/server/platforms/resolver.ts'
 import { createEnvSecretResolver } from '../src/server/platforms/runtime.ts'
 import type { PlatformSecretResolver } from '../src/server/platforms/types.ts'
 
+interface SyncRunnableBoundStatement extends SqlBoundStatement {
+  _runSync?: () => unknown
+}
+
 function shim(db: Database.Database): SqlDatabase {
   return {
     prepare(sql: string) {
@@ -57,9 +64,23 @@ function shim(db: Database.Database): SqlDatabase {
             all: async <Row>() => ({ results: stmt.all(...params) as Row[] }),
             first: async <Row>() => (stmt.get(...params) as Row | undefined) ?? null,
             run: async () => stmt.run(...params),
+            _runSync: () => stmt.run(...params),
           }
         },
       }
+    },
+    async batch(statements: SqlBoundStatement[]) {
+      const tx = db.transaction(() => {
+        for (const s of statements as SyncRunnableBoundStatement[]) {
+          if (typeof s._runSync === 'function') {
+            s._runSync()
+          } else {
+            throw new Error('Statement cannot be executed synchronously in batch transaction')
+          }
+        }
+      })
+      tx()
+      return statements.map(() => ({}))
     },
   }
 }
@@ -843,52 +864,76 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
   )
 
   // 24. revoked credential cannot resolve
-  await t.test('24. Revoked credential cannot resolve (returns credential_not_found)', async () => {
-    const db = createTestDb()
-    const env = await setupTestEnvironment(db)
+  await t.test(
+    '24. Revoked credential cannot resolve (returns connection_inactive or credential_not_found)',
+    async () => {
+      const db = createTestDb()
+      const env = await setupTestEnvironment(db)
 
-    await storeOAuthCredential(
-      db,
-      {
+      await storeOAuthCredential(
+        db,
+        {
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          platformAdapterKey: 'x',
+          credential: { accessToken: 'token-to-revoke' },
+        },
+        env.masterKey,
+      )
+
+      // Verify active
+      const before = await hasActiveOAuthCredential(db, env.accountId)
+      assert.equal(before, true)
+
+      // Revoke
+      const revokeRes = await revokeOAuthCredential(db, {
         workspaceId: env.workspaceId,
         accountId: env.accountId,
         platformAdapterKey: 'x',
-        credential: { accessToken: 'token-to-revoke' },
-      },
-      env.masterKey,
-    )
+      })
+      assert.equal(revokeRes.ok, true)
 
-    // Verify active
-    const before = await hasActiveOAuthCredential(db, env.accountId)
-    assert.equal(before, true)
+      // Verify inactive
+      const after = await hasActiveOAuthCredential(db, env.accountId)
+      assert.equal(after, false)
 
-    // Revoke
-    const revokeRes = await revokeOAuthCredential(db, {
-      workspaceId: env.workspaceId,
-      accountId: env.accountId,
-      platformAdapterKey: 'x',
-    })
-    assert.equal(revokeRes.ok, true)
+      // Directly after revoke, connection is disconnected -> returns connection_inactive
+      const resolveRes = await resolveOAuthCredential(
+        db,
+        {
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          platformAdapterKey: 'x',
+        },
+        env.masterKey,
+      )
 
-    // Verify inactive
-    const after = await hasActiveOAuthCredential(db, env.accountId)
-    assert.equal(after, false)
+      assert.equal(resolveRes.ok, false)
+      if (!resolveRes.ok) {
+        assert.equal(resolveRes.code, 'connection_inactive')
+      }
 
-    const resolveRes = await resolveOAuthCredential(
-      db,
-      {
-        workspaceId: env.workspaceId,
-        accountId: env.accountId,
-        platformAdapterKey: 'x',
-      },
-      env.masterKey,
-    )
-
-    assert.equal(resolveRes.ok, false)
-    if (!resolveRes.ok) {
-      assert.equal(resolveRes.code, 'credential_not_found')
-    }
-  })
+      // If connection is re-connected without active credential -> returns credential_not_found
+      await execute(
+        db,
+        `UPDATE platform_connection SET status = 'connected' WHERE account_id = ?`,
+        [env.accountId],
+      )
+      const resolveRes2 = await resolveOAuthCredential(
+        db,
+        {
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          platformAdapterKey: 'x',
+        },
+        env.masterKey,
+      )
+      assert.equal(resolveRes2.ok, false)
+      if (!resolveRes2.ok) {
+        assert.equal(resolveRes2.code, 'credential_not_found')
+      }
+    },
+  )
 
   // 25. safe DTO exposes hasCredential
   await t.test(
@@ -1300,9 +1345,9 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     },
   )
 
-  // 38. Credential replacement atomicity
+  // 38. Credential replacement atomicity: failure during insert
   await t.test(
-    '38. Credential replacement atomicity: failure during replacement rolls back and preserves prior active credential',
+    '38. Credential replacement atomicity: failure during insert rolls back and preserves prior active credential',
     async () => {
       const db = createTestDb()
       const env = await setupTestEnvironment(db)
@@ -1314,7 +1359,7 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
           workspaceId: env.workspaceId,
           accountId: env.accountId,
           platformAdapterKey: 'x',
-          credential: { accessToken: 'initial-surviving-token' },
+          credential: { accessToken: 'initial-surviving-token-1' },
         },
         env.masterKey,
       )
@@ -1337,13 +1382,16 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
               bind() {
                 return {
                   all: async () => {
-                    throw new Error('Simulated disk/constraint failure on credential INSERT')
+                    throw new Error('Simulated failure on credential INSERT')
                   },
                   first: async () => {
-                    throw new Error('Simulated disk/constraint failure on credential INSERT')
+                    throw new Error('Simulated failure on credential INSERT')
                   },
                   run: async () => {
-                    throw new Error('Simulated disk/constraint failure on credential INSERT')
+                    throw new Error('Simulated failure on credential INSERT')
+                  },
+                  _runSync: () => {
+                    throw new Error('Simulated failure on credential INSERT')
                   },
                 }
               },
@@ -1351,6 +1399,7 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
           }
           return db.prepare(sql)
         },
+        batch: db.batch ? (stmts) => db.batch?.(stmts) ?? Promise.resolve([]) : undefined,
       }
 
       // Attempt replacement that will fail during insert
@@ -1362,11 +1411,11 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
               workspaceId: env.workspaceId,
               accountId: env.accountId,
               platformAdapterKey: 'x',
-              credential: { accessToken: 'failing-new-token' },
+              credential: { accessToken: 'failing-new-token-1' },
             },
             env.masterKey,
           ),
-        /Simulated disk\/constraint failure on credential INSERT/,
+        /Simulated failure on credential INSERT/,
       )
 
       // Verify transaction rollback: prior credential must STILL be active and unrevoked!
@@ -1391,13 +1440,321 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
       )
       assert.equal(resolveRes.ok, true)
       if (resolveRes.ok) {
-        assert.equal(resolveRes.credential.accessToken, 'initial-surviving-token')
+        assert.equal(resolveRes.credential.accessToken, 'initial-surviving-token-1')
       }
     },
   )
 
-  // 39. refresh token nullable
-  await t.test('39. Refresh token is nullable: stores null and resolves null cleanly', async () => {
+  // 39. Credential replacement atomicity: failure during connection update
+  await t.test(
+    '39. Credential replacement atomicity: failure during connection update rolls back and preserves prior active credential',
+    async () => {
+      const db = createTestDb()
+      const env = await setupTestEnvironment(db)
+
+      const initialStore = await storeOAuthCredential(
+        db,
+        {
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          platformAdapterKey: 'x',
+          credential: { accessToken: 'initial-surviving-token-2' },
+        },
+        env.masterKey,
+      )
+      assert.equal(initialStore.ok, true)
+
+      const beforeActive = await queryFirst<{ id: string; revoked_at: string | null }>(
+        db,
+        `SELECT id, revoked_at FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+        [env.accountId],
+      )
+      assert.ok(beforeActive)
+
+      // Create a faulty db proxy that throws on connection update
+      const faultyDb: SqlDatabase = {
+        prepare(sql: string) {
+          if (sql.includes('platform_connection')) {
+            return {
+              bind() {
+                return {
+                  all: async () => {
+                    throw new Error('Simulated failure on connection update')
+                  },
+                  first: async () => {
+                    throw new Error('Simulated failure on connection update')
+                  },
+                  run: async () => {
+                    throw new Error('Simulated failure on connection update')
+                  },
+                  _runSync: () => {
+                    throw new Error('Simulated failure on connection update')
+                  },
+                }
+              },
+            }
+          }
+          return db.prepare(sql)
+        },
+        batch: db.batch ? (stmts) => db.batch?.(stmts) ?? Promise.resolve([]) : undefined,
+      }
+
+      await assert.rejects(
+        () =>
+          storeOAuthCredential(
+            faultyDb,
+            {
+              workspaceId: env.workspaceId,
+              accountId: env.accountId,
+              platformAdapterKey: 'x',
+              credential: { accessToken: 'failing-new-token-2' },
+            },
+            env.masterKey,
+          ),
+        /Simulated failure on connection update/,
+      )
+
+      // Verify rollback: prior credential remains active, new token not persisted
+      const afterActive = await queryFirst<{ id: string; revoked_at: string | null }>(
+        db,
+        `SELECT id, revoked_at FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+        [env.accountId],
+      )
+      assert.ok(afterActive)
+      assert.equal(afterActive.id, beforeActive.id)
+      assert.equal(afterActive.revoked_at, null)
+    },
+  )
+
+  // 40. Credential revocation atomicity: failure rolls back both
+  await t.test(
+    '40. Credential revocation atomicity: failure during revocation rolls back both credential and connection updates',
+    async () => {
+      const db = createTestDb()
+      const env = await setupTestEnvironment(db)
+
+      await storeOAuthCredential(
+        db,
+        {
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          platformAdapterKey: 'x',
+          credential: { accessToken: 'token-before-failed-revoke' },
+        },
+        env.masterKey,
+      )
+
+      // Proxy that fails on platform_connection update during revocation
+      const faultyDb: SqlDatabase = {
+        prepare(sql: string) {
+          if (sql.includes('platform_connection') && sql.includes('disconnected')) {
+            return {
+              bind() {
+                return {
+                  all: async () => {
+                    throw new Error('Simulated failure on connection disconnect')
+                  },
+                  first: async () => {
+                    throw new Error('Simulated failure on connection disconnect')
+                  },
+                  run: async () => {
+                    throw new Error('Simulated failure on connection disconnect')
+                  },
+                  _runSync: () => {
+                    throw new Error('Simulated failure on connection disconnect')
+                  },
+                }
+              },
+            }
+          }
+          return db.prepare(sql)
+        },
+        batch: db.batch ? (stmts) => db.batch?.(stmts) ?? Promise.resolve([]) : undefined,
+      }
+
+      await assert.rejects(
+        () =>
+          revokeOAuthCredential(faultyDb, {
+            workspaceId: env.workspaceId,
+            accountId: env.accountId,
+            platformAdapterKey: 'x',
+          }),
+        /Simulated failure on connection disconnect/,
+      )
+
+      // Credential must remain active (not revoked) and connection connected
+      const activeCred = await queryFirst<{ id: string; revoked_at: string | null }>(
+        db,
+        `SELECT id, revoked_at FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+        [env.accountId],
+      )
+      assert.ok(activeCred)
+      assert.equal(activeCred.revoked_at, null)
+
+      const conn = await queryFirst<{ status: string }>(
+        db,
+        `SELECT status FROM platform_connection WHERE account_id = ?`,
+        [env.accountId],
+      )
+      assert.equal(conn?.status, 'connected')
+    },
+  )
+
+  // 41. D1 batch transaction primitive: all-or-nothing atomicity test
+  await t.test(
+    '41. D1 batch transaction primitive: multi-statement batch rolls back all prior statements on subsequent statement failure',
+    async () => {
+      const db = createTestDb()
+      const env = await setupTestEnvironment(db)
+
+      const testRowId = newId()
+      const now = nowIso()
+
+      // Batch with valid statement 1, but failing statement 2 (foreign key violation or intentional bad table)
+      const failingBatch = [
+        {
+          sql: `INSERT INTO platform_credential (
+                 id, workspace_id, account_id, platform_id, credential_type,
+                 access_token_ciphertext, access_token_iv,
+                 token_type, scopes, key_version,
+                 created_at, updated_at, revoked_at
+               ) VALUES (?, ?, ?, ?, 'oauth2', 'ct-test', 'iv-test', 'bearer', NULL, 1, ?, ?, NULL)`,
+          params: [testRowId, env.workspaceId, env.accountId, env.xPlatformId, now, now],
+        },
+        {
+          sql: `INSERT INTO non_existent_table_for_batch_test (id) VALUES ('fail')`,
+          params: [],
+        },
+      ]
+
+      await assert.rejects(() => executeBatch(db, failingBatch))
+
+      // Verify statement 1 row was NOT persisted (rolled back)
+      const checkRow = await queryFirst<{ id: string }>(
+        db,
+        `SELECT id FROM platform_credential WHERE id = ?`,
+        [testRowId],
+      )
+      assert.equal(checkRow, null, 'Statement 1 must be rolled back when statement 2 fails')
+    },
+  )
+
+  // 42. Engine-level uniqueness: double-active prevented
+  await t.test(
+    '42. Engine-level uniqueness: simultaneous unrevoked rows strictly rejected by idx_platform_credential_active_account',
+    async () => {
+      const db = createTestDb()
+      const env = await setupTestEnvironment(db)
+
+      const now = nowIso()
+      // Insert first active row
+      await execute(
+        db,
+        `INSERT INTO platform_credential (
+           id, workspace_id, account_id, platform_id, credential_type,
+           access_token_ciphertext, access_token_iv,
+           token_type, scopes, key_version,
+           created_at, updated_at, revoked_at
+         ) VALUES (?, ?, ?, ?, 'oauth2', 'ct1', 'iv1', 'bearer', NULL, 1, ?, ?, NULL)`,
+        [newId(), env.workspaceId, env.accountId, env.xPlatformId, now, now],
+      )
+
+      // Attempt to insert second active row for same account (without revoking first)
+      await assert.rejects(
+        () =>
+          execute(
+            db,
+            `INSERT INTO platform_credential (
+               id, workspace_id, account_id, platform_id, credential_type,
+               access_token_ciphertext, access_token_iv,
+               token_type, scopes, key_version,
+               created_at, updated_at, revoked_at
+             ) VALUES (?, ?, ?, ?, 'oauth2', 'ct2', 'iv2', 'bearer', NULL, 1, ?, ?, NULL)`,
+            [newId(), env.workspaceId, env.accountId, env.xPlatformId, now, now],
+          ),
+        /UNIQUE constraint failed: platform_credential\.account_id/,
+      )
+    },
+  )
+
+  // 43. Audit/event timing: no premature store event or audit log on rollback
+  await t.test(
+    '43. Audit/event timing: no premature store event or audit log created on rolled-back store failure',
+    async () => {
+      const db = createTestDb()
+      const env = await setupTestEnvironment(db)
+
+      const initialLogs = await queryAll<{ id: string }>(
+        db,
+        `SELECT id FROM audit_log WHERE workspace_id = ?`,
+        [env.workspaceId],
+      )
+      const initialEvents = await queryAll<{ id: string }>(
+        db,
+        `SELECT id FROM event WHERE workspace_id = ?`,
+        [env.workspaceId],
+      )
+
+      const faultyDb: SqlDatabase = {
+        prepare(sql: string) {
+          if (sql.includes('INSERT INTO platform_credential')) {
+            return {
+              bind() {
+                return {
+                  all: async () => {
+                    throw new Error('Store failure simulation')
+                  },
+                  first: async () => {
+                    throw new Error('Store failure simulation')
+                  },
+                  run: async () => {
+                    throw new Error('Store failure simulation')
+                  },
+                  _runSync: () => {
+                    throw new Error('Store failure simulation')
+                  },
+                }
+              },
+            }
+          }
+          return db.prepare(sql)
+        },
+        batch: db.batch ? (stmts) => db.batch?.(stmts) ?? Promise.resolve([]) : undefined,
+      }
+
+      await assert.rejects(
+        () =>
+          storeOAuthCredential(
+            faultyDb,
+            {
+              workspaceId: env.workspaceId,
+              accountId: env.accountId,
+              platformAdapterKey: 'x',
+              credential: { accessToken: 'aborted-store-token' },
+            },
+            env.masterKey,
+          ),
+        /Store failure simulation/,
+      )
+
+      const finalLogs = await queryAll<{ id: string }>(
+        db,
+        `SELECT id FROM audit_log WHERE workspace_id = ?`,
+        [env.workspaceId],
+      )
+      const finalEvents = await queryAll<{ id: string }>(
+        db,
+        `SELECT id FROM event WHERE workspace_id = ?`,
+        [env.workspaceId],
+      )
+
+      assert.equal(finalLogs.length, initialLogs.length, 'No extra audit log on failed store')
+      assert.equal(finalEvents.length, initialEvents.length, 'No extra event on failed store')
+    },
+  )
+
+  // 44. refresh token nullable
+  await t.test('44. Refresh token is nullable: stores null and resolves null cleanly', async () => {
     const db = createTestDb()
     const env = await setupTestEnvironment(db)
 
@@ -1432,8 +1789,8 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     }
   })
 
-  // 40. scopes/expiry metadata preserved safely
-  await t.test('40. Scopes and expiry metadata are preserved and returned safely', async () => {
+  // 45. scopes/expiry metadata preserved safely
+  await t.test('45. Scopes and expiry metadata are preserved and returned safely', async () => {
     const db = createTestDb()
     const env = await setupTestEnvironment(db)
 
@@ -1477,9 +1834,9 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     }
   })
 
-  // 41. no plaintext token exists anywhere in persisted DB rows
+  // 46. no plaintext token exists anywhere in persisted DB rows
   await t.test(
-    '41. Global DB scan: Zero plaintext sentinel tokens anywhere in sqlite rows',
+    '46. Global DB scan: Zero plaintext sentinel tokens anywhere in sqlite rows',
     async () => {
       const db = createTestDb()
       const env = await setupTestEnvironment(db)
@@ -1526,9 +1883,9 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     },
   )
 
-  // 42. AAD swap test (Account A ciphertext attempted to decrypt as Account B -> fails)
+  // 47. AAD swap test (Account A ciphertext attempted to decrypt as Account B -> fails)
   await t.test(
-    '42. AAD Swap Test: Ciphertext from Account A cannot be decrypted as Account B',
+    '47. AAD Swap Test: Ciphertext from Account A cannot be decrypted as Account B',
     async () => {
       const db = createTestDb()
       const env = await setupTestEnvironment(db)
@@ -1590,9 +1947,9 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     },
   )
 
-  // 43. Roundtrip assertion with sentinels & rotation
+  // 48. Roundtrip assertion with sentinels & rotation
   await t.test(
-    '43. Full Lifecycle Roundtrip: store -> raw row check -> rotate -> resolve -> revoke -> check',
+    '48. Full Lifecycle Roundtrip: store -> raw row check -> rotate -> resolve -> revoke -> check',
     async () => {
       const db = createTestDb()
       const env = await setupTestEnvironment(db)
@@ -1664,7 +2021,7 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
       })
       assert.equal(revRes.ok, true)
 
-      // Resolve after revoke fails
+      // Resolve after revoke fails with connection_inactive
       const res3 = await resolveOAuthCredential(
         db,
         {
@@ -1676,7 +2033,27 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
       )
       assert.equal(res3.ok, false)
       if (!res3.ok) {
-        assert.equal(res3.code, 'credential_not_found')
+        assert.equal(res3.code, 'connection_inactive')
+      }
+
+      // If reconnected without credential, fails with credential_not_found
+      await execute(
+        db,
+        `UPDATE platform_connection SET status = 'connected' WHERE account_id = ?`,
+        [env.accountId],
+      )
+      const res4 = await resolveOAuthCredential(
+        db,
+        {
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          platformAdapterKey: 'x',
+        },
+        env.masterKey,
+      )
+      assert.equal(res4.ok, false)
+      if (!res4.ok) {
+        assert.equal(res4.code, 'credential_not_found')
       }
     },
   )
