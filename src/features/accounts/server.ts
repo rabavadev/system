@@ -1,4 +1,5 @@
 import { createServerFn } from '@tanstack/react-start'
+import { deleteCookie, getCookie, setCookie } from '@tanstack/react-start/server'
 import { z } from 'zod'
 
 import {
@@ -16,6 +17,13 @@ import { listBrands } from '~/server/db/brand'
 import { listNiches } from '~/server/db/niche'
 import { listPlatforms } from '~/server/db/platform'
 import { getDefaultWorkspace } from '~/server/db/workspace'
+import {
+  completeXOAuthCallback,
+  startXOAuthFlow,
+  X_OAUTH_COOKIE_NAME,
+  type XOAuthCallbackResult,
+  type XOAuthStartResult,
+} from '~/server/platforms/adapters/x/oauth/index'
 import type { Account, Brand, Niche, Platform } from '~/types/domain'
 
 // Wire schemas are declared locally (not derived from repository schemas at
@@ -44,6 +52,13 @@ const updateAccountWire = z.object({
   status: z.enum(['active', 'paused']).optional(),
   nicheIds: z.array(z.uuid()).max(50).optional(),
   primaryNicheId: z.uuid().nullish(),
+})
+
+const oauthCallbackWire = z.object({
+  state: z.string().nullish(),
+  code: z.string().nullish(),
+  error: z.string().nullish(),
+  errorDescription: z.string().nullish(),
 })
 
 export interface AccountsPageData {
@@ -107,4 +122,67 @@ export const restoreAccountFn = createServerFn({ method: 'POST' })
   .validator(idWire)
   .handler(async ({ data }): Promise<void> => {
     return restoreAccount(data.id)
+  })
+
+/**
+ * Initiates an X OAuth 2.0 PKCE connection for the specified account.
+ * Sets an encrypted HttpOnly transaction cookie and returns the authorization URL.
+ */
+export const startXOAuthConnectionFn = createServerFn({ method: 'POST' })
+  .validator(idWire)
+  .handler(async ({ data }): Promise<XOAuthStartResult> => {
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      return {
+        ok: false,
+        code: 'account_not_found',
+        reason: 'Workspace is not set up.',
+      }
+    }
+
+    const result = await startXOAuthFlow({
+      accountId: data.id,
+      workspaceId: workspace.id,
+    })
+
+    if (result.ok) {
+      setCookie(X_OAUTH_COOKIE_NAME, result.cookieValue, {
+        path: '/',
+        maxAge: 600, // 10 minutes
+        sameSite: 'lax',
+        httpOnly: true,
+      })
+    }
+
+    return result
+  })
+
+/**
+ * Completes the X OAuth callback processing and deletes the transaction cookie.
+ */
+export const completeXOAuthCallbackFn = createServerFn({ method: 'POST' })
+  .validator(oauthCallbackWire)
+  .handler(async ({ data }): Promise<XOAuthCallbackResult> => {
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      return {
+        ok: false,
+        code: 'invalid_request',
+        reason: 'Workspace is not set up.',
+        clearCookie: true,
+      }
+    }
+
+    const cookieValue = getCookie(X_OAUTH_COOKIE_NAME)
+    const result = await completeXOAuthCallback({
+      state: data.state,
+      code: data.code,
+      error: data.error,
+      errorDescription: data.errorDescription,
+      cookieValue,
+      workspaceId: workspace.id,
+    })
+
+    deleteCookie(X_OAUTH_COOKIE_NAME, { path: '/' })
+    return result
   })
