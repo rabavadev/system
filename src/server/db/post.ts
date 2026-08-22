@@ -374,7 +374,7 @@ export function derivePostState(row: PostRow): {
     postStatus: row.status,
     postApprovalId: row.content_approval_id,
 
-    contentId: row.content_id,
+    contentId: row.content_id ?? null,
     contentExists: Boolean(row.content_id),
     contentDeleted: Boolean(row.content_deleted_at),
     contentStatus: row.content_status ?? null,
@@ -763,7 +763,7 @@ export async function createPublicationIntent(
 
   // 8. Determine Initial Status
   const initialStatus: PostStatus = data.scheduledAt ? 'scheduled' : 'draft'
-  const postId = newId('post')
+  const postId = newId()
 
   // 9. Insert Post Record
   await execute(
@@ -1168,6 +1168,12 @@ export async function requestPublicationDispatch(
   }
 
   // 7. Handle REVIEW (Pending)
+  if (approvalRes.status !== 'pending') {
+    // Unreachable: only blocked handled above, auto returns earlier; guard for exhaustiveness
+    throw new IntegrityError('Unexpected approval resolution status.')
+  }
+
+  const pendingRequest = approvalRes.request
   if (!approvalRes.isDuplicate) {
     await emitEventSafe(db, {
       workspaceId: data.workspaceId,
@@ -1177,12 +1183,12 @@ export async function requestPublicationDispatch(
       subjectId: post.id,
       payloadJson: JSON.stringify({
         postId: post.id,
-        approvalRequestId: approvalRes.request.id,
+        approvalRequestId: pendingRequest.id,
         campaignId: post.campaignId ?? null,
         contentId: post.contentId,
         contentVariantId: post.contentVariantId,
         accountId: post.accountId,
-        policySource: approvalRes.request.policySource,
+        policySource: pendingRequest.policySource,
       }),
     })
 
@@ -1194,9 +1200,9 @@ export async function requestPublicationDispatch(
       entityId: post.id,
       newValueJson: JSON.stringify({
         postId: post.id,
-        approvalRequestId: approvalRes.request.id,
+        approvalRequestId: pendingRequest.id,
         effectivePolicyMode: 'review',
-        policySource: approvalRes.request.policySource,
+        policySource: pendingRequest.policySource,
       }),
     })
   }
@@ -1205,8 +1211,8 @@ export async function requestPublicationDispatch(
   return {
     status: 'pending',
     reason: approvalRes.reason,
-    approvalRequest: approvalRes.request,
-    isDuplicate: approvalRes.isDuplicate,
+    approvalRequest: pendingRequest,
+    isDuplicate: approvalRes.isDuplicate ?? false,
     post: updatedPost ?? post,
   }
 }
@@ -1242,12 +1248,15 @@ export async function dispatchApprovedPublication(
   }
 
   if (req.status !== 'approved') {
-    return {
+    const failResult: DispatchPublicationResult = {
       ok: false,
       code: 'not_approved',
       message: `Approval request is ${req.status}, but must be approved to attempt dispatch.`,
-      postId: req.subjectId ?? undefined,
     }
+    if (req.subjectId) {
+      failResult.postId = req.subjectId
+    }
+    return failResult
   }
 
   // Verify Snapshot Integrity
@@ -1263,7 +1272,7 @@ export async function dispatchApprovedPublication(
     throw new IntegrityError('Malformed approval request snapshot.')
   }
 
-  const postId = typeof parsedPayload.postId === 'string' ? parsedPayload.postId : req.subjectId
+  const postId = typeof parsedPayload['postId'] === 'string' ? parsedPayload['postId'] : req.subjectId
   if (!postId) {
     throw new IntegrityError('Approval request snapshot missing postId.')
   }

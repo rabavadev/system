@@ -1,0 +1,672 @@
+/**
+ * STEP 15E.3A: Secure Platform Credential Resolution Test Suite
+ *
+ * Covers:
+ * 1. Platform & Connection DB Helpers:
+ *    - listPlatforms, getPlatformById, getPlatformByAdapterKey
+ *    - getPlatformConnectionForAccount returns safe DTO (secret_ref only, no secret values)
+ *    - upsertPlatformConnection creates and updates connection records
+ *
+ * 2. Server-Authoritative Platform Credential Resolver:
+ *    - Valid active account + connected connection + secret_ref + matching platform returns resolved credential
+ *    - secret_ref is string identifier only (not the secret itself); secret value is resolved from runtime resolver
+ *    - Missing secret_ref in database returns not_configured
+ *    - secret_ref present in DB but missing in runtime environment returns not_configured
+ *    - Account not found or belonging to different workspace returns account_not_found (tenant safety)
+ *    - Deleted account (deleted_at IS NOT NULL) returns account_ineligible
+ *    - Paused / disconnected / archived account returns account_ineligible
+ *    - Platform mismatch (account platform Pinterest vs requested provider X) returns platform_mismatch
+ *    - Missing platform_connection row returns not_configured
+ *    - Connection status 'expired', 'error', 'disconnected' returns connection_inactive
+ *    - Metadata JSON parsing (valid object returned, malformed JSON safely handled)
+ *    - Scopes string preserved on credential
+ *    - Multiple accounts with distinct secret_refs resolve independently
+ *    - Zero secrets or tokens stored in D1 database tables
+ */
+
+import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { test } from 'node:test'
+import { fileURLToPath } from 'node:url'
+import Database from 'better-sqlite3'
+
+import {
+  getPlatformByAdapterKey,
+  getPlatformById,
+  getPlatformConnectionForAccount,
+  listPlatforms,
+  upsertPlatformConnection,
+} from '../src/server/db/platform.ts'
+import { execute, newId, nowIso, queryFirst, type SqlDatabase } from '../src/server/db/sql.ts'
+import { resolvePlatformCredential } from '../src/server/platforms/resolver.ts'
+import { createEnvSecretResolver } from '../src/server/platforms/runtime.ts'
+
+function shim(db: Database.Database): SqlDatabase {
+  return {
+    prepare(sql: string) {
+      const stmt = db.prepare(sql)
+      return {
+        bind(...params: unknown[]) {
+          return {
+            all: async <Row>() => ({ results: stmt.all(...params) as Row[] }),
+            first: async <Row>() => (stmt.get(...params) as Row | undefined) ?? null,
+            run: async () => stmt.run(...params),
+          }
+        },
+      }
+    },
+  }
+}
+
+function createTestDb(): SqlDatabase {
+  const sqlite = new Database(':memory:')
+  sqlite.pragma('foreign_keys = ON')
+
+  const migrationsDir = join(fileURLToPath(new URL('.', import.meta.url)), '..', 'migrations')
+  const files = readdirSync(migrationsDir)
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+
+  for (const file of files) {
+    const sql = readFileSync(join(migrationsDir, file), 'utf8')
+    sqlite.exec(sql)
+  }
+
+  return shim(sqlite)
+}
+
+async function setupBaseline(db: SqlDatabase) {
+  const now = nowIso()
+  const workspaceId = newId()
+  const foreignWorkspaceId = newId()
+
+  await execute(
+    db,
+    `INSERT INTO workspace (id, name, slug, created_at, updated_at) VALUES (?, 'Test Workspace', 'test', ?, ?)`,
+    [workspaceId, now, now],
+  )
+  await execute(
+    db,
+    `INSERT INTO workspace (id, name, slug, created_at, updated_at) VALUES (?, 'Foreign Workspace', 'foreign', ?, ?)`,
+    [foreignWorkspaceId, now, now],
+  )
+
+  const xPlatformId = newId()
+  const pinterestPlatformId = newId()
+  const instagramPlatformId = newId()
+
+  await execute(
+    db,
+    `INSERT INTO platform (id, adapter_key, name, created_at) VALUES (?, 'x', 'X', ?)`,
+    [xPlatformId, now],
+  )
+  await execute(
+    db,
+    `INSERT INTO platform (id, adapter_key, name, created_at) VALUES (?, 'pinterest', 'Pinterest', ?)`,
+    [pinterestPlatformId, now],
+  )
+  await execute(
+    db,
+    `INSERT INTO platform (id, adapter_key, name, created_at) VALUES (?, 'instagram', 'Instagram', ?)`,
+    [instagramPlatformId, now],
+  )
+
+  const xAccountId = newId()
+  await execute(
+    db,
+    `INSERT INTO account (id, workspace_id, platform_id, handle, display_name, status, created_at, updated_at)
+     VALUES (?, ?, ?, 'xuser', 'X User', 'active', ?, ?)`,
+    [xAccountId, workspaceId, xPlatformId, now, now],
+  )
+
+  const pinterestAccountId = newId()
+  await execute(
+    db,
+    `INSERT INTO account (id, workspace_id, platform_id, handle, display_name, status, created_at, updated_at)
+     VALUES (?, ?, ?, 'pinuser', 'Pin User', 'active', ?, ?)`,
+    [pinterestAccountId, workspaceId, pinterestPlatformId, now, now],
+  )
+
+  return {
+    workspaceId,
+    foreignWorkspaceId,
+    xPlatformId,
+    pinterestPlatformId,
+    instagramPlatformId,
+    xAccountId,
+    pinterestAccountId,
+  }
+}
+
+test('STEP 15E.3A Platform Credential Resolution Suite', async (t) => {
+  await t.test(
+    '1. Database Helpers: listPlatforms, getPlatformById, getPlatformByAdapterKey',
+    async () => {
+      const db = createTestDb()
+      const { xPlatformId } = await setupBaseline(db)
+
+      const platforms = await listPlatforms(db)
+      assert.equal(platforms.length >= 3, true)
+
+      const xPlat = await getPlatformById(db, xPlatformId)
+      assert.equal(xPlat !== null, true)
+      assert.equal(xPlat?.adapterKey, 'x')
+      assert.equal(xPlat?.name, 'X')
+
+      const xByKey = await getPlatformByAdapterKey(db, 'x')
+      assert.equal(xByKey !== null, true)
+      assert.equal(xByKey?.id, xPlatformId)
+
+      const nonExistent = await getPlatformByAdapterKey(db, 'non_existent_key')
+      assert.equal(nonExistent, null)
+    },
+  )
+
+  await t.test(
+    '2. Database Helpers: upsertPlatformConnection creates and updates connection safely',
+    async () => {
+      const db = createTestDb()
+      const { xAccountId } = await setupBaseline(db)
+
+      // Initial insert
+      const conn1 = await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'X_ACCOUNT_TOKEN_REF',
+        scopes: 'tweet.read tweet.write users.read',
+        metadata: JSON.stringify({ userId: '12345', handle: 'xuser' }),
+      })
+
+      assert.equal(conn1.accountId, xAccountId)
+      assert.equal(conn1.status, 'connected')
+      assert.equal(conn1.secretRef, 'X_ACCOUNT_TOKEN_REF')
+      assert.equal(conn1.scopes, 'tweet.read tweet.write users.read')
+      assert.equal(conn1.metadataJson?.includes('12345'), true)
+
+      // Update status and secretRef
+      const conn2 = await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'expired',
+        secretRef: 'X_NEW_TOKEN_REF',
+      })
+
+      assert.equal(conn2.id, conn1.id)
+      assert.equal(conn2.status, 'expired')
+      assert.equal(conn2.secretRef, 'X_NEW_TOKEN_REF')
+      // Preserved scopes and metadata
+      assert.equal(conn2.scopes, 'tweet.read tweet.write users.read')
+    },
+  )
+
+  await t.test(
+    '3. Database Helpers: getPlatformConnectionForAccount returns safe PlatformConnection DTO',
+    async () => {
+      const db = createTestDb()
+      const { xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'X_TOKEN_REF_KEY',
+      })
+
+      const conn = await getPlatformConnectionForAccount(db, xAccountId)
+      assert.equal(conn !== null, true)
+      assert.equal(conn?.accountId, xAccountId)
+      assert.equal(conn?.secretRef, 'X_TOKEN_REF_KEY')
+      // Ensure no raw secret value property exists on PlatformConnection
+      assert.equal('secretValue' in (conn ?? {}), false)
+    },
+  )
+
+  await t.test(
+    '4. Credential Resolver: successful resolution for valid active account + connected connection',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'X_GROWTH_TOKEN',
+        scopes: 'tweet.read tweet.write',
+        metadata: JSON.stringify({ xUserId: 'user-9988' }),
+      })
+
+      const customEnv = {
+        X_GROWTH_TOKEN: 'super-secret-oauth2-bearer-token-12345',
+      }
+      const resolver = createEnvSecretResolver(customEnv)
+
+      const res = await resolvePlatformCredential(
+        db,
+        {
+          workspaceId,
+          accountId: xAccountId,
+          platformAdapterKey: 'x',
+        },
+        resolver,
+      )
+
+      assert.equal(res.ok, true)
+      if (res.ok) {
+        assert.equal(res.credential.secretRef, 'X_GROWTH_TOKEN')
+        assert.equal(res.credential.secretValue, 'super-secret-oauth2-bearer-token-12345')
+        assert.equal(res.credential.accountId, xAccountId)
+        assert.equal(res.credential.platformAdapterKey, 'x')
+        assert.equal(res.credential.scopes, 'tweet.read tweet.write')
+        assert.deepEqual(res.credential.metadata, { xUserId: 'user-9988' })
+      }
+    },
+  )
+
+  await t.test(
+    '5. Credential Resolver: secret_ref is string identifier only (not plaintext secret in DB)',
+    async () => {
+      const db = createTestDb()
+      const { xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'BINDING_SECRET_KEY_NAME',
+      })
+
+      // Inspect database row directly
+      const row = await queryFirst<{ secret_ref: string }>(
+        db,
+        `SELECT secret_ref FROM platform_connection WHERE account_id = ?`,
+        [xAccountId],
+      )
+      assert.equal(row?.secret_ref, 'BINDING_SECRET_KEY_NAME')
+      assert.equal(row?.secret_ref.includes('secret-value'), false)
+    },
+  )
+
+  await t.test('6. Credential Resolver: missing secret_ref returns not_configured', async () => {
+    const db = createTestDb()
+    const { workspaceId, xAccountId } = await setupBaseline(db)
+
+    await upsertPlatformConnection(db, {
+      accountId: xAccountId,
+      status: 'connected',
+      secretRef: null,
+    })
+
+    const resolver = createEnvSecretResolver({ SOME_SECRET: 'val' })
+    const res = await resolvePlatformCredential(
+      db,
+      {
+        workspaceId,
+        accountId: xAccountId,
+        platformAdapterKey: 'x',
+      },
+      resolver,
+    )
+
+    assert.equal(res.ok, false)
+    if (!res.ok) {
+      assert.equal(res.code, 'not_configured')
+      assert.equal(res.reason.includes('no secret_ref'), true)
+    }
+  })
+
+  await t.test(
+    '7. Credential Resolver: secret_ref present in DB but absent in runtime env returns not_configured',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'MISSING_SECRET_REF_IN_ENV',
+      })
+
+      const resolver = createEnvSecretResolver({ OTHER_SECRET: 'val' })
+      const res = await resolvePlatformCredential(
+        db,
+        {
+          workspaceId,
+          accountId: xAccountId,
+          platformAdapterKey: 'x',
+        },
+        resolver,
+      )
+
+      assert.equal(res.ok, false)
+      if (!res.ok) {
+        assert.equal(res.code, 'not_configured')
+        assert.equal(res.reason.includes('is not configured in runtime environment'), true)
+      }
+    },
+  )
+
+  await t.test(
+    '8. Credential Resolver: non-existent account returns account_not_found',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId } = await setupBaseline(db)
+
+      const resolver = createEnvSecretResolver({ X_TOKEN: 'val' })
+      const res = await resolvePlatformCredential(
+        db,
+        {
+          workspaceId,
+          accountId: newId(),
+          platformAdapterKey: 'x',
+        },
+        resolver,
+      )
+
+      assert.equal(res.ok, false)
+      if (!res.ok) {
+        assert.equal(res.code, 'account_not_found')
+      }
+    },
+  )
+
+  await t.test(
+    '9. Credential Resolver: cross-workspace account access strictly rejected (tenant isolation)',
+    async () => {
+      const db = createTestDb()
+      const { foreignWorkspaceId, xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'X_TOKEN',
+      })
+
+      const resolver = createEnvSecretResolver({ X_TOKEN: 'secret123' })
+      const res = await resolvePlatformCredential(
+        db,
+        {
+          workspaceId: foreignWorkspaceId,
+          accountId: xAccountId,
+          platformAdapterKey: 'x',
+        },
+        resolver,
+      )
+
+      assert.equal(res.ok, false)
+      if (!res.ok) {
+        assert.equal(res.code, 'account_not_found')
+      }
+    },
+  )
+
+  await t.test('10. Credential Resolver: deleted account returns account_ineligible', async () => {
+    const db = createTestDb()
+    const { workspaceId, xAccountId } = await setupBaseline(db)
+
+    await upsertPlatformConnection(db, {
+      accountId: xAccountId,
+      status: 'connected',
+      secretRef: 'X_TOKEN',
+    })
+
+    await execute(db, `UPDATE account SET deleted_at = ? WHERE id = ?`, [nowIso(), xAccountId])
+
+    const resolver = createEnvSecretResolver({ X_TOKEN: 'secret123' })
+    const res = await resolvePlatformCredential(
+      db,
+      {
+        workspaceId,
+        accountId: xAccountId,
+        platformAdapterKey: 'x',
+      },
+      resolver,
+    )
+
+    assert.equal(res.ok, false)
+    if (!res.ok) {
+      assert.equal(res.code, 'account_ineligible')
+      assert.equal(res.reason.includes('deleted'), true)
+    }
+  })
+
+  await t.test(
+    '11. Credential Resolver: paused / disconnected / archived account returns account_ineligible',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'X_TOKEN',
+      })
+
+      const resolver = createEnvSecretResolver({ X_TOKEN: 'secret123' })
+
+      for (const st of ['paused', 'disconnected', 'archived'] as const) {
+        await execute(db, `UPDATE account SET status = ? WHERE id = ?`, [st, xAccountId])
+        const res = await resolvePlatformCredential(
+          db,
+          {
+            workspaceId,
+            accountId: xAccountId,
+            platformAdapterKey: 'x',
+          },
+          resolver,
+        )
+
+        assert.equal(res.ok, false)
+        if (!res.ok) {
+          assert.equal(res.code, 'account_ineligible')
+          assert.equal(res.reason.includes(`Account is ${st}`), true)
+        }
+      }
+    },
+  )
+
+  await t.test(
+    '12. Credential Resolver: platform mismatch (Pinterest account vs requested X provider) returns platform_mismatch',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, pinterestAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: pinterestAccountId,
+        status: 'connected',
+        secretRef: 'PINTEREST_TOKEN',
+      })
+
+      const resolver = createEnvSecretResolver({ PINTEREST_TOKEN: 'pin-secret' })
+      const res = await resolvePlatformCredential(
+        db,
+        {
+          workspaceId,
+          accountId: pinterestAccountId,
+          platformAdapterKey: 'x',
+        },
+        resolver,
+      )
+
+      assert.equal(res.ok, false)
+      if (!res.ok) {
+        assert.equal(res.code, 'platform_mismatch')
+        assert.equal(res.reason.includes("Account platform 'pinterest' does not match"), true)
+      }
+    },
+  )
+
+  await t.test(
+    '13. Credential Resolver: missing platform_connection row returns not_configured',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      const resolver = createEnvSecretResolver({ X_TOKEN: 'val' })
+      const res = await resolvePlatformCredential(
+        db,
+        {
+          workspaceId,
+          accountId: xAccountId,
+          platformAdapterKey: 'x',
+        },
+        resolver,
+      )
+
+      assert.equal(res.ok, false)
+      if (!res.ok) {
+        assert.equal(res.code, 'not_configured')
+        assert.equal(res.reason.includes('No platform connection configured'), true)
+      }
+    },
+  )
+
+  await t.test(
+    '14. Credential Resolver: inactive connection status (expired, error, disconnected) returns connection_inactive',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      const resolver = createEnvSecretResolver({ X_TOKEN: 'secret123' })
+
+      for (const status of ['expired', 'error', 'disconnected'] as const) {
+        await upsertPlatformConnection(db, {
+          accountId: xAccountId,
+          status,
+          secretRef: 'X_TOKEN',
+        })
+
+        const res = await resolvePlatformCredential(
+          db,
+          {
+            workspaceId,
+            accountId: xAccountId,
+            platformAdapterKey: 'x',
+          },
+          resolver,
+        )
+
+        assert.equal(res.ok, false)
+        if (!res.ok) {
+          assert.equal(res.code, 'connection_inactive')
+          assert.equal(res.reason.includes(`Platform connection is ${status}`), true)
+        }
+      }
+    },
+  )
+
+  await t.test(
+    '15. Credential Resolver: malformed metadata JSON safely handled without crashing',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xAccountId } = await setupBaseline(db)
+
+      await upsertPlatformConnection(db, {
+        accountId: xAccountId,
+        status: 'connected',
+        secretRef: 'X_TOKEN',
+        metadata: 'invalid-non-json-string',
+      })
+
+      const resolver = createEnvSecretResolver({ X_TOKEN: 'secret123' })
+      const res = await resolvePlatformCredential(
+        db,
+        {
+          workspaceId,
+          accountId: xAccountId,
+          platformAdapterKey: 'x',
+        },
+        resolver,
+      )
+
+      assert.equal(res.ok, true)
+      if (res.ok) {
+        assert.equal(res.credential.metadata, null)
+      }
+    },
+  )
+
+  await t.test(
+    '16. Credential Resolver: multiple accounts with independent secret bindings resolve cleanly',
+    async () => {
+      const db = createTestDb()
+      const { workspaceId, xPlatformId } = await setupBaseline(db)
+      const now = nowIso()
+
+      const account1 = newId()
+      const account2 = newId()
+
+      await execute(
+        db,
+        `INSERT INTO account (id, workspace_id, platform_id, handle, display_name, status, created_at, updated_at)
+       VALUES (?, ?, ?, 'xuser1', 'User 1', 'active', ?, ?)`,
+        [account1, workspaceId, xPlatformId, now, now],
+      )
+      await execute(
+        db,
+        `INSERT INTO account (id, workspace_id, platform_id, handle, display_name, status, created_at, updated_at)
+       VALUES (?, ?, ?, 'xuser2', 'User 2', 'active', ?, ?)`,
+        [account2, workspaceId, xPlatformId, now, now],
+      )
+
+      await upsertPlatformConnection(db, {
+        accountId: account1,
+        status: 'connected',
+        secretRef: 'X_USER1_SECRET',
+      })
+      await upsertPlatformConnection(db, {
+        accountId: account2,
+        status: 'connected',
+        secretRef: 'X_USER2_SECRET',
+      })
+
+      const resolver = createEnvSecretResolver({
+        X_USER1_SECRET: 'token-for-user-1',
+        X_USER2_SECRET: 'token-for-user-2',
+      })
+
+      const res1 = await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: account1, platformAdapterKey: 'x' },
+        resolver,
+      )
+      const res2 = await resolvePlatformCredential(
+        db,
+        { workspaceId, accountId: account2, platformAdapterKey: 'x' },
+        resolver,
+      )
+
+      assert.equal(res1.ok, true)
+      assert.equal(res2.ok, true)
+      if (res1.ok && res2.ok) {
+        assert.equal(res1.credential.secretValue, 'token-for-user-1')
+        assert.equal(res2.credential.secretValue, 'token-for-user-2')
+      }
+    },
+  )
+
+  await t.test('17. Security: Zero plaintext secrets stored in database tables', async () => {
+    const db = createTestDb()
+    const { xAccountId } = await setupBaseline(db)
+
+    await upsertPlatformConnection(db, {
+      accountId: xAccountId,
+      status: 'connected',
+      secretRef: 'X_TOKEN_IDENTIFIER',
+      metadata: JSON.stringify({ username: 'handle' }),
+    })
+
+    const connRows =
+      (await db.prepare(`SELECT * FROM platform_connection`).bind().all<Record<string, unknown>>())
+        ?.results ?? []
+
+    for (const r of connRows) {
+      for (const [col, val] of Object.entries(r)) {
+        if (typeof val === 'string') {
+          assert.equal(
+            val.toLowerCase().includes('bearer') || val.toLowerCase().includes('oauth_token'),
+            false,
+            `Database column ${col} must not contain plaintext credentials`,
+          )
+        }
+      }
+    }
+  })
+})
