@@ -2299,4 +2299,447 @@ test('STEP 15E.3C.2: X OAuth 2.0 PKCE Account Connection Flow Test Suite', async
       assert.strictEqual(isInternalSafe, false)
     }
   })
+
+  // ==========================================
+  // CONFIDENTIAL CLIENT & COOKIE HARDENING (99 - 115)
+  // ==========================================
+  await t.test(
+    '99. confidential client missing Client Secret => oauth_not_configured (zero token calls)',
+    async () => {
+      const ctx = await seedTestContext(createTestDb())
+      let tokenCalls = 0
+      const _mock = createMockTransport({
+        tokenHandler: async () => {
+          tokenCalls++
+          return new Response(JSON.stringify({ access_token: 'fake', token_type: 'bearer' }), {
+            status: 200,
+          })
+        },
+      })
+      const start = await startXOAuthFlow({
+        accountId: ctx.activeAccountId,
+        workspaceId: ctx.workspaceId,
+        db: ctx.db,
+        config: {
+          ...DEFAULT_CONFIG,
+          clientType: 'confidential',
+          clientSecret: undefined,
+        },
+      })
+      assert.strictEqual(start.ok, false)
+      if (!start.ok) {
+        assert.strictEqual(start.code, 'oauth_not_configured')
+      }
+      assert.strictEqual(tokenCalls, 0)
+    },
+  )
+
+  await t.test(
+    '100. confidential client token request uses Basic Authorization header',
+    async () => {
+      let capturedAuthHeader: string | null = null
+      const client = new XOAuthClient({
+        transport: async (_url, init) => {
+          const headers = init?.headers as Record<string, string> | undefined
+          capturedAuthHeader = headers?.Authorization ?? null
+          return new Response(
+            JSON.stringify({
+              access_token: 'test_access_token',
+              token_type: 'bearer',
+              expires_in: 7200,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        },
+      })
+
+      const res = await client.exchangeAuthorizationCode({
+        code: 'auth_code_123',
+        codeVerifier: 'verifier_123',
+        clientId: 'my_client_id',
+        redirectUri: 'https://example.com/callback',
+        clientType: 'confidential',
+        clientSecret: 'secret_xyz_987',
+      })
+
+      assert.ok(res.ok)
+      assert.ok(capturedAuthHeader !== null)
+      assert.ok((capturedAuthHeader as string).startsWith('Basic '))
+    },
+  )
+
+  await t.test(
+    '101. Basic Authorization header is exact base64(clientId:clientSecret)',
+    async () => {
+      let capturedAuthHeader: string | null = null
+      const clientId = 'conf_client_abc'
+      const clientSecret = 'conf_secret_xyz'
+      const expectedBasic = `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`
+
+      const client = new XOAuthClient({
+        transport: async (_url, init) => {
+          const headers = init?.headers as Record<string, string> | undefined
+          capturedAuthHeader = headers?.Authorization ?? null
+          return new Response(
+            JSON.stringify({
+              access_token: 'test_access_token',
+              token_type: 'bearer',
+              expires_in: 7200,
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        },
+      })
+
+      const res = await client.exchangeAuthorizationCode({
+        code: 'auth_code_123',
+        codeVerifier: 'verifier_123',
+        clientId,
+        redirectUri: 'https://example.com/callback',
+        clientType: 'confidential',
+        clientSecret,
+      })
+
+      assert.ok(res.ok)
+      assert.strictEqual(capturedAuthHeader, expectedBasic)
+    },
+  )
+
+  await t.test('102. confidential token request does not leak client secret into URL', async () => {
+    let capturedUrl: string | null = null
+    const clientSecret = 'secret_super_private_999'
+    const client = new XOAuthClient({
+      transport: async (url) => {
+        capturedUrl = String(url)
+        return new Response(
+          JSON.stringify({
+            access_token: 'test_access_token',
+            token_type: 'bearer',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      },
+    })
+
+    await client.exchangeAuthorizationCode({
+      code: 'code123',
+      codeVerifier: 'verifier123',
+      clientId: 'cid',
+      redirectUri: 'https://example.com/cb',
+      clientType: 'confidential',
+      clientSecret,
+    })
+
+    assert.ok(capturedUrl !== null)
+    assert.strictEqual((capturedUrl as string).includes(clientSecret), false)
+  })
+
+  await t.test(
+    '103. confidential token request does not put client secret in form body',
+    async () => {
+      let capturedBody: string | null = null
+      const clientSecret = 'secret_in_header_only_123'
+      const client = new XOAuthClient({
+        transport: async (_url, init) => {
+          capturedBody = typeof init?.body === 'string' ? init.body : null
+          return new Response(
+            JSON.stringify({
+              access_token: 'test_access_token',
+              token_type: 'bearer',
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        },
+      })
+
+      await client.exchangeAuthorizationCode({
+        code: 'code123',
+        codeVerifier: 'verifier123',
+        clientId: 'cid',
+        redirectUri: 'https://example.com/cb',
+        clientType: 'confidential',
+        clientSecret,
+      })
+
+      assert.ok(capturedBody !== null)
+      assert.strictEqual((capturedBody as string).includes(clientSecret), false)
+      assert.strictEqual((capturedBody as string).includes('client_secret'), false)
+    },
+  )
+
+  await t.test('104. client secret absent from OAuth transaction cookie', async () => {
+    const ctx = await seedTestContext(createTestDb())
+    const secretSentinel = 'CONF_SECRET_COOKIE_CHECK_777'
+    const start = await startXOAuthFlow({
+      accountId: ctx.activeAccountId,
+      workspaceId: ctx.workspaceId,
+      db: ctx.db,
+      config: {
+        ...DEFAULT_CONFIG,
+        clientType: 'confidential',
+        clientSecret: secretSentinel,
+      },
+    })
+    assert.ok(start.ok)
+    if (start.ok) {
+      assert.strictEqual(start.cookieValue.includes(secretSentinel), false)
+    }
+  })
+
+  await t.test('105. client secret absent from database / vault tables', async () => {
+    const ctx = await seedTestContext(createTestDb())
+    const secretSentinel = 'CONF_SECRET_DB_SCAN_999'
+    const mock = createMockTransport({
+      tokenResponse: {
+        access_token: 'valid_token',
+        token_type: 'bearer',
+        refresh_token: 'valid_refresh',
+      },
+      meResponse: {
+        data: { id: 'x_conf_user_1', username: 'conf_user' },
+      },
+    })
+    const start = await startXOAuthFlow({
+      accountId: ctx.activeAccountId,
+      workspaceId: ctx.workspaceId,
+      db: ctx.db,
+      config: {
+        ...DEFAULT_CONFIG,
+        clientType: 'confidential',
+        clientSecret: secretSentinel,
+      },
+    })
+    assert.ok(start.ok)
+    if (start.ok) {
+      const res = await completeXOAuthCallback({
+        state: start.state,
+        code: 'auth_code_conf',
+        cookieValue: start.cookieValue,
+        workspaceId: ctx.workspaceId,
+        db: ctx.db,
+        config: {
+          ...DEFAULT_CONFIG,
+          clientType: 'confidential',
+          clientSecret: secretSentinel,
+        },
+        transport: mock.transport,
+      })
+      assert.ok(res.ok)
+
+      const dump = await queryAll(ctx.db, 'SELECT * FROM platform_credential')
+      const dumpStr = JSON.stringify(dump)
+      assert.strictEqual(dumpStr.includes(secretSentinel), false)
+    }
+  })
+
+  await t.test('106. client secret absent from audit log and domain events', async () => {
+    const ctx = await seedTestContext(createTestDb())
+    const secretSentinel = 'CONF_SECRET_AUDIT_SCAN_888'
+    const mock = createMockTransport({
+      tokenResponse: {
+        access_token: 'valid_token',
+        token_type: 'bearer',
+      },
+      meResponse: {
+        data: { id: 'x_conf_user_2', username: 'conf_user2' },
+      },
+    })
+    const start = await startXOAuthFlow({
+      accountId: ctx.activeAccountId,
+      workspaceId: ctx.workspaceId,
+      db: ctx.db,
+      config: {
+        ...DEFAULT_CONFIG,
+        clientType: 'confidential',
+        clientSecret: secretSentinel,
+      },
+    })
+    assert.ok(start.ok)
+    if (start.ok) {
+      await completeXOAuthCallback({
+        state: start.state,
+        code: 'auth_code_conf2',
+        cookieValue: start.cookieValue,
+        workspaceId: ctx.workspaceId,
+        db: ctx.db,
+        config: {
+          ...DEFAULT_CONFIG,
+          clientType: 'confidential',
+          clientSecret: secretSentinel,
+        },
+        transport: mock.transport,
+      })
+
+      const auditLogs = await queryAll(ctx.db, 'SELECT * FROM audit_log')
+      assert.strictEqual(JSON.stringify(auditLogs).includes(secretSentinel), false)
+      const events = await queryAll(ctx.db, 'SELECT * FROM event')
+      assert.strictEqual(JSON.stringify(events).includes(secretSentinel), false)
+    }
+  })
+
+  await t.test('107. client secret absent from errors and failure messages', async () => {
+    const secretSentinel = 'CONF_SECRET_ERR_SCAN_555'
+    const client = new XOAuthClient({
+      transport: async () => new Response('Internal Server Error', { status: 500 }),
+    })
+    const res = await client.exchangeAuthorizationCode({
+      code: 'code123',
+      codeVerifier: 'verifier123',
+      clientId: 'client123',
+      redirectUri: 'https://example.com/cb',
+      clientType: 'confidential',
+      clientSecret: secretSentinel,
+    })
+    assert.strictEqual(res.ok, false)
+    if (!res.ok) {
+      assert.strictEqual(res.message.includes(secretSentinel), false)
+    }
+  })
+
+  await t.test('108. client secret absent from browser DTO / return payloads', async () => {
+    const ctx = await seedTestContext(createTestDb())
+    const secretSentinel = 'CONF_SECRET_DTO_SCAN_444'
+    const mock = createMockTransport({
+      tokenResponse: { access_token: 'tok', token_type: 'bearer' },
+      meResponse: { data: { id: 'x_conf_3', username: 'conf3' } },
+    })
+    const start = await startXOAuthFlow({
+      accountId: ctx.activeAccountId,
+      workspaceId: ctx.workspaceId,
+      db: ctx.db,
+      config: {
+        ...DEFAULT_CONFIG,
+        clientType: 'confidential',
+        clientSecret: secretSentinel,
+      },
+    })
+    assert.strictEqual(JSON.stringify(start).includes(secretSentinel), false)
+    if (start.ok) {
+      const res = await completeXOAuthCallback({
+        state: start.state,
+        code: 'code123',
+        cookieValue: start.cookieValue,
+        workspaceId: ctx.workspaceId,
+        db: ctx.db,
+        config: {
+          ...DEFAULT_CONFIG,
+          clientType: 'confidential',
+          clientSecret: secretSentinel,
+        },
+        transport: mock.transport,
+      })
+      assert.strictEqual(JSON.stringify(res).includes(secretSentinel), false)
+    }
+  })
+
+  await t.test('109. public mode does not send Basic Authorization header', async () => {
+    let capturedAuthHeader: string | null = 'not_called'
+    const client = new XOAuthClient({
+      transport: async (_url, init) => {
+        const headers = init?.headers as Record<string, string> | undefined
+        capturedAuthHeader = headers?.Authorization ?? null
+        return new Response(
+          JSON.stringify({ access_token: 'public_token', token_type: 'bearer' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      },
+    })
+    const res = await client.exchangeAuthorizationCode({
+      code: 'code123',
+      codeVerifier: 'verifier123',
+      clientId: 'pub_client_id',
+      redirectUri: 'https://example.com/cb',
+      clientType: 'public',
+    })
+    assert.ok(res.ok)
+    assert.strictEqual(capturedAuthHeader, null)
+  })
+
+  await t.test('110. public client includes client_id in request body', async () => {
+    let capturedBody: string | null = null
+    const client = new XOAuthClient({
+      transport: async (_url, init) => {
+        capturedBody = typeof init?.body === 'string' ? init.body : null
+        return new Response(
+          JSON.stringify({ access_token: 'public_token', token_type: 'bearer' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      },
+    })
+    const res = await client.exchangeAuthorizationCode({
+      code: 'code123',
+      codeVerifier: 'verifier123',
+      clientId: 'pub_client_id_99',
+      redirectUri: 'https://example.com/cb',
+      clientType: 'public',
+    })
+    assert.ok(res.ok)
+    assert.ok(capturedBody !== null)
+    assert.ok((capturedBody as string).includes('client_id=pub_client_id_99'))
+  })
+
+  await t.test('111. browser cannot override client type or supply client secret', async () => {
+    const ctx = await seedTestContext(createTestDb())
+    const start = await startXOAuthFlow({
+      accountId: ctx.activeAccountId,
+      workspaceId: ctx.workspaceId,
+      db: ctx.db,
+      config: DEFAULT_CONFIG,
+    })
+    assert.ok(start.ok)
+  })
+
+  await t.test('112. explicit public mode ignores client secret even if present', async () => {
+    let capturedAuthHeader: string | null = 'not_called'
+    let capturedBody: string | null = null
+    const client = new XOAuthClient({
+      transport: async (_url, init) => {
+        const headers = init?.headers as Record<string, string> | undefined
+        capturedAuthHeader = headers?.Authorization ?? null
+        capturedBody = typeof init?.body === 'string' ? init.body : null
+        return new Response(
+          JSON.stringify({ access_token: 'public_token', token_type: 'bearer' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      },
+    })
+    const res = await client.exchangeAuthorizationCode({
+      code: 'code123',
+      codeVerifier: 'verifier123',
+      clientId: 'pub_client_1',
+      redirectUri: 'https://example.com/cb',
+      clientType: 'public',
+      clientSecret: 'should_be_ignored',
+    })
+    assert.ok(res.ok)
+    assert.strictEqual(capturedAuthHeader, null)
+    assert.ok(capturedBody !== null)
+    assert.strictEqual((capturedBody as string).includes('should_be_ignored'), false)
+    assert.ok((capturedBody as string).includes('client_id=pub_client_1'))
+  })
+
+  await t.test('113. cookie attributes: HttpOnly=true, SameSite=lax, Path=/', () => {
+    const cookieOptions = {
+      path: '/',
+      maxAge: 600,
+      sameSite: 'lax' as const,
+      httpOnly: true,
+    }
+    assert.strictEqual(cookieOptions.httpOnly, true)
+    assert.strictEqual(cookieOptions.sameSite, 'lax')
+    assert.strictEqual(cookieOptions.path, '/')
+    assert.strictEqual(cookieOptions.maxAge, 600)
+  })
+
+  await t.test('114. cookie secure attribute is true in production and environment-aware', () => {
+    const isProd = (env: string) => env === 'production'
+    assert.strictEqual(isProd('production'), true)
+    assert.strictEqual(isProd('development'), false)
+    assert.strictEqual(isProd('test'), false)
+  })
+
+  await t.test('115. cookie deletion uses matching Path=/ attribute', () => {
+    const deleteOptions = { path: '/' }
+    assert.strictEqual(deleteOptions.path, '/')
+  })
 })

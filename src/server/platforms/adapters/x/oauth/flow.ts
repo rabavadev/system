@@ -97,18 +97,45 @@ export function resolveXOAuthConfiguration(
     'PLATFORM_CREDENTIAL_KEK_V1',
     'CREDENTIAL_KEK_V1',
   ])
+  const clientSecret = findValue([
+    'clientSecret',
+    'X_OAUTH_CLIENT_SECRET',
+    'PLATFORM_X_OAUTH_CLIENT_SECRET',
+  ])
+  const clientTypeRaw = findValue([
+    'clientType',
+    'X_OAUTH_CLIENT_TYPE',
+    'PLATFORM_X_OAUTH_CLIENT_TYPE',
+  ])?.toLowerCase()
 
   if (!clientId || !redirectUri || !stateKek) {
     return null
+  }
+
+  let clientType: 'public' | 'confidential'
+  if (clientTypeRaw === 'confidential') {
+    if (!clientSecret) {
+      // Configured as confidential client, but missing required client secret -> fail closed
+      return null
+    }
+    clientType = 'confidential'
+  } else if (clientTypeRaw === 'public') {
+    clientType = 'public'
+  } else {
+    clientType = clientSecret ? 'confidential' : 'public'
   }
 
   const result: XOAuthConfiguration = {
     clientId,
     redirectUri,
     stateKek,
+    clientType,
   }
   if (credentialKek) {
     result.credentialKek = credentialKek
+  }
+  if (clientType === 'confidential' && clientSecret) {
+    result.clientSecret = clientSecret
   }
 
   return result
@@ -366,6 +393,8 @@ export async function completeXOAuthCallback(
     codeVerifier: transaction.codeVerifier,
     clientId: config.clientId,
     redirectUri: config.redirectUri,
+    clientSecret: config.clientSecret,
+    clientType: config.clientType,
   })
 
   if (!tokenResult.ok) {

@@ -70,6 +70,8 @@ export interface XOAuthConfiguration {
   redirectUri: string
   stateKek: string
   credentialKek?: string | undefined
+  clientSecret?: string | undefined
+  clientType?: 'public' | 'confidential' | undefined
 }
 
 export interface XOAuthStartOptions {

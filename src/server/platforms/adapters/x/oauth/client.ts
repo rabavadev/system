@@ -32,6 +32,8 @@ export class XOAuthClient {
     codeVerifier: string
     clientId: string
     redirectUri: string
+    clientSecret?: string | undefined
+    clientType?: 'public' | 'confidential' | undefined
   }): Promise<
     | {
         ok: true
@@ -39,7 +41,7 @@ export class XOAuthClient {
       }
     | XPublishFailure
   > {
-    const { code, codeVerifier, clientId, redirectUri } = options
+    const { code, codeVerifier, clientId, redirectUri, clientSecret, clientType } = options
 
     if (!code || typeof code !== 'string' || code.trim().length === 0) {
       return {
@@ -57,23 +59,46 @@ export class XOAuthClient {
       }
     }
 
+    const isConfidential =
+      clientType === 'confidential' || (Boolean(clientSecret) && clientType !== 'public')
+
+    if (
+      isConfidential &&
+      (!clientSecret || typeof clientSecret !== 'string' || clientSecret.trim().length === 0)
+    ) {
+      return {
+        ok: false,
+        code: 'not_configured',
+        message: 'Confidential client mode requires a clientSecret.',
+      }
+    }
+
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs)
 
     try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      }
+
       const bodyParams = new URLSearchParams()
       bodyParams.set('grant_type', 'authorization_code')
       bodyParams.set('code', code.trim())
-      bodyParams.set('client_id', clientId.trim())
       bodyParams.set('redirect_uri', redirectUri.trim())
       bodyParams.set('code_verifier', codeVerifier.trim())
 
+      if (isConfidential && clientSecret) {
+        const credentials = `${clientId.trim()}:${clientSecret.trim()}`
+        const basicAuth = btoa(credentials)
+        headers['Authorization'] = `Basic ${basicAuth}`
+      } else {
+        bodyParams.set('client_id', clientId.trim())
+      }
+
       const response = await this.transport(X_TOKEN_URL, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Accept: 'application/json',
-        },
+        headers,
         body: bodyParams.toString(),
         signal: controller.signal,
       })

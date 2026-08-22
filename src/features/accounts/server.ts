@@ -146,11 +146,18 @@ export const startXOAuthConnectionFn = createServerFn({ method: 'POST' })
     })
 
     if (result.ok) {
+      // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+      const nodeProcess = (globalThis as Record<string, unknown>)['process'] as
+        | { env?: Record<string, string | undefined> }
+        | undefined
+      const isProduction = nodeProcess?.env?.['NODE_ENV'] === 'production'
+
       setCookie(X_OAUTH_COOKIE_NAME, result.cookieValue, {
         path: '/',
         maxAge: 600, // 10 minutes
         sameSite: 'lax',
         httpOnly: true,
+        secure: isProduction,
       })
     }
 
