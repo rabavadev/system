@@ -13,6 +13,7 @@ export const X_OAUTH_DEFAULT_SCOPES = [
 export const X_AUTHORIZE_URL = 'https://x.com/i/oauth2/authorize'
 export const X_TOKEN_URL = 'https://api.x.com/2/oauth2/token'
 export const X_USERS_ME_URL = 'https://api.x.com/2/users/me'
+export const X_REVOKE_URL = 'https://api.x.com/2/oauth2/revoke'
 
 export interface PkcePair {
   codeVerifier: string
@@ -64,6 +65,12 @@ export type XOAuthErrorCode =
   | 'credential_unknown_key_version'
   | 'invalid_credential'
   | 'unsupported_content'
+  /** Refresh token unavailable or refresh endpoint rejected the token; user must reconnect. */
+  | 'reconnect_required'
+  /** Distributed lease: another isolate is currently refreshing this credential. */
+  | 'refresh_lease_held'
+  /** Refresh skipped because access_token_expires_at is NULL (expiry unknown). */
+  | 'refresh_skipped'
 
 export interface XOAuthConfiguration {
   clientId: string
@@ -137,3 +144,18 @@ export interface XOAuthErrorPayload {
   error?: string
   error_description?: string
 }
+
+/**
+ * Result of a conditional token refresh attempt.
+ * ok:true + refreshed:false means no refresh was needed or lease was held by another isolate.
+ */
+export type XRefreshResult =
+  | { ok: true; refreshed: boolean; code?: 'refresh_skipped' | 'refresh_lease_held' }
+  | { ok: false; code: XOAuthErrorCode; reason: string }
+
+/**
+ * Result of an explicit account disconnect from X.
+ */
+export type XDisconnectResult =
+  | { ok: true; localRevoked: boolean; providerRevoked: boolean }
+  | { ok: false; code: XOAuthErrorCode; reason: string }

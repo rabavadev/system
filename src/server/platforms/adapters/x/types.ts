@@ -1,6 +1,6 @@
 import type { PlatformCredential } from '../../types.ts'
 
-export type XHttpTransport = (url: string, init: RequestInit) => Promise<Response>
+export type XHttpTransport = (url: string, init?: RequestInit) => Promise<Response>
 
 export interface XUserMeResponse {
   data?: {

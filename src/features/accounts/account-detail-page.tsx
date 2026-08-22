@@ -1,5 +1,5 @@
 import { Link, useRouter } from '@tanstack/react-router'
-import { Archive, CheckCircle2, ExternalLink, Pencil, RotateCcw } from 'lucide-react'
+import { Archive, CheckCircle2, ExternalLink, LogOut, Pencil, RotateCcw } from 'lucide-react'
 import { useState, useTransition } from 'react'
 
 import { PageHeader } from '~/components/layout/page-header'
@@ -8,6 +8,7 @@ import { Button } from '~/components/ui/button'
 import { AccountForm } from '~/features/accounts/account-form'
 import {
   archiveAccountFn,
+  disconnectXAccountFn,
   restoreAccountFn,
   startXOAuthConnectionFn,
 } from '~/features/accounts/server'
@@ -32,6 +33,9 @@ export function AccountDetailPage({
   const [pending, startTransition] = useTransition()
   const [oauthError, setOauthError] = useState<string | null>(null)
   const [connecting, setConnecting] = useState(false)
+  const [disconnecting, setDisconnecting] = useState(false)
+  const [confirmDisconnect, setConfirmDisconnect] = useState(false)
+  const [disconnectError, setDisconnectError] = useState<string | null>(null)
   const archived = account.status === 'archived'
 
   const platform = platforms.find((p) => p.id === account.platformId)
@@ -62,6 +66,30 @@ export function AccountDetailPage({
     } catch (err) {
       setOauthError(err instanceof Error ? err.message : 'Failed to initiate X connection.')
       setConnecting(false)
+    }
+  }
+
+  async function handleDisconnectX() {
+    if (!confirmDisconnect) {
+      setConfirmDisconnect(true)
+      return
+    }
+    setDisconnectError(null)
+    setDisconnecting(true)
+    try {
+      const result = await disconnectXAccountFn({ data: { id: account.id } })
+      if (!result.ok) {
+        setDisconnectError(result.reason)
+        setDisconnecting(false)
+        setConfirmDisconnect(false)
+        return
+      }
+      setConfirmDisconnect(false)
+      await router.invalidate()
+    } catch (err) {
+      setDisconnectError(err instanceof Error ? err.message : 'Failed to disconnect X account.')
+      setDisconnecting(false)
+      setConfirmDisconnect(false)
     }
   }
 
@@ -155,14 +183,51 @@ export function AccountDetailPage({
             </div>
 
             {isXPlatform && !archived ? (
-              <Button
-                variant={isConnected ? 'secondary' : 'primary'}
-                disabled={connecting || pending}
-                onClick={handleConnectX}
-              >
-                <ExternalLink className="size-4" strokeWidth={1.75} />
-                {connecting ? 'Connecting…' : isConnected ? 'Reconnect X' : 'Connect X'}
-              </Button>
+              <div className="flex items-center gap-2">
+                {isConnected ? (
+                  <>
+                    {confirmDisconnect ? (
+                      <>
+                        <span className="text-xs text-zinc-500">Disconnect from X?</span>
+                        <Button
+                          variant="danger"
+                          disabled={disconnecting}
+                          id="confirm-disconnect-x"
+                          onClick={handleDisconnectX}
+                        >
+                          <LogOut className="size-4" strokeWidth={1.75} />
+                          {disconnecting ? 'Disconnecting…' : 'Confirm'}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          disabled={disconnecting}
+                          onClick={() => setConfirmDisconnect(false)}
+                        >
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <Button
+                        variant="secondary"
+                        disabled={connecting || pending || disconnecting}
+                        id="disconnect-x"
+                        onClick={handleDisconnectX}
+                      >
+                        <LogOut className="size-4" strokeWidth={1.75} />
+                        Disconnect X
+                      </Button>
+                    )}
+                  </>
+                ) : null}
+                <Button
+                  variant={isConnected ? 'secondary' : 'primary'}
+                  disabled={connecting || pending || disconnecting}
+                  onClick={handleConnectX}
+                >
+                  <ExternalLink className="size-4" strokeWidth={1.75} />
+                  {connecting ? 'Connecting…' : isConnected ? 'Reconnect X' : 'Connect X'}
+                </Button>
+              </div>
             ) : null}
           </div>
 
@@ -182,6 +247,12 @@ export function AccountDetailPage({
           {oauthError ? (
             <p className="rounded bg-rose-50 px-3 py-2 text-xs text-rose-700">
               Connection failed: {oauthError}
+            </p>
+          ) : null}
+
+          {disconnectError ? (
+            <p className="rounded bg-rose-50 px-3 py-2 text-xs text-rose-700">
+              Disconnect failed: {disconnectError}
             </p>
           ) : null}
         </div>

@@ -45,7 +45,8 @@
     "test:credentials": "node --experimental-strip-types scripts/test-platform-credentials.ts",
     "test:credential-vault": "node --experimental-strip-types scripts/test-credential-vault.ts",
     "test:x-publish": "node --experimental-strip-types scripts/test-x-publish.ts",
-    "test:x-oauth": "node --experimental-strip-types scripts/test-x-oauth.ts"
+    "test:x-oauth": "node --experimental-strip-types scripts/test-x-oauth.ts",
+    "test:x-oauth-lifecycle": "node --experimental-strip-types scripts/test-x-oauth-lifecycle.ts"
   },
 
   "dependencies": {

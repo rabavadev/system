@@ -1,6 +1,6 @@
 import { XApiClient } from '../client.ts'
 import type { XHttpTransport, XPublishFailure } from '../types.ts'
-import { X_TOKEN_URL, type XOAuthTokenResponse } from './types.ts'
+import { X_REVOKE_URL, X_TOKEN_URL, type XOAuthTokenResponse } from './types.ts'
 
 const DEFAULT_TIMEOUT_MS = 15_000
 
@@ -184,6 +184,191 @@ export class XOAuthClient {
     { ok: true; data: { id: string; username: string; name?: string } } | XPublishFailure
   > {
     return this.apiClient.getAuthenticatedUser(userAccessToken)
+  }
+
+  /**
+   * Refreshes an OAuth 2.0 access token using a refresh token.
+   * Performs exactly ONE attempt with bounded timeout. No automatic retries.
+   * On success, the provider returns a NEW access_token and a NEW refresh_token (rotation).
+   */
+  async refreshToken(options: {
+    refreshToken: string
+    clientId: string
+    clientSecret?: string | undefined
+    clientType?: 'public' | 'confidential' | undefined
+  }): Promise<{ ok: true; data: XOAuthTokenResponse } | XPublishFailure> {
+    const { refreshToken: token, clientId, clientSecret, clientType } = options
+
+    if (!token || typeof token !== 'string' || token.trim().length === 0) {
+      return { ok: false, code: 'invalid_request', message: 'Missing or empty refresh token.' }
+    }
+
+    const isConfidential =
+      clientType === 'confidential' || (Boolean(clientSecret) && clientType !== 'public')
+
+    if (
+      isConfidential &&
+      (!clientSecret || typeof clientSecret !== 'string' || clientSecret.trim().length === 0)
+    ) {
+      return {
+        ok: false,
+        code: 'not_configured',
+        message: 'Confidential client mode requires a clientSecret.',
+      }
+    }
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs)
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      }
+
+      const bodyParams = new URLSearchParams()
+      bodyParams.set('grant_type', 'refresh_token')
+      bodyParams.set('refresh_token', token.trim())
+
+      if (isConfidential && clientSecret) {
+        const credentials = `${clientId.trim()}:${clientSecret.trim()}`
+        headers['Authorization'] = `Basic ${btoa(credentials)}`
+      } else {
+        bodyParams.set('client_id', clientId.trim())
+      }
+
+      const response = await this.transport(X_TOKEN_URL, {
+        method: 'POST',
+        headers,
+        body: bodyParams.toString(),
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        return this.normalizeHttpError(response)
+      }
+
+      interface RawTokenResponse {
+        access_token?: unknown
+        token_type?: unknown
+        expires_in?: unknown
+        scope?: unknown
+        refresh_token?: unknown
+      }
+
+      let parsed: RawTokenResponse
+      try {
+        parsed = (await response.json()) as RawTokenResponse
+      } catch {
+        return {
+          ok: false,
+          code: 'provider_error',
+          message: 'Malformed JSON response from X token refresh endpoint.',
+        }
+      }
+
+      if (
+        !parsed ||
+        typeof parsed !== 'object' ||
+        typeof parsed.access_token !== 'string' ||
+        parsed.access_token.trim().length === 0
+      ) {
+        return {
+          ok: false,
+          code: 'provider_error',
+          message: 'X token refresh response is missing access_token.',
+        }
+      }
+
+      const tokenResponse: XOAuthTokenResponse = {
+        access_token: parsed.access_token.trim(),
+      }
+
+      if (typeof parsed.token_type === 'string' && parsed.token_type.trim().length > 0) {
+        tokenResponse.token_type = parsed.token_type.trim()
+      }
+
+      if (typeof parsed.expires_in === 'number' && parsed.expires_in > 0) {
+        tokenResponse.expires_in = parsed.expires_in
+      } else if (typeof parsed.expires_in === 'string') {
+        const parsedSec = Number.parseInt(parsed.expires_in, 10)
+        if (!Number.isNaN(parsedSec) && parsedSec > 0) {
+          tokenResponse.expires_in = parsedSec
+        }
+      }
+
+      if (typeof parsed.scope === 'string' && parsed.scope.trim().length > 0) {
+        tokenResponse.scope = parsed.scope.trim()
+      }
+
+      if (typeof parsed.refresh_token === 'string' && parsed.refresh_token.trim().length > 0) {
+        tokenResponse.refresh_token = parsed.refresh_token.trim()
+      }
+
+      return { ok: true, data: tokenResponse }
+    } catch (error) {
+      return this.normalizeException(error)
+    } finally {
+      clearTimeout(timeoutId)
+    }
+  }
+
+  /**
+   * Revokes an OAuth 2.0 token (access or refresh) at the X provider.
+   * Best-effort: callers must handle failures gracefully and not block local revocation on this.
+   * Performs exactly ONE attempt with bounded timeout. No automatic retries.
+   */
+  async revokeToken(options: {
+    token: string
+    clientId: string
+    clientSecret?: string | undefined
+    clientType?: 'public' | 'confidential' | undefined
+  }): Promise<{ ok: true } | XPublishFailure> {
+    const { token, clientId, clientSecret, clientType } = options
+
+    if (!token || typeof token !== 'string' || token.trim().length === 0) {
+      return { ok: false, code: 'invalid_request', message: 'Missing or empty token to revoke.' }
+    }
+
+    const isConfidential =
+      clientType === 'confidential' || (Boolean(clientSecret) && clientType !== 'public')
+
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs)
+
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Accept: 'application/json',
+      }
+
+      const bodyParams = new URLSearchParams()
+      bodyParams.set('token', token.trim())
+
+      if (isConfidential && clientSecret) {
+        const credentials = `${clientId.trim()}:${clientSecret.trim()}`
+        headers['Authorization'] = `Basic ${btoa(credentials)}`
+      } else {
+        bodyParams.set('client_id', clientId.trim())
+      }
+
+      const response = await this.transport(X_REVOKE_URL, {
+        method: 'POST',
+        headers,
+        body: bodyParams.toString(),
+        signal: controller.signal,
+      })
+
+      if (!response.ok) {
+        return this.normalizeHttpError(response)
+      }
+
+      return { ok: true }
+    } catch (error) {
+      return this.normalizeException(error)
+    } finally {
+      clearTimeout(timeoutId)
+    }
   }
 
   private normalizeHttpError(response: Response): XPublishFailure {

@@ -31,6 +31,7 @@ export interface StoredPlatformCredentialRow {
   created_at: string
   updated_at: string
   revoked_at: string | null
+  refresh_locked_until: string | null
 }
 
 export interface DecryptedOAuthCredential extends NormalizedOAuthCredential {

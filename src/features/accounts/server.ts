@@ -14,13 +14,17 @@ import {
   updateAccount,
 } from '~/server/db/account'
 import { listBrands } from '~/server/db/brand'
+import { getDb } from '~/server/db/client'
 import { listNiches } from '~/server/db/niche'
 import { listPlatforms } from '~/server/db/platform'
 import { getDefaultWorkspace } from '~/server/db/workspace'
 import {
   completeXOAuthCallback,
+  disconnectXOAuth,
+  resolveXOAuthConfiguration,
   startXOAuthFlow,
   X_OAUTH_COOKIE_NAME,
+  type XDisconnectResult,
   type XOAuthCallbackResult,
   type XOAuthStartResult,
 } from '~/server/platforms/adapters/x/oauth/index'
@@ -192,4 +196,36 @@ export const completeXOAuthCallbackFn = createServerFn({ method: 'POST' })
 
     deleteCookie(X_OAUTH_COOKIE_NAME, { path: '/' })
     return result
+  })
+
+/**
+ * Disconnects an X account by revoking credentials locally and best-effort at the X provider.
+ * Never returns plaintext token material in the result DTO.
+ */
+export const disconnectXAccountFn = createServerFn({ method: 'POST' })
+  .validator(idWire)
+  .handler(async ({ data }): Promise<XDisconnectResult> => {
+    const workspace = await getDefaultWorkspace()
+    if (!workspace) {
+      return {
+        ok: false,
+        code: 'account_not_found',
+        reason: 'Workspace is not set up.',
+      }
+    }
+
+    const db = await getDb()
+
+    // Resolve X OAuth config from runtime environment (best-effort — null is safe:
+    // disconnectXOAuth will still perform local revocation without provider revocation).
+    const config = resolveXOAuthConfiguration(undefined, undefined)
+
+    // Resolve KEK from env for decrypting the credential (needed for provider revocation).
+    // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+    const nodeProcess = (globalThis as Record<string, unknown>)['process'] as
+      | { env?: Record<string, string | undefined> }
+      | undefined
+    const kek = nodeProcess?.env?.['PLATFORM_CREDENTIAL_KEK_V1'] ?? undefined
+
+    return disconnectXOAuth(db, { accountId: data.id, workspaceId: workspace.id }, config, kek)
   })

@@ -45,7 +45,7 @@ const id = () => crypto.randomUUID()
 test('clean database migrates from zero; all tables exist', () => {
   const db = freshDb()
   const files = migrate(db)
-  assert.equal(files.length, 24, `expected 24 migrations, got: ${files.join(', ')}`)
+  assert.equal(files.length, 25, `expected 25 migrations, got: ${files.join(', ')}`)
 
   const tables = db
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`)
@@ -1237,6 +1237,54 @@ test('migration 0024 creates platform_credential table and enforces active accou
     )
     .get(account)
   assert.equal(activeCount.n, 1)
+
+  db.close()
+})
+
+test('migration 0025 adds refresh_locked_until column to platform_credential', () => {
+  const db = freshDb()
+  migrate(db)
+
+  const columns = db
+    .prepare(`PRAGMA table_info(platform_credential)`)
+    .all()
+    .map((c) => c.name)
+
+  assert.ok(
+    columns.includes('refresh_locked_until'),
+    'platform_credential table must contain refresh_locked_until column',
+  )
+
+  const ws = id()
+  const account = id()
+  const platform = id()
+  const credId = id()
+
+  db.prepare(`INSERT INTO workspace (id, name, created_at, updated_at) VALUES (?, 'WS', ?, ?)`).run(
+    ws,
+    NOW,
+    NOW,
+  )
+  db.prepare(
+    `INSERT INTO platform (id, name, adapter_key, created_at) VALUES (?, 'X', 'x', ?)`,
+  ).run(platform, NOW)
+  db.prepare(
+    `INSERT INTO account (id, workspace_id, platform_id, handle, status, created_at, updated_at) VALUES (?, ?, ?, 'handle', 'active', ?, ?)`,
+  ).run(account, ws, platform, NOW, NOW)
+
+  const lockTime = '2026-08-19T00:00:30.000Z'
+  db.prepare(`
+    INSERT INTO platform_credential (
+      id, workspace_id, account_id, platform_id, credential_type,
+      access_token_ciphertext, access_token_iv, key_version,
+      refresh_locked_until, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 'oauth2', 'cipher', 'iv', 1, ?, ?, ?)
+  `).run(credId, ws, account, platform, lockTime, NOW, NOW)
+
+  const row = db
+    .prepare(`SELECT refresh_locked_until FROM platform_credential WHERE id = ?`)
+    .get(credId)
+  assert.equal(row.refresh_locked_until, lockTime)
 
   db.close()
 })

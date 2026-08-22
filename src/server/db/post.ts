@@ -16,6 +16,10 @@ import {
   type XPublishErrorCode,
   XPublishingAdapter,
 } from '../platforms/adapters/x/index.ts'
+import {
+  refreshXOAuthCredentialIfNeeded,
+  type XOAuthConfiguration,
+} from '../platforms/adapters/x/oauth/index.ts'
 import { resolvePlatformCredential } from '../platforms/resolver.ts'
 import { createEnvSecretResolver } from '../platforms/runtime.ts'
 import type { PlatformCredentialErrorCode, PlatformSecretResolver } from '../platforms/types.ts'
@@ -1222,6 +1226,16 @@ export interface DispatchApprovedPublicationOptions {
   secretResolver?: PlatformSecretResolver
   xTransport?: XHttpTransport
   nowOverride?: string
+  /**
+   * When provided alongside xOAuthConfig, triggers a conditional token refresh
+   * before credential resolution if the stored access token is near expiry.
+   */
+  credentialKek?: string | CryptoKey | undefined
+  /**
+   * X OAuth app configuration required to call the refresh endpoint.
+   * When omitted, the refresh hook is skipped (static credentials are unaffected).
+   */
+  xOAuthConfig?: XOAuthConfiguration | null | undefined
 }
 
 export interface DispatchPublicationResult {
@@ -1458,8 +1472,66 @@ export async function dispatchApprovedPublication(
     }
   }
 
-  // 4. Pre-claim credential resolution check (if connection is unconfigured, fail before claiming)
+  // 4a. Optional: refresh near-expiry X access token before credential resolution.
+  //     Only attempted when the caller provides credentialKek (or xOAuthConfig), which
+  //     signals that the runtime has both the KEK and X OAuth config available.
+  //     Existing tests that pass no options are completely unaffected.
+  if (options?.credentialKek !== undefined || options?.xOAuthConfig !== undefined) {
+    const refreshRes = await refreshXOAuthCredentialIfNeeded(
+      db,
+      { accountId: post.accountId, workspaceId: input.workspaceId },
+      options.xOAuthConfig ?? null,
+      options.credentialKek,
+      options.xTransport,
+    )
+
+    if (!refreshRes.ok && refreshRes.code === 'reconnect_required') {
+      await emitEventSafe(db, {
+        workspaceId: input.workspaceId,
+        eventType: 'publication.dispatch_unavailable',
+        actorType: 'system',
+        subjectType: 'post',
+        subjectId: postId,
+        payloadJson: JSON.stringify({
+          postId,
+          approvalRequestId: req.id,
+          reason:
+            'X access token expired and refresh token is unavailable. Account reconnection required.',
+        }),
+      })
+
+      await writeAuditLog(db, {
+        workspaceId: input.workspaceId,
+        actorType: 'system',
+        action: 'update',
+        entityType: 'post',
+        entityId: postId,
+        newValueJson: JSON.stringify({
+          postId,
+          approvalRequestId: req.id,
+          success: false,
+          reason: 'reconnect_required',
+        }),
+      })
+
+      return {
+        ok: false,
+        code: 'connection_inactive',
+        message:
+          'X access token expired and refresh token is unavailable. Account reconnection required.',
+        postId,
+      }
+    }
+    // Other refresh outcomes (refresh_skipped, refresh_lease_held, successful refresh):
+    // proceed — credential resolution below will pick up the freshest row from DB.
+  }
+
+  // 4b. Pre-claim credential resolution check (if connection is unconfigured, fail before claiming)
   const secretResolver = options?.secretResolver ?? createEnvSecretResolver()
+  const resolveOptions =
+    options?.credentialKek !== undefined
+      ? { secretResolver, kek: options.credentialKek }
+      : secretResolver
   const credRes = await resolvePlatformCredential(
     db,
     {
@@ -1467,7 +1539,7 @@ export async function dispatchApprovedPublication(
       accountId: post.accountId,
       platformAdapterKey: 'x',
     },
-    secretResolver,
+    resolveOptions,
   )
 
   if (!credRes.ok) {
