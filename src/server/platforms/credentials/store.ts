@@ -1,4 +1,12 @@
-import { execute, newId, nowIso, queryFirst, type SqlDatabase } from '../../db/sql.ts'
+import {
+  execute,
+  newId,
+  nowIso,
+  queryFirst,
+  type SqlDatabase,
+  withTransaction,
+} from '../../db/sql.ts'
+
 import { createEnvSecretResolver } from '../runtime.ts'
 import type { PlatformSecretResolver } from '../types.ts'
 import { DEFAULT_KEY_VERSION, decryptToken, encryptToken, importMasterKey } from './crypto.ts'
@@ -219,84 +227,88 @@ export async function storeOAuthCredential(
   const now = nowIso()
   const credentialId = newId()
 
-  // 6. Enforce single active credential: revoke any prior active credential for this account
-  await execute(
-    db,
-    `UPDATE platform_credential
-     SET revoked_at = ?, updated_at = ?
-     WHERE account_id = ? AND revoked_at IS NULL`,
-    [now, now, input.accountId],
-  )
-
-  // 7. Insert new encrypted credential record
-  await execute(
-    db,
-    `INSERT INTO platform_credential (
-       id, workspace_id, account_id, platform_id, credential_type,
-       access_token_ciphertext, access_token_iv,
-       refresh_token_ciphertext, refresh_token_iv,
-       token_type, scopes,
-       access_token_expires_at, refresh_token_expires_at,
-       provider_user_id, key_version,
-       created_at, updated_at, revoked_at
-     ) VALUES (?, ?, ?, ?, 'oauth2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-    [
-      credentialId,
-      input.workspaceId,
-      input.accountId,
-      account.platform_id,
-      accessEncrypted.ciphertext,
-      accessEncrypted.iv,
-      refreshEncrypted?.ciphertext ?? null,
-      refreshEncrypted?.iv ?? null,
-      input.credential.tokenType?.trim() ?? 'bearer',
-      normalizedScopes,
-      input.credential.accessTokenExpiresAt ?? null,
-      input.credential.refreshTokenExpiresAt ?? null,
-      input.credential.providerUserId ?? null,
-      keyVersion,
-      now,
-      now,
-    ],
-  )
-
-  // 8. Ensure connection is active and safe metadata updated
-  const existingConn = await queryFirst<ConnectionCheckRow>(
-    db,
-    `SELECT id, status FROM platform_connection WHERE account_id = ?`,
-    [input.accountId],
-  )
-
-  const safeMetadata: Record<string, unknown> = {}
-  if (input.credential.providerUserId) {
-    // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
-    safeMetadata['providerUserId'] = input.credential.providerUserId
-  }
-
-  const safeMetadataJson =
-    Object.keys(safeMetadata).length > 0 ? JSON.stringify(safeMetadata) : null
-
-  if (existingConn) {
+  // 6, 7, 8: Execute revocation of prior active credential, insertion of new credential,
+  // and connection status update atomically within a transaction boundary.
+  await withTransaction(db, async () => {
+    // 6. Enforce single active credential: revoke any prior active credential for this account
     await execute(
       db,
-      `UPDATE platform_connection
-       SET status = 'connected',
-           scopes = COALESCE(?, scopes),
-           metadata = COALESCE(?, metadata),
-           connected_at = COALESCE(connected_at, ?),
-           updated_at = ?
-       WHERE account_id = ?`,
-      [normalizedScopes, safeMetadataJson, now, now, input.accountId],
+      `UPDATE platform_credential
+       SET revoked_at = ?, updated_at = ?
+       WHERE account_id = ? AND revoked_at IS NULL`,
+      [now, now, input.accountId],
     )
-  } else {
+
+    // 7. Insert new encrypted credential record
     await execute(
       db,
-      `INSERT INTO platform_connection (
-         id, account_id, status, secret_ref, scopes, metadata, connected_at, created_at, updated_at
-       ) VALUES (?, ?, 'connected', NULL, ?, ?, ?, ?, ?)`,
-      [newId(), input.accountId, normalizedScopes, safeMetadataJson, now, now, now],
+      `INSERT INTO platform_credential (
+         id, workspace_id, account_id, platform_id, credential_type,
+         access_token_ciphertext, access_token_iv,
+         refresh_token_ciphertext, refresh_token_iv,
+         token_type, scopes,
+         access_token_expires_at, refresh_token_expires_at,
+         provider_user_id, key_version,
+         created_at, updated_at, revoked_at
+       ) VALUES (?, ?, ?, ?, 'oauth2', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      [
+        credentialId,
+        input.workspaceId,
+        input.accountId,
+        account.platform_id,
+        accessEncrypted.ciphertext,
+        accessEncrypted.iv,
+        refreshEncrypted?.ciphertext ?? null,
+        refreshEncrypted?.iv ?? null,
+        input.credential.tokenType?.trim() ?? 'bearer',
+        normalizedScopes,
+        input.credential.accessTokenExpiresAt ?? null,
+        input.credential.refreshTokenExpiresAt ?? null,
+        input.credential.providerUserId ?? null,
+        keyVersion,
+        now,
+        now,
+      ],
     )
-  }
+
+    // 8. Ensure connection is active and safe metadata updated
+    const existingConn = await queryFirst<ConnectionCheckRow>(
+      db,
+      `SELECT id, status FROM platform_connection WHERE account_id = ?`,
+      [input.accountId],
+    )
+
+    const safeMetadata: Record<string, unknown> = {}
+    if (input.credential.providerUserId) {
+      // biome-ignore lint/complexity/useLiteralKeys: required by tsconfig noPropertyAccessFromIndexSignature
+      safeMetadata['providerUserId'] = input.credential.providerUserId
+    }
+
+    const safeMetadataJson =
+      Object.keys(safeMetadata).length > 0 ? JSON.stringify(safeMetadata) : null
+
+    if (existingConn) {
+      await execute(
+        db,
+        `UPDATE platform_connection
+         SET status = 'connected',
+             scopes = COALESCE(?, scopes),
+             metadata = COALESCE(?, metadata),
+             connected_at = COALESCE(connected_at, ?),
+             updated_at = ?
+         WHERE account_id = ?`,
+        [normalizedScopes, safeMetadataJson, now, now, input.accountId],
+      )
+    } else {
+      await execute(
+        db,
+        `INSERT INTO platform_connection (
+           id, account_id, status, secret_ref, scopes, metadata, connected_at, created_at, updated_at
+         ) VALUES (?, ?, 'connected', NULL, ?, ?, ?, ?, ?)`,
+        [newId(), input.accountId, normalizedScopes, safeMetadataJson, now, now, now],
+      )
+    }
+  })
 
   return {
     ok: true,

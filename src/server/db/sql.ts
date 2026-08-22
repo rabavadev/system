@@ -56,3 +56,23 @@ export async function execute(db: SqlDatabase, sql: string, params: unknown[] = 
     .bind(...params)
     .run()
 }
+
+/**
+ * Executes a function within a transactional boundary (BEGIN IMMEDIATE ... COMMIT / ROLLBACK).
+ * Rolls back and rethrows if any error occurs within the callback.
+ */
+export async function withTransaction<T>(db: SqlDatabase, fn: () => Promise<T>): Promise<T> {
+  await execute(db, 'BEGIN IMMEDIATE')
+  try {
+    const result = await fn()
+    await execute(db, 'COMMIT')
+    return result
+  } catch (error) {
+    try {
+      await execute(db, 'ROLLBACK')
+    } catch {
+      // ignore rollback failure if transaction was already aborted
+    }
+    throw error
+  }
+}

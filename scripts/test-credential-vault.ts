@@ -916,9 +916,53 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     },
   )
 
-  // 26-30. safe DTO does not expose ciphertext, IV, secretRef, accessToken, refreshToken
+  // 26. safe DTO does not expose accessToken
+  await t.test('26. SafePlatformConnection DTO never exposes raw accessToken', async () => {
+    const db = createTestDb()
+    const env = await setupTestEnvironment(db)
+
+    await storeOAuthCredential(
+      db,
+      {
+        workspaceId: env.workspaceId,
+        accountId: env.accountId,
+        platformAdapterKey: 'x',
+        credential: { accessToken: 'token-secret-alpha', refreshToken: 'refresh-secret-beta' },
+      },
+      env.masterKey,
+    )
+
+    const safeConn = await getSafePlatformConnectionForAccount(db, env.accountId)
+    assert.ok(safeConn)
+    assert.equal('accessToken' in safeConn, false)
+    assert.equal(JSON.stringify(safeConn).includes('token-secret-alpha'), false)
+  })
+
+  // 27. safe DTO does not expose refreshToken
+  await t.test('27. SafePlatformConnection DTO never exposes raw refreshToken', async () => {
+    const db = createTestDb()
+    const env = await setupTestEnvironment(db)
+
+    await storeOAuthCredential(
+      db,
+      {
+        workspaceId: env.workspaceId,
+        accountId: env.accountId,
+        platformAdapterKey: 'x',
+        credential: { accessToken: 'token-secret-alpha', refreshToken: 'refresh-secret-beta' },
+      },
+      env.masterKey,
+    )
+
+    const safeConn = await getSafePlatformConnectionForAccount(db, env.accountId)
+    assert.ok(safeConn)
+    assert.equal('refreshToken' in safeConn, false)
+    assert.equal(JSON.stringify(safeConn).includes('refresh-secret-beta'), false)
+  })
+
+  // 28. safe DTO does not expose secretRef or secretValue
   await t.test(
-    '26-30. SafePlatformConnection DTO NEVER exposes sensitive token material, ciphertext, IV, or secretRef',
+    '28. SafePlatformConnection DTO never exposes secretRef or secretValue',
     async () => {
       const db = createTestDb()
       const env = await setupTestEnvironment(db)
@@ -929,38 +973,71 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
           workspaceId: env.workspaceId,
           accountId: env.accountId,
           platformAdapterKey: 'x',
-          credential: { accessToken: 'token-secret', refreshToken: 'refresh-secret' },
+          credential: { accessToken: 'token-secret-alpha' },
         },
         env.masterKey,
       )
 
       const safeConn = await getSafePlatformConnectionForAccount(db, env.accountId)
       assert.ok(safeConn)
-
-      assert.equal('accessToken' in safeConn, false)
-      assert.equal('refreshToken' in safeConn, false)
       assert.equal('secretRef' in safeConn, false)
       assert.equal('secretValue' in safeConn, false)
-      assert.equal('ciphertext' in safeConn, false)
-      assert.equal('iv' in safeConn, false)
-      assert.equal('aad' in safeConn, false)
-      assert.equal('masterKey' in safeConn, false)
-
-      const serialized = JSON.stringify(safeConn)
-      assert.equal(serialized.includes('token-secret'), false)
-      assert.equal(serialized.includes('refresh-secret'), false)
     },
   )
 
-  // 31-33. audit metadata, events, and errors contain no plaintext token
+  // 29. safe DTO does not expose ciphertext, iv, or aad
+  await t.test('29. SafePlatformConnection DTO never exposes ciphertext, iv, or aad', async () => {
+    const db = createTestDb()
+    const env = await setupTestEnvironment(db)
+
+    await storeOAuthCredential(
+      db,
+      {
+        workspaceId: env.workspaceId,
+        accountId: env.accountId,
+        platformAdapterKey: 'x',
+        credential: { accessToken: 'token-secret-alpha' },
+      },
+      env.masterKey,
+    )
+
+    const safeConn = await getSafePlatformConnectionForAccount(db, env.accountId)
+    assert.ok(safeConn)
+    assert.equal('ciphertext' in safeConn, false)
+    assert.equal('iv' in safeConn, false)
+    assert.equal('aad' in safeConn, false)
+  })
+
+  // 30. safe DTO does not expose master key material
+  await t.test('30. SafePlatformConnection DTO never exposes master key material', async () => {
+    const db = createTestDb()
+    const env = await setupTestEnvironment(db)
+
+    await storeOAuthCredential(
+      db,
+      {
+        workspaceId: env.workspaceId,
+        accountId: env.accountId,
+        platformAdapterKey: 'x',
+        credential: { accessToken: 'token-secret-alpha' },
+      },
+      env.masterKey,
+    )
+
+    const safeConn = await getSafePlatformConnectionForAccount(db, env.accountId)
+    assert.ok(safeConn)
+    assert.equal('masterKey' in safeConn, false)
+    assert.equal('kek' in safeConn, false)
+  })
+
+  // 31. error reasons contain no plaintext token leaks
   await t.test(
-    '31-33. Error reasons and safe resolution payloads contain zero plaintext token leaks',
+    '31. Error reasons on corrupt resolution contain zero plaintext token leaks',
     async () => {
       const db = createTestDb()
       const env = await setupTestEnvironment(db)
       const badTokenSentinel = 'LEAK_CHECK_SENTINEL_TOKEN_SECRET_99'
 
-      // Error on corrupt resolve
       await storeOAuthCredential(
         db,
         {
@@ -986,6 +1063,72 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
       if (!resolveRes.ok) {
         assert.equal(resolveRes.reason.includes(badTokenSentinel), false)
         assert.equal(JSON.stringify(resolveRes).includes(badTokenSentinel), false)
+      }
+    },
+  )
+
+  // 32. audit logs contain no plaintext token leaks
+  await t.test(
+    '32. Audit log records on credential store contain zero plaintext token leaks',
+    async () => {
+      const db = createTestDb()
+      const env = await setupTestEnvironment(db)
+      const auditSentinel = 'AUDIT_LOG_SECRET_TOKEN_SENTINEL_4455'
+
+      await storeOAuthCredential(
+        db,
+        {
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          platformAdapterKey: 'x',
+          credential: { accessToken: auditSentinel, refreshToken: `${auditSentinel}_REF` },
+        },
+        env.masterKey,
+      )
+
+      const auditLogs = await queryAll<{
+        action: string
+        entity_type: string
+        new_value: string | null
+      }>(db, `SELECT action, entity_type, new_value FROM audit_log WHERE workspace_id = ?`, [
+        env.workspaceId,
+      ])
+
+      for (const log of auditLogs) {
+        const json = JSON.stringify(log)
+        assert.equal(json.includes(auditSentinel), false)
+      }
+    },
+  )
+
+  // 33. domain events contain no plaintext token leaks
+  await t.test(
+    '33. Domain events on credential store contain zero plaintext token leaks',
+    async () => {
+      const db = createTestDb()
+      const env = await setupTestEnvironment(db)
+      const eventSentinel = 'EVENT_SECRET_TOKEN_SENTINEL_7788'
+
+      await storeOAuthCredential(
+        db,
+        {
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          platformAdapterKey: 'x',
+          credential: { accessToken: eventSentinel },
+        },
+        env.masterKey,
+      )
+
+      const events = await queryAll<{ event_type: string; payload: string | null }>(
+        db,
+        `SELECT event_type, payload FROM event WHERE workspace_id = ?`,
+        [env.workspaceId],
+      )
+
+      for (const ev of events) {
+        const json = JSON.stringify(ev)
+        assert.equal(json.includes(eventSentinel), false)
       }
     },
   )
@@ -1157,8 +1300,104 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     },
   )
 
-  // 38. refresh token nullable
-  await t.test('38. Refresh token is nullable: stores null and resolves null cleanly', async () => {
+  // 38. Credential replacement atomicity
+  await t.test(
+    '38. Credential replacement atomicity: failure during replacement rolls back and preserves prior active credential',
+    async () => {
+      const db = createTestDb()
+      const env = await setupTestEnvironment(db)
+
+      // Store initial valid credential
+      const initialStore = await storeOAuthCredential(
+        db,
+        {
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          platformAdapterKey: 'x',
+          credential: { accessToken: 'initial-surviving-token' },
+        },
+        env.masterKey,
+      )
+      assert.equal(initialStore.ok, true)
+
+      // Verify active
+      const beforeActive = await queryFirst<{ id: string; revoked_at: string | null }>(
+        db,
+        `SELECT id, revoked_at FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+        [env.accountId],
+      )
+      assert.ok(beforeActive)
+      assert.equal(beforeActive.revoked_at, null)
+
+      // Create a faulty db proxy that throws on INSERT into platform_credential
+      const faultyDb: SqlDatabase = {
+        prepare(sql: string) {
+          if (sql.includes('INSERT INTO platform_credential')) {
+            return {
+              bind() {
+                return {
+                  all: async () => {
+                    throw new Error('Simulated disk/constraint failure on credential INSERT')
+                  },
+                  first: async () => {
+                    throw new Error('Simulated disk/constraint failure on credential INSERT')
+                  },
+                  run: async () => {
+                    throw new Error('Simulated disk/constraint failure on credential INSERT')
+                  },
+                }
+              },
+            }
+          }
+          return db.prepare(sql)
+        },
+      }
+
+      // Attempt replacement that will fail during insert
+      await assert.rejects(
+        () =>
+          storeOAuthCredential(
+            faultyDb,
+            {
+              workspaceId: env.workspaceId,
+              accountId: env.accountId,
+              platformAdapterKey: 'x',
+              credential: { accessToken: 'failing-new-token' },
+            },
+            env.masterKey,
+          ),
+        /Simulated disk\/constraint failure on credential INSERT/,
+      )
+
+      // Verify transaction rollback: prior credential must STILL be active and unrevoked!
+      const afterActive = await queryFirst<{ id: string; revoked_at: string | null }>(
+        db,
+        `SELECT id, revoked_at FROM platform_credential WHERE account_id = ? AND revoked_at IS NULL`,
+        [env.accountId],
+      )
+      assert.ok(afterActive, 'Prior credential must still exist as active row after rollback')
+      assert.equal(afterActive.id, beforeActive.id)
+      assert.equal(afterActive.revoked_at, null)
+
+      // Resolving still returns original valid token
+      const resolveRes = await resolveOAuthCredential(
+        db,
+        {
+          workspaceId: env.workspaceId,
+          accountId: env.accountId,
+          platformAdapterKey: 'x',
+        },
+        env.masterKey,
+      )
+      assert.equal(resolveRes.ok, true)
+      if (resolveRes.ok) {
+        assert.equal(resolveRes.credential.accessToken, 'initial-surviving-token')
+      }
+    },
+  )
+
+  // 39. refresh token nullable
+  await t.test('39. Refresh token is nullable: stores null and resolves null cleanly', async () => {
     const db = createTestDb()
     const env = await setupTestEnvironment(db)
 
@@ -1193,8 +1432,8 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     }
   })
 
-  // 39. scopes/expiry metadata preserved safely
-  await t.test('39. Scopes and expiry metadata are preserved and returned safely', async () => {
+  // 40. scopes/expiry metadata preserved safely
+  await t.test('40. Scopes and expiry metadata are preserved and returned safely', async () => {
     const db = createTestDb()
     const env = await setupTestEnvironment(db)
 
@@ -1238,9 +1477,9 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     }
   })
 
-  // 40. no plaintext token exists anywhere in persisted DB rows
+  // 41. no plaintext token exists anywhere in persisted DB rows
   await t.test(
-    '40. Global DB scan: Zero plaintext sentinel tokens anywhere in sqlite rows',
+    '41. Global DB scan: Zero plaintext sentinel tokens anywhere in sqlite rows',
     async () => {
       const db = createTestDb()
       const env = await setupTestEnvironment(db)
@@ -1287,9 +1526,9 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     },
   )
 
-  // 41. AAD swap test (Account A ciphertext attempted to decrypt as Account B -> fails)
+  // 42. AAD swap test (Account A ciphertext attempted to decrypt as Account B -> fails)
   await t.test(
-    '41. AAD Swap Test: Ciphertext from Account A cannot be decrypted as Account B',
+    '42. AAD Swap Test: Ciphertext from Account A cannot be decrypted as Account B',
     async () => {
       const db = createTestDb()
       const env = await setupTestEnvironment(db)
@@ -1351,9 +1590,9 @@ test('STEP 15E.3C.1: Secure OAuth Credential Vault Test Suite', async (t) => {
     },
   )
 
-  // 42. Roundtrip assertion with sentinels & rotation
+  // 43. Roundtrip assertion with sentinels & rotation
   await t.test(
-    '42. Full Lifecycle Roundtrip: store -> raw row check -> rotate -> resolve -> revoke -> check',
+    '43. Full Lifecycle Roundtrip: store -> raw row check -> rotate -> resolve -> revoke -> check',
     async () => {
       const db = createTestDb()
       const env = await setupTestEnvironment(db)

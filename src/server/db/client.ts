@@ -11,7 +11,7 @@ import { requireBinding } from '~/server/env'
  * so existing repository imports keep working.
  */
 
-export { execute, newId, nowIso, queryAll, queryFirst } from '~/server/db/sql'
+export { execute, newId, nowIso, queryAll, queryFirst, withTransaction } from '~/server/db/sql'
 
 /** The D1 database binding for this request's worker environment. */
 export function getDb(): D1Database {
